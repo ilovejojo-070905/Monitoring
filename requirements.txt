@@ -1,0 +1,7 @@
+flask
+psutil
+pysnmp
+apscheduler
+waitress
+cryptography
+pycryptodomex

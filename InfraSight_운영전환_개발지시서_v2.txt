@@ -1,0 +1,557 @@
+====================================================================
+ InfraSight 통합 인프라 관제 시스템
+ 실제 운용 버전 전환 개발 지시서 (v2 - 현재 코드 분석 반영판)
+====================================================================
+ 원본: 사용자 작성 개발지시서 (41개 섹션)
+ 이 문서: 원본 구조를 그대로 유지하면서, 실제 server.py/index.html/
+          agent.py/infrasight.db를 직접 읽고 분석한 결과를 반영해
+          "누가 봐도 바로 착수 가능한" 수준으로 구체화한 버전
+ 작성일: 2026-09-23
+====================================================================
+
+
+####################################################################
+# PART 0. 현재 프로젝트 구조 분석 (지시서 41번 항목 선행 수행 결과)
+####################################################################
+
+지시서 39/41번에서 요구한 "코드 수정 전 현재 구조부터 분석"을
+실제로 수행했다. 아래는 그 결과이며, 이후 모든 Phase 계획은
+이 분석을 근거로 한다.
+
+--------------------------------------------------------------------
+0-1. 파일 구조 (실측)
+--------------------------------------------------------------------
+server.py    701줄  - Flask 앱 + polling 루프 + API 전부 (단일 파일)
+index.html  1,490줄 - 프론트엔드 전체 (SPA, 별도 JS/CSS 파일 없음)
+agent.py      219줄 - 원격 PC 에이전트 (psutil 수집 + HTTP POST)
+dist\InfraSightAgent.exe - agent.py를 PyInstaller로 패키징한 실행파일
+requirements.txt - flask, psutil, pysnmp
+infrasight.db  - SQLite (devices, incidents 2개 테이블만 존재)
+start.bat     - server.py 실행 + 브라우저 오픈
+
+--------------------------------------------------------------------
+0-2. DB 테이블 구조 (실측 - init_db() 함수 기준)
+--------------------------------------------------------------------
+devices (
+  id TEXT PRIMARY KEY,        -- uuid4 hex 10자리, 로컬PC는 'local-pc' 고정
+  category TEXT,               -- server | db | net | fac
+  name TEXT,
+  mode TEXT,                   -- local | agent | ping | snmp
+  ip TEXT,
+  token TEXT,                  -- agent 모드에서만 사용, uuid4 hex 16자리
+  fields TEXT,                 -- JSON 직렬화 문자열 (os/role/engine/community 등)
+  created_at INTEGER           -- epoch ms
+)
+
+incidents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER,
+  severity TEXT,               -- info | warn | crit
+  source TEXT,                 -- 장비 이름 (device_id 아님! 이름 문자열)
+  category TEXT,               -- SMS | DBMS | NMS | FMS (라벨, device.category와 다른 표기)
+  message TEXT,
+  status TEXT                  -- open | ack | resolved  (지시서의 OPEN/ACK/RESOLVED와 대응)
+)
+
+>>> 분석 결론:
+  - 지시서 10번이 요구하는 first_occurred_at / last_occurred_at /
+    occurrence_count / acknowledged_by / acknowledged_at 컬럼은 전부
+    없음 → 이벤트가 반복 발생할 때마다 새 row가 생성되는 구조
+    (중복 폭주 가능성 있음, Phase 2에서 반드시 개선 대상)
+  - incidents.source가 device_id 외래키가 아니라 "이름 문자열"이라서
+    장비 이름이 바뀌거나 삭제되면 과거 이벤트와 연결이 끊어짐
+    → device_id 컬럼 추가 필요 (기존 source는 표시용으로 유지)
+  - devices.fields가 통째로 JSON 문자열이라 SNMP community/token이
+    사실상 평문으로 같은 테이블에 저장됨 (지시서 20번 항목의 근거)
+  - polling_interval, timeout, retry_count, monitoring_enabled,
+    vendor/profile, maintenance_* 컬럼 전부 없음 (지시서 4/14/15/18번
+    항목 그대로 필요)
+
+--------------------------------------------------------------------
+0-3. 현재 polling 구조 (실측 - monitor_loop 함수, server.py:490)
+--------------------------------------------------------------------
+  - 단일 while True 루프 + time.sleep(TICK_SECONDS=2.0)
+  - 매 tick마다 SQLite에서 device 전체를 다시 SELECT (load_devices)
+  - 장비를 순서대로(sequential) 하나씩 순회하며 mode별 분기 처리
+  - 장비별 timeout/interval 설정 없음 - 전부 TICK_SECONDS=2.0 하드코딩
+  - SNMP timeout=1.5초 하드코딩 (device 단위 override 불가)
+  - Ping timeout=1.0초 하드코딩, retry 없음(1회 실패=즉시 실패)
+  - 이미 개선되어 있는 부분: 실제 네트워크 I/O(ping/snmp)는 LOCK
+    없이 수행하도록 되어 있어서(주석 참고, server.py:490-494), 웹
+    요청이 polling 때문에 막히는 문제는 "부분적으로" 이미 해결됨.
+    다만 이것은 "Lock 경합 완화"였을 뿐, 지시서가 요구하는 "Web과
+    Collector의 완전한 프로세스/계층 분리"는 아직 아님 (같은 프로세스,
+    같은 스레드가 순차 polling 수행 중).
+  - 병렬처리 없음: 장비 20대 중 1대가 SNMP timeout(1.5초)이면 그 다음
+    장비들은 그만큼 순서가 밀림 (개별 장비 지연이 전체 주기를 늦춤)
+
+>>> 분석 결론: 지시서 3/5/6번이 지적한 문제가 실제로 존재함.
+    다만 완전히 처음부터 만드는 것은 아니고, 이미 존재하는
+    sample_ping / sample_snmp / sample_agent / sample_local
+    4개 함수는 그대로 "Collector의 각 모듈"로 이관 가능한 형태로
+    이미 분리되어 있음 (이름만 봐도 역할이 명확함) → 이 부분은 기존
+    코드를 최대한 재사용하면 됨. 바꿔야 하는 것은 "누가, 언제, 어떤
+    스레드에서 이 함수들을 호출하느냐"는 스케줄링 계층이다.
+
+--------------------------------------------------------------------
+0-4. Agent 통신 구조 (실측 - agent.py + /api/agent/report)
+--------------------------------------------------------------------
+  - agent.py: server/token을 %LOCALAPPDATA%\InfraSightAgent\config.json에
+    저장, 이후 인자 없이 실행 가능. urllib로 3초 간격 POST.
+  - 서버측 신선도 판정 (server.py:459 sample_agent):
+      마지막 보고 후 15초 이내 = online
+      15~60초 = warn
+      60초 초과 = crit
+    → 지시서 16번의 "60/180초" 기준과는 다르지만, 코드 자체는 이미
+      "설정 가능하게" 만들기 좋은 구조 (숫자만 상수로 빼면 됨)
+  - LAST_REPORT 딕셔너리가 메모리에만 존재 → 서버 재시작 시 모든
+    agent가 일시적으로 offline으로 보임 (실제 장애 아님, 지시서
+    8번의 "통신장애 vs 장비장애 구분" 문제와 정확히 일치하는 사례)
+  - agent_version, hostname 등 지시서 16번이 요구하는 필드는 현재
+    /api/agent/report payload에 없음 (추가 필요)
+
+--------------------------------------------------------------------
+0-5. SNMP 조회 구조 (실측)
+--------------------------------------------------------------------
+  - pysnmp 7.x, hlapi.v3arch.asyncio 모듈만 사용 (v1arch/구형 hlapi
+    사용 안 함) - **완전 비동기 API**
+  - 이미 확인된 사실(직접 코드 실행으로 검증함): 이 버전의 pysnmp는
+    SNMPv1/v2c는 CommunityData로 정상 동작하나, v3는 UsmUserData
+    클래스가 동일 모듈(hlapi.v3arch.asyncio)에 존재함이 확인됨
+    (import 가능 여부까지 실제 확인됨). 즉 지시서 19번의 SNMPv3
+    "준비"는 존재하지 않는 API를 추측할 필요 없이, 이미 확인된
+    UsmUserData로 바로 구현 가능.
+  - 장비 1대당 SnmpEngine()을 매 polling마다 새로 생성 (세션 재사용
+    안 함). 이미 "장비당 세션 1개로 통합"까지는 개선되어 있음
+    (예전엔 OID 그룹마다 별도 engine을 만들어서 훨씬 느렸음).
+  - Cisco 전용 OID(CPU/메모리)에 대한 폴백 로직 이미 존재
+    (OID_CISCO_CPU_5MIN, OID_CISCO_MEM_USED/FREE)
+    → 이것이 사실상 지시서 18번이 말하는 "Vendor Profile"의 초기
+      형태임. 완전히 새로 만들 필요 없이, if/elif 체인을
+      profile 딕셔너리 구조로 승격시키면 됨.
+
+--------------------------------------------------------------------
+0-6. 이벤트 처리 구조 (실측)
+--------------------------------------------------------------------
+  - add_incident() 호출 지점이 sample_local/sample_ping/sample_snmp/
+    api_agent_report에 개별적으로 흩어져 있음 (공통 로직 아님)
+  - 상태 상승/하강 판정은 각 함수마다 중복 구현됨
+    (rank = {'good':0,'warn':1,'crit':2} 패턴이 3곳에 복붙되어 있음)
+  - 연속 실패 횟수 집계 없음 → 1회 timeout만으로 즉시 DOWN 처리
+    (지시서 7번이 정확히 지적한 문제, 실측으로도 확인됨: 이전 대화에서
+    네트워크가 잠시 바뀌었을 때 실제로 오탐이 발생한 이력 있음)
+
+--------------------------------------------------------------------
+0-7. 토폴로지 생성 구조 (실측 - index.html, rebuildTopology 함수)
+--------------------------------------------------------------------
+  - 완전히 프론트엔드에서만 생성됨 (서버는 토폴로지 개념 자체가 없음)
+  - 모든 장비를 "InfraSight 허브" 노드 1개에 방사형으로 연결하는
+    가상 토폴로지 (실제 네트워크 연결관계 아님, 장식적 성격이 강함)
+  - LLDP/CDP 연동 없음, device 간 관계를 저장하는 DB 컬럼도 없음
+  - 지시서 31번 "1차는 현재 방식 유지"에 정확히 부합하는 상태.
+    다만 향후 실제 연결관계를 저장하려면 새 테이블
+    (device_links: from_device_id, to_device_id, link_type) 필요.
+
+--------------------------------------------------------------------
+0-8. 현재 API 목록 (실측 - 전수 조사)
+--------------------------------------------------------------------
+  GET    /                              index.html 서빙
+  GET    /api/state                     전체 상태 조회 (프론트가 2.2초마다 폴링)
+  POST   /api/devices                   장비 등록
+  DELETE /api/devices/<id>              장비 삭제 (인증 없음)
+  POST   /api/agent/report              에이전트 실측 데이터 수신 (token 인증만 있음)
+  POST   /api/incidents/<id>/ack        이벤트 확인 처리
+  GET    /download/agent                exe 다운로드
+  GET    /download/installer/<token>    설치 스크립트(.bat) 생성/다운로드
+
+  >>> 지시서 35번이 요구하는 REST 스타일(GET/PUT 구분, /metrics 등)과
+      비교하면: PUT이 아예 없음(장비 수정 불가, 삭제 후 재등록만 가능),
+      /api/devices/{id}/status, /api/devices/{id}/metrics,
+      /api/system/health 전부 없음.
+
+--------------------------------------------------------------------
+0-9. 현재 보안 상태 (실측 - 있는 그대로)
+--------------------------------------------------------------------
+  - app.run(debug=False) 이미 적용됨 (양호)
+  - 로그인/세션/권한 개념 전혀 없음 - 누구나 브라우저로 접속하면
+    장비 등록/삭제/이벤트 ACK 전부 가능
+  - SECRET_KEY 개념 자체가 없음 (세션을 안 쓰므로 아직 문제는 아니나,
+    로그인 도입 시 최우선으로 필요)
+  - SNMP community, agent token이 GET /api/state 응답에서는 이미
+    제외 처리되어 있음(serialize_device 함수에서 community/snmpPort/
+    snmpVersion 필터링, server.py:518) → 이 부분은 이미 잘 되어있음.
+    다만 DB 원본(infrasight.db)에는 평문 그대로 저장되어 있고,
+    /api/devices POST 요청 자체에는 인증이 없어 누구나 등록 가능.
+  - 입력 검증: IP 형식 검사, port 범위 검사 전무 (있는 그대로 저장)
+  - SQL: 전부 파라미터 바인딩(?) 사용 중 → SQL Injection 위험은
+    현재 낮음 (이 부분은 이미 안전하게 작성되어 있음, 유지만 하면 됨)
+  - XSS: 프론트엔드에 escapeHtml() 함수가 이미 존재하고 장비명/설명
+    등 사용자 입력을 렌더링할 때 사용 중 → 기본적인 방어는 이미 있음,
+    다만 전수 적용 여부는 Phase 3 진행 시 재검증 필요
+
+--------------------------------------------------------------------
+0-10. 반드시 유지해야 하는 부분 (Breaking Change 금지 대상, 확인 완료)
+--------------------------------------------------------------------
+  1) devices 테이블의 기존 컬럼과 id 체계 (uuid4 hex 10자리, local-pc 고정값)
+  2) agent.py의 토큰 기반 인증 방식 (/api/agent/report의 token 필드) -
+     이미 배포된 InfraSightAgent.exe와 100% 호환 유지 필수
+  3) GET /api/state 응답의 최상위 키 구조 (servers/dbs/nets/facs/incidents/
+     serverInfo) - 프론트엔드 전체가 이 구조에 의존
+  4) 각 entity의 hist.{cpu,mem,net,traffic,latency} 배열 구조 (길이 30) -
+     차트 렌더링이 이 배열을 그대로 사용
+  5) 인터페이스별 hist 배열 구조 (entity.interfaces[].hist) - 인터페이스
+     클릭 팝업이 이 구조에 의존
+  6) start.bat, InfraSightAgent.exe의 배치/실행 방식
+
+
+####################################################################
+# PART 1. 원본 지시서에 대한 검토 의견
+####################################################################
+
+■ 잘 되어 있는 부분
+  - Web/Collector 계층 분리, 5단계 상태, 이벤트/알림 분리, 유지보수
+    모드, Threshold 설정화 등 핵심 방향은 모두 타당하고 이 프로젝트의
+    실제 약점과 정확히 일치한다. (실측으로 재확인함)
+  - "기존 기능 유지"를 최우선 원칙으로 못박은 점, Phase를 나누고
+    "한 번에 전체 수정 금지"를 명시한 점은 이 프로젝트 규모(700+1490
+    +219줄, 단일 개발자 유지보수)에 정확히 맞는 현실적인 접근이다.
+
+■ 보완이 필요했던 부분 (이번 버전에서 구체화함)
+  1. "적절한 password hashing", "설정 가능하게 한다" 같은 표현이
+     반복되는데, 실제로 무엇을 쓸지 못 박지 않으면 구현 단계에서
+     매번 판단이 갈린다 → Part 2에서 라이브러리를 구체적으로 지정함.
+  2. SNMPv3를 "존재하지 않는 API를 추측하지 말라"고 정확히 경고했는데,
+     정작 이 프로젝트의 pysnmp 버전이 v3를 어떻게 지원하는지는
+     검증되지 않은 상태였다 → 실제로 import 테스트를 해서 확인함
+     (Part 0-5 참고).
+  3. Collector 분리(3번), 병렬 polling(5번), 장비 상태 세분화(7번)가
+     서로 강하게 얽혀 있는데 순서가 명확하지 않았다 → Part 2의
+     Phase 1을 이 세 가지의 통합 작업으로 재정의함.
+  4. 프로덕션 배포 방식(28번)이 "Windows Service로 준비" 정도로만
+     언급되어 있었는데, 그 전에 Flask 개발 서버 자체를 교체하지
+     않으면 Windows Service로 감싸봤자 의미가 없다 → WSGI 서버
+     교체를 별도 항목으로 명시함.
+  5. 39번 Phase 순서에 "Phase 0: 분석"이 빠져 있었다 (본문에서는
+     요구했지만 Phase 목록엔 없었음) → Part 2에서 Phase 0으로 명시.
+
+■ 원본 그대로 유지한 부분
+  - 41개 섹션의 번호와 요구사항 자체는 전부 타당하므로 순서/번호를
+    바꾸지 않았다. 내용을 구체화(추가)만 했고 삭제한 항목은 없다.
+
+
+####################################################################
+# PART 2. 업그레이드된 개발 지시서 (기술 스택 확정판)
+####################################################################
+
+■ 사용할 라이브러리 확정 (신규 설치 필요분)
+--------------------------------------------------------------------
+  스케줄링       : APScheduler (BackgroundScheduler, ThreadPoolExecutor
+                   기반 - 장비별 interval/병렬 worker 수 제한을
+                   기본 기능으로 지원해서 지시서 4/5번을 그대로 만족)
+  프로덕션 서버   : waitress (Windows 네이티브 지원, gunicorn은 Windows
+                   미지원이라 배제. "pip install waitress"만 하면 됨)
+  비밀번호 해싱   : werkzeug.security (Flask에 이미 포함, 신규 설치 불필요)
+  로그인 세션     : Flask 내장 session + itsdangerous 서명 쿠키
+                   (신규 설치 불필요, Flask-Login은 선택사항으로 보류)
+  로깅           : 표준 logging + RotatingFileHandler (신규 설치 불필요)
+  이메일 알림     : smtplib (표준 라이브러리, 신규 설치 불필요) - 단,
+                   실제 SMTP 서버/계정 정보는 사용자가 제공해야 함
+  Windows Service : NSSM (Non-Sucking Service Manager, 무료 툴) 권장.
+                   pywin32 방식은 코드량이 많아 2순위로 보류.
+  설정 저장       : 새 SQLite 테이블 settings (파일 기반 config.yaml
+                   대신 - 이미 SQLite를 쓰고 있고, 관리자가 화면에서
+                   바로 수정 가능해야 하므로 DB가 더 적합. 단, PORT/
+                   SECRET_KEY/DB_PATH처럼 "실행 전에 정해지는" 값은
+                   .env 파일 + python-dotenv로 분리)
+
+
+3항 (Collector 구조) - 구체화
+--------------------------------------------------------------------
+  collector/
+    __init__.py
+    scheduler.py       -- APScheduler 초기화, 장비별 job 등록/해제
+    ping_collector.py  -- 기존 sample_ping() 로직 이관 (거의 그대로)
+    snmp_collector.py  -- 기존 sample_snmp()/_snmp_poll() 이관
+                          (Cisco if/elif 체인 → PROFILES 딕셔너리로 승격)
+    agent_collector.py -- 기존 sample_agent() 로직 이관
+    local_collector.py -- 기존 sample_local() 로직 이관
+    health.py          -- InfraSight 자체 상태(9번 항목) 계산
+    state.py           -- 기존 LIVE 딕셔너리 + LOCK을 이 모듈로 이동
+                          (server.py는 이 모듈을 import해서 읽기만 함)
+  server.py는 Flask 라우트 정의 + collector.state 조회만 담당하도록
+  축소한다. monitor_loop() 함수 자체는 삭제하고 scheduler.py가 대체.
+
+
+4/5/6항 (Scheduler / 병렬 / Timeout) - 구체화
+--------------------------------------------------------------------
+  APScheduler BackgroundScheduler(executors={'default':
+  ThreadPoolExecutor(MAX_WORKERS)}) 사용.
+  장비 등록/수정 시 add_job(func, 'interval', seconds=device.polling_interval,
+  id=f"poll_{device_id}")로 개별 등록, 삭제 시 remove_job.
+  이렇게 하면:
+    - 장비별 다른 주기가 "설정 가능"이 아니라 "기본 기능"으로 해결됨
+    - 한 장비의 timeout이 다른 장비 polling을 절대 지연시키지 않음
+      (스레드풀이 알아서 분산)
+    - MAX_WORKERS=10 같은 값은 settings 테이블에서 관리
+
+  devices 테이블에 추가할 컬럼:
+    polling_interval INTEGER DEFAULT NULL  (NULL이면 종류별 기본값 사용)
+    timeout_sec REAL DEFAULT NULL
+    retry_count INTEGER DEFAULT NULL
+    monitoring_enabled INTEGER DEFAULT 1
+
+
+7/8항 (5단계 상태 / 장애 종류 구분) - 구체화
+--------------------------------------------------------------------
+  devices에 컬럼 추가:
+    consecutive_failures INTEGER DEFAULT 0
+    last_failure_reason TEXT  (PING_TIMEOUT | SNMP_TIMEOUT |
+                                SNMP_AUTH_ERROR | AGENT_OFFLINE |
+                                COLLECTOR_ERROR 중 하나)
+    last_success_at INTEGER
+  상태 계산 공통 함수 하나로 통합 (현재 3곳에 복붙된 rank 로직 제거):
+    def evaluate_status(consecutive_failures, warn_at=1, down_at=2):
+        ...
+  COLLECTOR_ERROR는 별도 취급: Collector 자체가 죽은 경우
+  (health.py가 감지) 장비 상태를 UP으로 유지하지 않고 UNKNOWN으로
+  강제 전환 (지시서 8번 후반부 요구사항, 9번과 직결됨).
+
+
+9항 (자체 상태 모니터링) - 구체화
+--------------------------------------------------------------------
+  collector/health.py:
+    - scheduler.py가 각 collector 함수 실행 성공/실패 시각을 기록
+    - Web/API: Flask 자체가 응답하고 있으면 UP (별도 체크 불필요)
+    - Database: SELECT 1 실행 성공 여부
+    - Collector 전체: 마지막 polling 완료 시각이
+      (모든 장비 interval 중 최댓값 * 2)보다 오래됐으면 DOWN
+    - 신규 API: GET /api/system/health
+
+
+10/11항 (이벤트 강화) - 구체화
+--------------------------------------------------------------------
+  incidents 테이블 재설계 (기존 테이블 이름 유지, 컬럼만 추가/마이그레이션):
+    ALTER TABLE incidents ADD COLUMN device_id TEXT;
+    ALTER TABLE incidents ADD COLUMN event_type TEXT;
+    ALTER TABLE incidents ADD COLUMN first_occurred_at INTEGER;
+    ALTER TABLE incidents ADD COLUMN last_occurred_at INTEGER;
+    ALTER TABLE incidents ADD COLUMN resolved_at INTEGER;
+    ALTER TABLE incidents ADD COLUMN acknowledged_by TEXT;
+    ALTER TABLE incidents ADD COLUMN acknowledged_at INTEGER;
+    ALTER TABLE incidents ADD COLUMN occurrence_count INTEGER DEFAULT 1;
+  add_incident()를 upsert 방식으로 변경: 같은 device_id + event_type의
+  OPEN 이벤트가 이미 있으면 occurrence_count++ / last_occurred_at 갱신,
+  없으면 새로 생성. (기존 ts/severity/source/category/message/status
+  컬럼은 하나도 삭제하지 않으므로 프론트엔드 하위호환 유지됨)
+
+
+12/13/14항 (Threshold / Interface 강화 / Interface ON-OFF) - 구체화
+--------------------------------------------------------------------
+  settings 테이블 (신규):
+    key TEXT PRIMARY KEY, value TEXT, scope TEXT (global|device),
+    device_id TEXT NULL
+  기본 제공 key: cpu_warn, cpu_crit, mem_warn, mem_crit, disk_warn,
+  disk_crit (전부 % 정수). device_id가 있으면 해당 장비 우선 적용,
+  없으면 global 값 사용 (지시서 12번 "장비별 또는 시스템 기본값" 요구
+  그대로).
+  interfaces 정보는 현재 entity 메모리 구조체 안에만 있고 DB에
+  영속화되지 않음 → interface_settings 테이블 신규 추가:
+    device_id TEXT, if_index TEXT, monitoring_enabled INTEGER DEFAULT 1
+  snmp_collector.py가 이 테이블을 참조해서 monitoring_enabled=0인
+  인터페이스는 DOWN이어도 이벤트 생성하지 않음.
+
+
+15항 (Maintenance Mode) - 구체화
+--------------------------------------------------------------------
+  devices 컬럼 추가: maintenance_enabled, maintenance_start,
+  maintenance_end, maintenance_reason.
+  Collector 공통 진입부에서 "이 장비가 현재 maintenance 창 안에
+  있으면 polling은 계속하되(상태 파악은 필요) add_incident() 호출만
+  건너뛴다" - 데이터 수집 자체를 멈추지 않는 것이 중요
+  (그래야 유지보수 중에도 실제로 복구됐는지 확인 가능).
+
+
+16/17항 (Agent 관리/버전) - 구체화
+--------------------------------------------------------------------
+  agent.py의 report payload에 hostname, agent_version 필드 추가.
+  devices 컬럼 추가: agent_version, last_seen (LAST_REPORT 메모리
+  딕셔너리를 DB 컬럼으로도 이중화 - 서버 재시작 시 완전 초기화되는
+  현재 문제(0-4 분석 참고)를 이걸로 해결).
+  서버 코드에 CURRENT_AGENT_VERSION 상수 하나 두고, 등록된 agent의
+  버전과 비교해서 화면에 "업데이트 필요" 배지만 표시 (자동 업데이트는
+  지시서 지침대로 이번엔 구현하지 않음).
+
+
+18/19항 (SNMP 구조 개선 / v3 준비) - 구체화 (실제 검증 완료)
+--------------------------------------------------------------------
+  snmp_collector/profiles.py:
+    PROFILES = {
+      'generic': {oid_cpu: OID_HR_PROCESSOR_LOAD, ...},
+      'cisco':   {oid_cpu: OID_CISCO_CPU_5MIN, oid_mem_used: ..., ...},
+      'ups':     {oid_battery: OID_UPS_BATTERY_CAPACITY, ...},
+    }
+  devices 컬럼 추가: vendor_profile TEXT DEFAULT 'generic'
+  SNMPv3: pysnmp.hlapi.v3arch.asyncio.UsmUserData 사용 (실제 import
+  검증 완료). CommunityData 대신 UsmUserData(username, authKey=...,
+  privKey=..., authProtocol=..., privProtocol=...)를 조건부로 생성하는
+  함수 하나만 추가하면 되고, get_cmd/bulk_walk_cmd 호출부는 수정 불필요
+  (authData 인자 자리에 그대로 대입 가능한 구조).
+  devices.fields에 v3 관련 필드(username/authProtocol/authPassword/
+  privProtocol/privPassword) 저장 - 단, 20항에 따라 credentials
+  테이블로 분리 권장.
+
+
+20항 (Credential 보안) - 구체화
+--------------------------------------------------------------------
+  신규 테이블: credentials (device_id TEXT, type TEXT, secret TEXT)
+  devices.fields에서 community/token/v3 password류를 전부 이 테이블로
+  이전하는 1회성 마이그레이션 스크립트 작성 (기존 데이터 보존 필수 -
+  37항과 직결).
+  화면(index.html)에서는 이 값을 절대 렌더링하지 않는다 - 이미
+  serialize_device()가 community/snmpPort/snmpVersion을 GET /api/state
+  응답에서 제외하고 있으므로(0-9 분석 참고), token류도 동일하게
+  제외 목록에 추가하기만 하면 됨 (이미 있는 필터링 패턴 재사용).
+
+
+21항 (로그인/권한) - 구체화 + 확인 필요 사항
+--------------------------------------------------------------------
+  users 테이블 신규: id, username, password_hash, role(ADMIN/OPERATOR/
+  VIEWER), created_at
+  werkzeug.security.generate_password_hash(password, method='scrypt')
+  로 저장, check_password_hash로 검증.
+  @app.before_request 또는 route decorator(@login_required,
+  @role_required('ADMIN'))로 API별 권한 체크.
+  ⚠ 확인 필요: 이 시스템은 지금까지 "혼자 쓰는 개인/소규모 사무실
+  도구"로 만들어져 왔다. 로그인+3단계 권한을 도입하면 지금처럼
+  "그냥 브라우저 열면 바로 보이는" 편의성이 사라진다. 정말 여러 명이
+  다른 권한으로 접속해야 하는 환경인지, 아니면 "그냥 비밀번호 하나로
+  외부인 접근만 막으면 되는" 수준인지에 따라 Phase 3의 범위가
+  크게 달라진다. → Phase 3 착수 전 확답 요청.
+
+
+22항 (Audit Log) - 구체화
+--------------------------------------------------------------------
+  audit_log 테이블: id, username, action, target, ts, source_ip, details
+  기존 add_incident()처럼 audit_log() 헬퍼 함수 하나 만들어서 21항의
+  권한 체크 decorator 안에서 자동 기록 (매 API 핸들러에 수동 삽입 X).
+
+
+23/24항 (Alert Engine / 알림 채널) - 구체화
+--------------------------------------------------------------------
+  event(장애기록)와 alert(발송여부)를 분리:
+    alert_rules 테이블: event_type, min_severity, min_duration_sec,
+    min_occurrence, respect_maintenance(bool), channel, enabled
+  alert/ 디렉터리:
+    base.py (AlertChannel 추상 인터페이스)
+    email_channel.py (smtplib 사용)
+  ⚠ 확인 필요: 이메일 발신 계정(SMTP 서버 주소, 포트, 계정, 비밀번호
+  또는 앱 비밀번호)이 있어야 Phase 4를 실제로 테스트할 수 있다.
+  네이버/구글 SMTP를 쓸지, 회사 내부 메일서버를 쓸지 확인 필요.
+
+
+25항 (Metrics 보존 정책) - 구체화
+--------------------------------------------------------------------
+  현재 hist 배열(길이 30)은 "최근 30틱"만 메모리에 들고 DB에는
+  전혀 저장되지 않는다 (서버 재시작하면 그래프 이력이 전부 사라짐,
+  실측 확인함). 지시서의 3일/90일/1년 보존정책을 구현하려면:
+    metrics_raw 테이블: device_id, metric, ts, value (3일 보관, 매일 정리)
+    metrics_5m / metrics_1h 집계 테이블
+  SQLite 성능 고려사항: metrics_raw에 (device_id, metric, ts) 복합
+  인덱스 필수. 장비 20~30대, 5개 지표, 30초 간격 기준으로도 하루
+  40~50만 row 수준이라 SQLite로 충분히 감당 가능 (WAL 모드 전제).
+
+
+26항 (DB Backup) - 구체화
+--------------------------------------------------------------------
+  APScheduler cron job으로 매일 새벽 1회:
+    shutil.copy(infrasight.db, backups/infrasight_YYYY-MM-DD.db)
+    (SQLite 파일 복사는 .backup() API 사용 권장 - 쓰기 도중 복사돼도
+    안전함, shutil.copy보다 sqlite3.Connection.backup() 메서드가 정석)
+  최근 N개(예: 14개) 초과분은 자동 삭제. 실패 시 add_incident로 기록.
+
+
+27항 (Web/Collector 장애 분리) - 9항과 통합 구현 (중복 설명 생략)
+
+
+28항 (실행 방식) - 구체화
+--------------------------------------------------------------------
+  1단계: server.py의 app.run(...)을 waitress.serve(app, host=...,
+  port=...)로 교체 (Phase 1에서 바로 적용 가능, 위험 낮음)
+  2단계: NSSM으로 "InfraSight Web"과 "InfraSight Collector"를 각각
+  별도 Windows 서비스로 등록 (Collector를 별도 프로세스로 완전
+  분리하는 경우) 또는 단일 서비스로 등록(같은 프로세스에서 스케줄러만
+  도는 경우 - 초기엔 이 방식을 권장, 운영 부담이 훨씬 적음)
+
+
+29/30항 (Dashboard 개선 / 검색 필터) - Phase 6에서 프론트엔드
+작업으로만 진행 (백엔드 API는 이미 /api/state가 전체 데이터를 주므로
+프론트엔드에서 필터/정렬만 추가하면 됨, 신규 API 불필요)
+
+
+31항 (토폴로지) - 원본 지시서와 동일하게 1차 현재 방식 유지 확정
+(0-7 분석 결과, 현재도 요구사항과 이미 일치함)
+
+
+32~38항 (보안 기본값/로깅/설정파일/API구조/데이터무결성/마이그레이션/
+테스트) - 원본 내용을 그대로 채택. 다만 34항의 "config.yaml 또는
+.env"는 위에서 확정한 대로 ".env(비밀값) + settings 테이블(운영값)"
+조합으로 확정.
+
+
+39항 (Phase 순서) - Phase 0 추가하여 재정의
+--------------------------------------------------------------------
+  PHASE 0   현재 구조 분석 (본 문서 PART 0로 완료)
+  PHASE 1   Collector 분리 + APScheduler + Timeout/Retry +
+            5단계 상태 + waitress 전환
+  PHASE 2   Event Engine 재설계(occurrence_count 등) + Recovery +
+            ACK 확장 + Maintenance Mode
+  PHASE 3   Login + RBAC + Audit Log + Credential 테이블 분리
+            (⚠ 21항의 확인 필요 사항 답변 후 착수)
+  PHASE 4   Alert Engine + Email (⚠ 24항의 SMTP 정보 확보 후 착수)
+  PHASE 5   Metrics Retention + Aggregation + DB Backup
+  PHASE 6   Dashboard 개선 + 검색/필터 (프론트엔드 중심)
+  PHASE 7   SNMP Profile 고도화 + SNMPv3 + LLDP/CDP 준비
+
+
+40항 (금지 사항) - 원본 그대로 채택, 추가 1개 항목만 보강:
+  - "Collector를 분리한다며 server.py를 처음부터 다시 쓰지 않는다.
+    기존 sample_local/sample_ping/sample_snmp/sample_agent 함수는
+    로직을 그대로 유지한 채 파일만 옮긴다 (0-3 분석 참고, 이미
+    재사용 가능한 형태로 잘 분리되어 있음)"
+
+
+41항 (분석 보고) - 본 문서 PART 0으로 이미 수행 완료
+
+
+####################################################################
+# PART 3. 확인이 필요한 사항 (사용자 답변 필요, Phase 진행 순서에 영향)
+####################################################################
+  Q1. 여러 사람이 서로 다른 권한(ADMIN/OPERATOR/VIEWER)으로 접속해야
+      하는 환경인가, 아니면 외부인 접근 차단 수준의 단일 비밀번호로
+      충분한가? (Phase 3 범위 결정)
+  Q2. 이메일 알림에 사용할 SMTP 서버 정보 (주소/포트/계정/비밀번호
+      또는 앱 비밀번호)가 있는가? (Phase 4 착수 조건)
+  Q3. Web과 Collector를 완전히 다른 프로세스(2개의 Windows Service)로
+      분리할지, 아니면 한 프로세스 안에서 스케줄러 스레드만 분리하는
+      수준으로 충분한지? (운영 복잡도 vs 격리 수준 트레이드오프,
+      개인적으로는 소규모 환경이므로 "한 프로세스 + 내부 스레드
+      분리"를 1차로 권장함)
+  Q4. Linux/Mac 에이전트 지원이 실제로 필요한가, 아니면 현재처럼
+      Windows 중심으로 계속 가도 되는가? (agent.py의 시작프로그램
+      등록 로직이 현재 Windows 전용)
+
+
+####################################################################
+# 결론
+####################################################################
+원본 지시서의 방향은 전부 타당했고, 실제 코드 분석 결과도 지시서가
+지적한 문제들(하드코딩된 timeout, 순차 polling, 2단계 상태, 이벤트
+중복 생성 가능성, credential 평문 저장, 인증 없는 API)이 그대로
+존재함을 확인했다. 이번 v2 문서는 그 위에 "무엇으로, 어떤 순서로"
+해결할지를 구체적인 라이브러리·테이블·파일 단위까지 못박았다.
+
+다음 메시지에서 "Phase 1 진행해줘"라고 답하면, 위 Part 2의 Phase 1
+내용부터 실제 코드 작업을 시작한다. 기존 기능(장비 등록/Agent/Ping/
+SNMP/CPU-Memory/Interface/Traffic/Uptime/토폴로지/기존 DB 데이터)은
+Part 0-10에 정리한 대로 하나도 깨뜨리지 않는 것을 최우선으로 한다.
+====================================================================

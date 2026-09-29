@@ -1,0 +1,25 @@
+# Runtime data & secrets -- never commit (real device data, session/credential
+# encryption keys, security logs, DB backups). These are generated locally by
+# storage.py/applog.py the first time the app runs.
+*.db
+.infrasight_secret_key
+.infrasight_secret_key_backup_*
+.infrasight_credentials_key
+logs/
+backups/
+server.log
+server_phase*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Build artifacts (rebuildable via PyInstaller from agent.py; see README)
+dist/
+build/
+*.spec
+
+# OS cruft
+Thumbs.db
+.DS_Store
