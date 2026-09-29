@@ -2,6 +2,9 @@
 # encryption keys, security logs, DB backups). These are generated locally by
 # storage.py/applog.py the first time the app runs.
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 .infrasight_secret_key
 .infrasight_secret_key_backup_*
 .infrasight_credentials_key
@@ -9,6 +12,12 @@ logs/
 backups/
 server.log
 server_phase*.log
+caddy.log
+
+# TLS private key (Phase E) -- host-specific, regenerate with mkcert on any
+# other machine rather than copying this one. The .crt alone would be fine
+# to share, but there's no good reason to since it's equally easy to reissue.
+certs/
 
 # Python
 __pycache__/

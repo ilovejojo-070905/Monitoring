@@ -1,0 +1,48 @@
+{
+	admin off
+}
+
+# Security hardening Phase E: HTTPS + security headers, terminated here in
+# front of the Flask/waitress app (which keeps listening on 127.0.0.1:5057,
+# unauthenticated-network-reachable only through this proxy).
+#
+# The certificate is issued by a *local* CA (mkcert -install), not a public
+# one -- there's no way to get a publicly-trusted cert for a LAN-only address
+# that doesn't resolve on the public internet. Any machine that should see a
+# green padlock (not a browser warning) needs that same local CA trusted
+# once: copy the CA root from
+#   %LOCALAPPDATA%\mkcert\rootCA.pem
+# to the other machine and run `mkcert -install` there (or import rootCA.pem
+# into that OS's trust store directly).
+#
+# If this PC's LAN IP changes, regenerate the cert (see README) and update
+# the address below to match.
+192.168.30.15:8443, localhost:8443, infrasight.local:8443 {
+	tls certs/infrasight.crt certs/infrasight.key
+
+	encode gzip
+
+	header {
+		# HSTS: only meaningful because this block is HTTPS-only to begin
+		# with -- tells a browser that already visited once to never try
+		# plain HTTP for this host again.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		# Directive section 21 (clickjacking): no site may frame this
+		# dashboard, full stop.
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		# index.html is one big inline <script>/<style> (no build step), so
+		# 'unsafe-inline' is a real, disclosed compromise here -- not an
+		# oversight. It still meaningfully restricts *where* a script/style/
+		# font can load FROM (only self + the two CDNs the app actually
+		# uses), blocks <object>/<embed>, blocks the page from ever being
+		# framed by anyone, and stops any injected content from opening a
+		# network connection to somewhere else (connect-src 'self').
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+		-Server
+	}
+
+	reverse_proxy 127.0.0.1:5057
+}

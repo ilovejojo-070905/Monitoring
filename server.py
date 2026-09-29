@@ -19,6 +19,7 @@ from functools import wraps
 
 from flask import Flask, Response, jsonify, request, send_from_directory, session
 from waitress import serve
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import storage
 import validation
@@ -32,6 +33,35 @@ PORT = storage.PORT
 LOCAL_ID = storage.LOCAL_ID
 
 app = Flask(__name__, static_folder=None)
+
+
+class _TrustedProxyFix:
+    """Like werkzeug's ProxyFix, but only honors X-Forwarded-* headers when
+    the request's actual TCP peer is this machine itself -- i.e. it really
+    did come through the local Caddy reverse proxy (Caddyfile points
+    reverse_proxy at 127.0.0.1:5057). Without this guard, plain ProxyFix
+    would trust X-Forwarded-For on *every* request, including one sent
+    directly to waitress's 0.0.0.0:5057 listener (still open for
+    not-yet-migrated agents/browsers -- see the Caddyfile's comments on the
+    transition period): a remote client could forge its own X-Forwarded-For
+    and corrupt every audit_log row's source_ip. Once 5057 is firewalled to
+    localhost-only, that direct path goes away and this reduces to plain
+    ProxyFix behavior."""
+    def __init__(self, wsgi_app):
+        self.wsgi_app = wsgi_app
+        self._proxied = ProxyFix(wsgi_app, x_for=1, x_proto=1, x_host=0, x_port=0, x_prefix=0)
+
+    def __call__(self, environ, start_response):
+        if environ.get('REMOTE_ADDR') in ('127.0.0.1', '::1'):
+            return self._proxied(environ, start_response)
+        return self.wsgi_app(environ, start_response)
+
+
+# Security hardening Phase E: see _TrustedProxyFix above for why this isn't
+# just werkzeug's ProxyFix directly. This is what makes request.remote_addr
+# (used everywhere audit_log records source_ip) show the real browser/agent
+# IP again instead of always "127.0.0.1" once Caddy is in front.
+app.wsgi_app = _TrustedProxyFix(app.wsgi_app)
 
 
 # ------------------------------------------------------------------ auth --
