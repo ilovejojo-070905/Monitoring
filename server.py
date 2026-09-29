@@ -63,6 +63,13 @@ app.secret_key = _load_or_create_secret_key()
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+# Security hardening Phase G (audit item #17, "요청 크기 제한 없음"): without
+# this, waitress's own default (1GB) is the only limit on a request body --
+# a device-registration or SMTP-settings payload has no legitimate reason to
+# be anywhere near this large. 2MB comfortably fits the largest real payload
+# (a metrics query response is a GET, not bounded by this at all) with
+# headroom, while still refusing a deliberately oversized POST.
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024
 
 CSRF_METHODS = ('POST', 'PUT', 'DELETE', 'PATCH')
 

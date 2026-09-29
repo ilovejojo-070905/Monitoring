@@ -1,0 +1,28 @@
+# Full transitive closure of requirements.txt, pinned exactly, recorded from
+# a real working install on 2026-09-29 (directive section 31). Regenerate
+# with:
+#   pip install -r requirements.txt   (into a clean venv)
+#   pip freeze > requirements-lock.txt
+#
+# Use this instead of requirements.txt when you want the *exact* environment
+# this project was verified against, not just "some version compatible with
+# the direct pins."
+APScheduler==3.11.3
+Flask==3.1.3
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+Werkzeug==3.1.8
+blinker==1.9.0
+cffi==2.1.1
+click==8.4.2
+colorama==0.4.6
+cryptography==50.0.1
+itsdangerous==2.2.0
+psutil==7.2.2
+pyasn1==0.6.4
+pycparser==3.0
+pycryptodomex==3.23.0
+pysnmp==7.1.29
+tzdata==2026.2
+tzlocal==5.4.4
+waitress==3.0.2

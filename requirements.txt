@@ -1,7 +1,17 @@
-flask
-psutil
-pysnmp
-apscheduler
-waitress
-cryptography
-pycryptodomex
+# Direct dependencies, pinned to the exact versions this project has been
+# built and tested against (directive section 31, "Dependency Lock").
+# Do NOT bump these without re-testing -- in particular, pysnmp's SNMPv3
+# privacy support and waitress's WSGI behavior were both verified against
+# these exact versions during the Phase 1-7/security-hardening work.
+#
+# requirements-lock.txt pins the full transitive closure (what `pip freeze`
+# would show for a clean install of just these 7 packages) for an exactly
+# reproducible environment; this file is what you normally run:
+#   pip install -r requirements.txt
+flask==3.1.3
+psutil==7.2.2
+pysnmp==7.1.29
+apscheduler==3.11.3
+waitress==3.0.2
+cryptography==50.0.1
+pycryptodomex==3.23.0
