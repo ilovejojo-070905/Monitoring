@@ -102,7 +102,12 @@ LOCK_MINUTES = 10
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    # Code review pass, finding #1: default timeout (5s) is the only thing
+    # standing between concurrent writers and "database is locked" --
+    # doubled here as defense in depth. The real fix is journal_mode=WAL,
+    # set once on the file itself in init_db() (a persistent file property,
+    # not a per-connection one, so it doesn't need repeating here).
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -120,6 +125,16 @@ def get_lan_ip():
 
 def init_db():
     conn = get_db()
+    # Code review pass, finding #1: journal_mode is a property of the DB file
+    # itself (written into its header), so this one-time PRAGMA at startup is
+    # all that's needed -- every future connection (from this process or a
+    # restart) reads WAL mode back off the file automatically. Without it,
+    # SQLite's default (rollback journal) blocks ALL readers for the
+    # duration of any writer's transaction; WAL lets readers keep going
+    # concurrently with a writer, which matters here because waitress's
+    # request threads and the 10-worker device-polling pool are all hitting
+    # this same file constantly.
+    conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('''CREATE TABLE IF NOT EXISTS devices(
         id TEXT PRIMARY KEY,
         category TEXT NOT NULL,
