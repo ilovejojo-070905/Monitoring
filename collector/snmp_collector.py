@@ -49,24 +49,46 @@ def _mp_model(version):
     return 0 if version == 'v1' else 1
 
 
+def build_auth_data_raw(version, community, v3_username='', v3_auth_protocol=None,
+                         v3_auth_password=None, v3_priv_protocol=None, v3_priv_password=None):
+    """Same as build_auth_data below, but takes the v3 secrets directly
+    instead of loading them from the credentials table -- needed at
+    registration time, before a device_id (and so a credentials row) exists
+    to look them up by."""
+    if version != 'v3':
+        return CommunityData(community, mpModel=_mp_model(version))
+    return UsmUserData(
+        v3_username or '',
+        authKey=v3_auth_password or None,
+        privKey=v3_priv_password or None,
+        authProtocol=AUTH_PROTOCOLS.get(v3_auth_protocol, usmNoAuthProtocol),
+        privProtocol=PRIV_PROTOCOLS.get(v3_priv_protocol, usmNoPrivProtocol),
+    )
+
+
 def build_auth_data(device_id, version, community):
     """Returns a pysnmp authData object: CommunityData for v1/v2c (unchanged
     from before Phase 7), or UsmUserData for v3. v3 secrets live in the
     credentials table (Phase 3 pattern), never in devices.fields."""
     if version != 'v3':
-        return CommunityData(community, mpModel=_mp_model(version))
+        return build_auth_data_raw(version, community)
     username = storage.get_credential(device_id, 'snmpv3_username') or ''
     auth_protocol_name = storage.get_credential(device_id, 'snmpv3_auth_protocol')
     auth_password = storage.get_credential(device_id, 'snmpv3_auth_password')
     priv_protocol_name = storage.get_credential(device_id, 'snmpv3_priv_protocol')
     priv_password = storage.get_credential(device_id, 'snmpv3_priv_password')
-    return UsmUserData(
-        username,
-        authKey=auth_password or None,
-        privKey=priv_password or None,
-        authProtocol=AUTH_PROTOCOLS.get(auth_protocol_name, usmNoAuthProtocol),
-        privProtocol=PRIV_PROTOCOLS.get(priv_protocol_name, usmNoPrivProtocol),
-    )
+    return build_auth_data_raw(version, community, username, auth_protocol_name,
+                                auth_password, priv_protocol_name, priv_password)
+
+
+def check_reachable(ip, auth_data, port, timeout=1.5):
+    """Lightweight one-shot SNMP GET (just sysName) for registration-time
+    validation -- doesn't do any of sample_snmp's per-category polling."""
+    try:
+        result = snmp_run(_snmp_get(SnmpEngine(), ip, auth_data, port, [OID_SYS_NAME], timeout=timeout))
+        return result is not None
+    except Exception:
+        return False
 
 
 async def _snmp_get(engine, ip, auth_data, port, oids, timeout=1.5):

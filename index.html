@@ -7,40 +7,47 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
 <style>
   :root{
-    --bg:#080a16;
-    --bg-elevated:rgba(14,17,32,.72);
-    --surface:rgba(255,255,255,.045);
-    --surface-2:rgba(255,255,255,.06);
-    --surface-hover:rgba(255,255,255,.09);
-    --border:rgba(255,255,255,.09);
-    --border-strong:rgba(255,255,255,.18);
-    --text:#f1f4ff;
-    --text-dim:#9aa4c7;
-    --text-faint:#626d94;
+    --bg:#dee9fb;
+    --bg-elevated:rgba(226,237,252,.86);
+    --surface:#ffffff;
+    --surface-2:#f1f4fa;
+    --surface-hover:#e9edf6;
+    --border:rgba(30,41,59,.08);
+    --border-strong:rgba(30,41,59,.16);
+    --text:#1c2333;
+    --text-dim:#5b6478;
+    --text-faint:#8f99b3;
     --accent:#7c5cff;
     --accent-2:#22d3ee;
     --accent-3:#ff3ec9;
-    --accent-soft:rgba(124,92,255,.18);
+    --accent-soft:rgba(124,92,255,.13)
+;
     --accent-gradient:linear-gradient(135deg,#7c5cff 0%,#22d3ee 100%);
-    --good:#00e6a8;
-    --good-soft:rgba(0,230,168,.15);
-    --warn:#ffb020;
-    --warn-soft:rgba(255,176,32,.15);
-    --crit:#ff3b5c;
-    --crit-soft:rgba(255,59,92,.16);
-    --info:#3ecbff;
-    --info-soft:rgba(62,203,255,.15);
-    --glow-accent:0 0 26px rgba(124,92,255,.4);
-    --glow-good:0 0 18px rgba(0,230,168,.45);
-    --glow-warn:0 0 18px rgba(255,176,32,.4);
-    --glow-crit:0 0 18px rgba(255,59,92,.45);
+    --good:#00b087;
+    --good-soft:rgba(0,176,135,.13);
+    --warn:#e6960f;
+    --warn-soft:rgba(230,150,15,.14);
+    --crit:#ef3b5c;
+    --crit-soft:rgba(239,59,92,.13);
+    --info:#0ea5e9;
+    --info-soft:rgba(14,165,233,.13);
+    --glow-accent:0 8px 22px rgba(124,92,255,.22);
+    --glow-good:0 8px 20px rgba(0,176,135,.22);
+    --glow-warn:0 8px 20px rgba(230,150,15,.22);
+    --glow-crit:0 8px 20px rgba(239,59,92,.22);
     --font-ui:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
     --font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular',monospace;
     --radius:14px;
     --radius-sm:9px;
     --sidebar-w:228px;
     --topbar-h:64px;
-    color-scheme:dark;
+    --sidebar-bg:#101d38;
+    --sidebar-text:#ffffff;
+    --sidebar-text-dim:rgba(255,255,255,.75);
+    --sidebar-text-faint:rgba(255,255,255,.5);
+    --sidebar-hover:rgba(255,255,255,.10);
+    --sidebar-border:rgba(255,255,255,.14);
+    color-scheme:light;
   }
   *,*::before,*::after{box-sizing:border-box}
   html,body{height:100%}
@@ -49,9 +56,9 @@
     font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
     padding-left:16px;padding-right:16px;
     background:
-      radial-gradient(circle at 12% -8%, rgba(124,92,255,.30), transparent 42%),
-      radial-gradient(circle at 92% 8%, rgba(34,211,238,.22), transparent 38%),
-      radial-gradient(circle at 60% 105%, rgba(255,62,201,.16), transparent 48%),
+      radial-gradient(circle at 12% -8%, rgba(124,92,255,.07), transparent 42%),
+      radial-gradient(circle at 92% 8%, rgba(34,211,238,.06), transparent 38%),
+      radial-gradient(circle at 60% 105%, rgba(255,62,201,.04), transparent 48%),
       var(--bg);
     background-attachment:fixed;
     min-height:100vh;
@@ -77,31 +84,41 @@
     min-height:100%;
   }
   .sidebar{
-    grid-area:sidebar;background:var(--bg-elevated);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-right:1px solid var(--border);
+    grid-area:sidebar;background:var(--sidebar-bg);border-right:1px solid var(--sidebar-border);
     display:flex;flex-direction:column;padding:18px 12px;gap:4px;position:sticky;top:0;height:100vh;
   }
-  .brand{display:flex;align-items:center;gap:10px;padding:6px 10px 20px;}
-  .brand-mark{width:32px;height:32px;border-radius:9px;background:var(--accent-gradient);display:flex;align-items:center;justify-content:center;flex:none;box-shadow:var(--glow-accent),0 0 0 1px rgba(255,255,255,.12) inset}
-  .brand-text b{background:var(--accent-gradient);-webkit-background-clip:text;background-clip:text;color:transparent}
-  .brand-mark svg{width:18px;height:18px;stroke:#fff}
-  .brand-text{display:flex;flex-direction:column;line-height:1.15}
-  .brand-text b{font-size:15.5px;letter-spacing:.2px}
-  .brand-text span{font-size:11px;color:var(--text-faint)}
-  .nav-group-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-faint);padding:14px 12px 6px}
+  .brand{display:flex;align-items:center;gap:12px;padding:6px 10px 22px;}
+  .brand-mark{width:42px;height:42px;border-radius:11px;background:#fff;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.4) inset}
+  .brand-text b{color:var(--sidebar-text)}
+  .brand-mark svg{width:24px;height:24px;stroke:var(--sidebar-bg)}
+  .brand-text{display:flex;flex-direction:column;line-height:1.2}
+  .brand-text b{font-size:19px;letter-spacing:.2px}
+  .brand-text span{font-size:12.5px;color:var(--sidebar-text-faint)}
+  .nav-group-label{
+    font-size:14px;font-weight:700;letter-spacing:.02em;color:var(--sidebar-text);padding:14px 10px 8px;
+    display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;
+    background:none;border:none;width:100%;text-align:left;font-family:inherit;
+  }
+  .nav-group-label:hover{color:var(--sidebar-text)}
+  .nav-group-label .chev{width:15px;height:15px;flex:none;stroke:var(--sidebar-text-faint);transition:transform .2s}
+  .nav-group-label.collapsed .chev{transform:rotate(-90deg)}
+  .nav-group-wrap{display:grid;grid-template-rows:1fr;transition:grid-template-rows .22s ease}
+  .nav-group-wrap.collapsed{grid-template-rows:0fr}
+  .nav-group-inner{overflow:hidden;display:flex;flex-direction:column;gap:4px;min-height:0}
   .nav-item{
     display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:var(--radius-sm);
-    color:var(--text-dim);text-decoration:none;font-size:13.5px;font-weight:500;border:1px solid transparent;
+    color:var(--sidebar-text-dim);text-decoration:none;font-size:13.5px;font-weight:600;border:1px solid transparent;
     background:transparent;width:100%;text-align:left;
   }
   .nav-item svg{width:17px;height:17px;flex:none;stroke:currentColor}
   .nav-item{transition:background .15s,box-shadow .15s,border-color .15s}
-  .nav-item:hover{background:var(--surface-hover);color:var(--text)}
-  .nav-item.active{background:linear-gradient(135deg,rgba(124,92,255,.28),rgba(34,211,238,.14));color:#fff;border-color:rgba(124,92,255,.5);box-shadow:0 2px 18px rgba(124,92,255,.25)}
-  .nav-item .count{margin-left:auto;font-size:11px;font-family:var(--font-mono);color:var(--text-faint);background:var(--surface-2);padding:1px 6px;border-radius:20px}
-  .nav-item.active .count{color:var(--accent-2)}
-  .sidebar-foot{margin-top:auto;padding:12px 10px 2px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px}
-  .sidebar-foot .row{display:flex;justify-content:space-between;font-size:11px;color:var(--text-faint)}
-  .sidebar-foot .row b{color:var(--text-dim);font-family:var(--font-mono)}
+  .nav-item:hover{background:var(--sidebar-hover);color:var(--sidebar-text)}
+  .nav-item.active{background:#ffffff;color:var(--sidebar-bg);border-color:transparent;box-shadow:0 6px 16px rgba(0,0,0,.18);font-weight:700}
+  .nav-item .count{margin-left:auto;font-size:11px;font-family:var(--font-mono);color:var(--sidebar-text-faint);background:rgba(255,255,255,.12);padding:1px 6px;border-radius:20px}
+  .nav-item.active .count{color:var(--sidebar-bg);background:var(--surface-2)}
+  .sidebar-foot{margin-top:auto;padding:12px 10px 2px;border-top:1px solid var(--sidebar-border);display:flex;flex-direction:column;gap:6px}
+  .sidebar-foot .row{display:flex;justify-content:space-between;font-size:11px;color:var(--sidebar-text-faint)}
+  .sidebar-foot .row b{color:var(--sidebar-text-dim);font-family:var(--font-mono)}
 
   .topbar{
     grid-area:topbar;background:var(--bg-elevated);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-bottom:1px solid var(--border);
@@ -132,9 +149,17 @@
   @keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
   /* ---------- reusable ---------- */
-  .card{background:var(--surface);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;transition:border-color .18s,box-shadow .18s;position:relative}
-  .card:hover{border-color:var(--border-strong);box-shadow:0 10px 34px rgba(124,92,255,.10)}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;transition:border-color .18s,box-shadow .18s;position:relative;box-shadow:0 1px 2px rgba(30,41,59,.04),0 6px 20px rgba(30,41,59,.05)}
+  .card:hover{border-color:var(--border-strong);box-shadow:0 10px 28px rgba(124,92,255,.14)}
   .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}
+  .card-head.collapsible{cursor:pointer;user-select:none;align-items:center}
+  .card-head.collapsible h3{font-size:17px}
+  .card-head.collapsible .sub{font-size:12.5px}
+  .card-head.collapsible .chev{width:15px;height:15px;flex:none;stroke:var(--text-faint);transition:transform .2s}
+  .card-head.collapsible.collapsed .chev{transform:rotate(-90deg)}
+  .collapse-wrap{display:grid;grid-template-rows:1fr;transition:grid-template-rows .22s ease}
+  .collapse-wrap.collapsed{grid-template-rows:0fr}
+  .collapse-inner{overflow:hidden;min-height:0}
   .card-head h3{font-size:13.5px;font-weight:600}
   .card-head .sub{font-size:11px;color:var(--text-faint)}
   .grid{display:grid;gap:16px}
@@ -192,7 +217,7 @@
   .gauge-row .g-item > span{font-size:11px;color:var(--text-faint)}
 
   .chip-btn{background:var(--surface-2);border:1px solid var(--border);color:var(--text-dim);font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:20px;transition:all .15s}
-  .chip-btn.active{background:linear-gradient(135deg,rgba(124,92,255,.3),rgba(34,211,238,.16));color:#fff;border-color:rgba(124,92,255,.5);box-shadow:0 0 14px rgba(124,92,255,.2)}
+  .chip-btn.active{background:var(--accent-gradient);color:#fff;border-color:transparent;box-shadow:0 4px 14px rgba(124,92,255,.3)}
   .chip-row{display:flex;gap:8px;flex-wrap:wrap}
 
   .search-box{display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:20px;padding:6px 12px;min-width:220px;transition:border-color .15s,box-shadow .15s}
@@ -268,11 +293,20 @@
   /* ---------- drawer ---------- */
   .overlay{position:fixed;inset:0;background:rgba(4,7,14,.6);backdrop-filter:blur(2px);z-index:50;opacity:0;pointer-events:none;transition:opacity .18s}
   .overlay.show{opacity:1;pointer-events:auto}
-  .drawer{
-    position:fixed;top:0;right:0;height:100%;width:min(480px,100vw);background:var(--bg-elevated);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-left:1px solid var(--border);
-    z-index:51;transform:translateX(100%);transition:transform .22s ease;display:flex;flex-direction:column;box-shadow:-30px 0 70px rgba(0,0,0,.4);
+
+  /* ---------- device-edit form, popped into a centered modal while editing ---------- */
+  #reg-edit-overlay{position:fixed;inset:0;background:rgba(4,7,14,.55);backdrop-filter:blur(2px);z-index:55;opacity:0;pointer-events:none;transition:opacity .18s}
+  #reg-edit-overlay.show{opacity:1;pointer-events:auto}
+  .card.modal-mode{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:56;
+    width:min(820px,94vw);max-height:90vh;overflow-y:auto;box-shadow:0 30px 70px rgba(0,0,0,.35);
   }
-  .drawer.show{transform:translateX(0)}
+  .drawer{
+    position:fixed;top:50%;left:50%;height:min(860px,92vh);width:min(820px,94vw);background:var(--bg-elevated);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--border);
+    z-index:51;transform:translate(-50%,-50%) scale(.96);opacity:0;transition:transform .2s ease,opacity .18s ease;display:flex;flex-direction:column;box-shadow:0 30px 70px rgba(0,0,0,.35);
+    border-radius:var(--radius);pointer-events:none;overflow:hidden;
+  }
+  .drawer.show{transform:translate(-50%,-50%) scale(1);opacity:1;pointer-events:auto}
   .drawer-head{display:flex;align-items:flex-start;justify-content:space-between;padding:20px 20px 14px;border-bottom:1px solid var(--border)}
   .drawer-head h2{font-size:16px;font-weight:700;font-family:var(--font-mono)}
   .drawer-head .role{font-size:11.5px;color:var(--text-faint);margin-top:3px}
@@ -353,7 +387,8 @@
       <div class="brand-text"><b>InfraSight</b><span>통합 인프라 관제</span></div>
     </div>
 
-    <div class="nav-group-label">모니터링</div>
+    <button class="nav-group-label" data-group="navgrp-monitor">모니터링<svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+    <div class="nav-group-wrap" id="navgrp-monitor"><div class="nav-group-inner">
     <button class="nav-item active" data-view="overview">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="11" width="8" height="10" rx="1.5"/><rect x="3" y="14" width="8" height="7" rx="1.5"/></svg>
       전체 현황
@@ -378,14 +413,18 @@
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M6 3v18M18 3v18M6 8h4M14 16h4M6 8a2 2 0 0 1 2-2M18 16a2 2 0 0 1-2 2"/></svg>
       전산실 설비 (FMS) <span class="count" id="nav-count-fac">-</span>
     </button>
+    </div></div>
 
-    <div class="nav-group-label">운영</div>
+    <button class="nav-group-label" data-group="navgrp-ops">운영<svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+    <div class="nav-group-wrap" id="navgrp-ops"><div class="nav-group-inner">
     <button class="nav-item" data-view="incidents">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.9 18.5A1.6 1.6 0 0 0 3.3 21h17.4a1.6 1.6 0 0 0 1.4-2.5L13.7 3.9a1.6 1.6 0 0 0-2.8 0Z"/></svg>
       이벤트 / 장애 <span class="count" id="nav-count-inc">-</span>
     </button>
+    </div></div>
 
-    <div class="nav-group-label">관리</div>
+    <button class="nav-group-label" data-group="navgrp-admin">관리<svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
+    <div class="nav-group-wrap" id="navgrp-admin"><div class="nav-group-inner">
     <button class="nav-item" data-view="register">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
       장비 등록
@@ -394,6 +433,7 @@
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.2c1.7.5 3 2.1 3 4s-1.3 3.5-3 4"/><path d="M20 20c0-2.6-1.7-4.8-4-5.6"/></svg>
       사용자 관리
     </button>
+    </div></div>
 
     <div class="sidebar-foot">
       <div class="row"><span>모니터링 대상</span><b id="foot-total">-</b></div>
@@ -507,14 +547,14 @@ function fmt0(n){ return Math.round(n).toString(); }
 function pad2(n){ return n.toString().padStart(2,'0'); }
 function levelOf(pct, warnAt, critAt){ return pct>=critAt?'crit': pct>=warnAt?'warn':'good'; }
 function levelColor(lv){ return lv==='crit'?'var(--crit)': lv==='warn'?'var(--warn)':'var(--good)'; }
-function levelColorHex(lv){ return lv==='crit'?'#ff3b5c': lv==='warn'?'#ffb020':'#00e6a8'; }
+function levelColorHex(lv){ return lv==='crit'?'#ef3b5c': lv==='warn'?'#e6960f':'#00b087'; }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function regTag(entity){ return entity.origin==='user' ? `<span class="pill info" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle">등록</span>` : ''; }
 function maintTag(entity){ return entity.maintenance && entity.maintenance.enabled ? `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--warn-soft);color:var(--warn)">점검중</span>` : ''; }
 
 Chart.defaults.font.family = "'IBM Plex Mono', monospace";
-Chart.defaults.color = '#a3aed6';
-Chart.defaults.borderColor = '#233149';
+Chart.defaults.color = '#6b7488';
+Chart.defaults.borderColor = '#e7eaf3';
 
 /* ================= auth ================= */
 let CSRF_TOKEN = null;
@@ -638,6 +678,15 @@ async function registerDevice(category, mode, name, ip, fields){
 async function unregisterDevice(id){
   await apiFetch('/api/devices/'+id, {method:'DELETE'});
 }
+async function updateDevice(id, name, ip, fields){
+  const r = await apiFetch('/api/devices/'+id, {
+    method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, ip, fields}),
+  });
+  const j = await r.json();
+  if(!r.ok) throw new Error(j.error||'수정 실패');
+  return j;
+}
 async function ackIncident(id){
   await apiFetch('/api/incidents/'+id+'/ack', {method:'POST'});
 }
@@ -700,11 +749,11 @@ function lineChart(canvas, labels, series, opts){
     options:{
       responsive:true, maintainAspectRatio:false, animation:false,
       interaction:{intersect:false,mode:'index'},
-      plugins:{ legend:{display: series.length>1, labels:{boxWidth:8,boxHeight:8,color:'#a3aed6',font:{size:10.5}}},
-        tooltip:{backgroundColor:'#12142a', borderColor:'#3a3f6e', borderWidth:1, titleFont:{size:10.5}, bodyFont:{size:10.5}} },
+      plugins:{ legend:{display: series.length>1, labels:{boxWidth:8,boxHeight:8,color:'#5b6478',font:{size:10.5}}},
+        tooltip:{backgroundColor:'#ffffff', borderColor:'#e2e6f0', borderWidth:1, titleColor:'#1c2333', bodyColor:'#1c2333', titleFont:{size:10.5}, bodyFont:{size:10.5}, boxPadding:4} },
       scales:{
-        x:{display:!!opts?.showX, grid:{color:'#1b1e3d'}, ticks:{color:'#6b74a0',font:{size:9.5},maxTicksLimit:6}},
-        y:{ display:true, grid:{color:'#1b1e3d'}, ticks:{color:'#6b74a0',font:{size:9.5}}, suggestedMax:opts?.max, suggestedMin:0 },
+        x:{display:!!opts?.showX, grid:{color:'#eef1f7'}, ticks:{color:'#8792a8',font:{size:9.5},maxTicksLimit:6}},
+        y:{ display:true, grid:{color:'#eef1f7'}, ticks:{color:'#8792a8',font:{size:9.5}}, suggestedMax:opts?.max, suggestedMin:0 },
       }
     }
   });
@@ -715,8 +764,8 @@ function barChart(canvas, labels, data, colors){
     data:{ labels, datasets:[{data, backgroundColor:colors, borderRadius:5, maxBarThickness:26}] },
     options:{
       indexAxis:'y', responsive:true, maintainAspectRatio:false, animation:false,
-      plugins:{legend:{display:false}, tooltip:{backgroundColor:'#12142a',borderColor:'#3a3f6e',borderWidth:1}},
-      scales:{ x:{max:100, grid:{color:'#1b1e3d'}, ticks:{color:'#6b74a0',font:{size:9.5}}}, y:{grid:{display:false}, ticks:{color:'#a3aed6',font:{size:10.5,family:"'IBM Plex Mono'"}}} }
+      plugins:{legend:{display:false}, tooltip:{backgroundColor:'#ffffff',borderColor:'#e2e6f0',borderWidth:1,titleColor:'#1c2333',bodyColor:'#1c2333'}},
+      scales:{ x:{max:100, grid:{color:'#eef1f7'}, ticks:{color:'#8792a8',font:{size:9.5}}}, y:{grid:{display:false}, ticks:{color:'#5b6478',font:{size:10.5,family:"'IBM Plex Mono'"}}} }
     }
   });
 }
@@ -849,7 +898,7 @@ function renderTopologySkeleton(){
   const linksSvg = TOPO_LINKS.map(([a,b],i)=>{
     const na=TOPO_NODES.find(n=>n.id===a), nb=TOPO_NODES.find(n=>n.id===b);
     if(!na||!nb) return '';
-    return `<line data-link="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="#3a3f6e" stroke-width="2"/>`;
+    return `<line data-link="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="#c7cede" stroke-width="2"/>`;
   }).join('');
   const nodesHtml = TOPO_NODES.map(n=>`
     <div class="topo-node" data-node="${n.id}" style="left:${n.x}px;top:${n.y}px">
@@ -934,8 +983,8 @@ function refreshTopology(){
     const entA = na && na.ref ? findEntity(na.ref) : null;
     const line = document.querySelector(`line[data-link="${i}"]`);
     if(!line) return;
-    let color = '#3a3f6e', width=2;
-    if(entA && entA.status){ color = entA.status==='crit'?'#ff3b5c':entA.status==='warn'?'#ffb020':'#3d4570'; width = entA.status==='good'?2:2.6; }
+    let color = '#c7cede', width=2;
+    if(entA && entA.status){ color = entA.status==='crit'?'#ef3b5c':entA.status==='warn'?'#e6960f':'#9fb0d8'; width = entA.status==='good'?2:2.6; }
     line.setAttribute('stroke', color); line.setAttribute('stroke-width', width);
   });
 }
@@ -1228,13 +1277,18 @@ function renderIncidents(){
 }
 
 /* ================= REGISTER ================= */
-let regCategory = 'server', regMode = 'agent';
+let regCategory = 'server', regMode = 'agent', editingDeviceId = null;
 function renderRegisterSkeleton(){
   const el = $('#view-register');
   el.innerHTML = `
+    <div id="reg-edit-overlay"></div>
     <div class="grid grid-3">
-      <div class="card grid-span2">
-        <div class="card-head"><div><h3>새 장비 등록</h3><span class="sub">Agent는 실측 전체 지표, Ping은 도달성, SNMP는 장치 정보와 인터페이스 트래픽까지 실측합니다</span></div></div>
+      <div class="card grid-span2" id="reg-form-card">
+        <div class="card-head"><div><h3 id="reg-form-title">새 장비 등록</h3><span class="sub" id="reg-form-sub">Agent는 실측 전체 지표, Ping은 도달성, SNMP는 장치 정보와 인터페이스 트래픽까지 실측합니다</span></div></div>
+        <div id="edit-mode-banner" style="display:none;align-items:center;gap:10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:12px;font-size:12.5px;color:var(--text)">
+          <span>✎ <b id="edit-mode-name"></b> 수정 중 — 종류/수집방식은 변경할 수 없습니다</span>
+          <button type="button" id="edit-cancel-btn" class="btn" style="margin-left:auto">취소</button>
+        </div>
         <div class="chip-row" id="reg-cat-chips" style="margin-bottom:12px">
           <button type="button" class="chip-btn active" data-cat="server">서버 (SMS)</button>
           <button type="button" class="chip-btn" data-cat="db">데이터베이스 (DBMS)</button>
@@ -1280,8 +1334,8 @@ function renderRegisterSkeleton(){
 
           <div id="agent-command-box" class="card" style="display:none;margin-top:16px;background:var(--surface-2);border-style:dashed">
             <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px">등록 완료. <b>해당 PC</b>에서 설치 파일을 받아 더블클릭하면 끝입니다 — 서버 주소나 토큰을 직접 입력할 필요가 없습니다.</div>
-            <a id="agent-installer-link" href="#" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">⬇ 설치 파일 다운로드 (InfraSight-Install.bat)</a>
-            <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;line-height:1.5">받은 파일을 더블클릭하면 프로그램 다운로드 → 설정 → 자동 시작 등록까지 자동으로 끝나고, 바로 모니터링이 시작됩니다. Windows가 "알 수 없는 게시자" 경고를 띄우면 "추가 정보 → 실행"을 눌러주세요 (우리가 직접 만든 사설 도구라 나오는 정상적인 경고입니다).</p>
+            <a id="agent-installer-link" href="#" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">⬇ 설치 파일 다운로드 (InfraSight-Install.exe)</a>
+            <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;line-height:1.5">받은 파일을 <b>해당 PC</b>에서 더블클릭하면 설정 → 자동 시작 등록 → 모니터링 시작까지 한 번에 끝납니다. Windows가 "알 수 없는 게시자" 경고를 띄우면 "추가 정보 → 실행"을 눌러주세요 (우리가 직접 만든 사설 도구라 나오는 정상적인 경고입니다).</p>
             <details style="margin-top:12px">
               <summary style="cursor:pointer;font-size:11px;color:var(--text-faint)">수동 설치 (고급 / 직접 명령 실행)</summary>
               <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">
@@ -1296,7 +1350,7 @@ function renderRegisterSkeleton(){
 
           <div class="form-actions">
             <span id="reg-error" style="color:var(--crit);font-size:11.5px"></span>
-            <button type="submit" class="btn primary">장비 등록</button>
+            <button type="submit" class="btn primary" id="reg-submit-btn">장비 등록</button>
           </div>
         </form>
       </div>
@@ -1313,11 +1367,43 @@ function renderRegisterSkeleton(){
     </div>
 
     <div class="card">
-      <div class="card-head"><div><h3>등록된 장비 목록</h3><span class="sub" id="reg-count-sub">-</span></div></div>
-      <div class="table-wrap"><table class="data">
-        <thead><tr><th>영역</th><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
-        <tbody id="reg-tbody"></tbody>
+      <div class="card-head" style="font-size:17px"><h3 style="font-size:1em">등록된 장비 목록</h3><span class="sub" id="reg-count-sub" style="font-size:.75em">-</span></div>
+    </div>
+    <div class="card">
+      <div class="card-head collapsible" data-collapse="reg-collapse-server"><div><h3>서버 (SMS)</h3><span class="sub" id="reg-count-server">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+      <div class="collapse-wrap" id="reg-collapse-server"><div class="collapse-inner">
+      <div class="table-wrap" style="margin-top:12px"><table class="data">
+        <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
+        <tbody id="reg-tbody-server"></tbody>
       </table></div>
+      </div></div>
+    </div>
+    <div class="card">
+      <div class="card-head collapsible" data-collapse="reg-collapse-db"><div><h3>데이터베이스 (DBMS)</h3><span class="sub" id="reg-count-db">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+      <div class="collapse-wrap" id="reg-collapse-db"><div class="collapse-inner">
+      <div class="table-wrap" style="margin-top:12px"><table class="data">
+        <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
+        <tbody id="reg-tbody-db"></tbody>
+      </table></div>
+      </div></div>
+    </div>
+    <div class="card">
+      <div class="card-head collapsible" data-collapse="reg-collapse-net"><div><h3>네트워크 (NMS)</h3><span class="sub" id="reg-count-net">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+      <div class="collapse-wrap" id="reg-collapse-net"><div class="collapse-inner">
+      <div class="table-wrap" style="margin-top:12px"><table class="data">
+        <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
+        <tbody id="reg-tbody-net"></tbody>
+      </table></div>
+      </div></div>
+    </div>
+    <div class="card">
+      <div class="card-head collapsible" data-collapse="reg-collapse-fac"><div><h3>전산실 설비 (FMS)</h3><span class="sub" id="reg-count-fac">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+      <div class="collapse-wrap" id="reg-collapse-fac"><div class="collapse-inner">
+      <div class="table-wrap" style="margin-top:12px"><table class="data">
+        <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
+        <tbody id="reg-tbody-fac"></tbody>
+      </table></div>
+      </div></div>
     </div>
   `;
 
@@ -1342,6 +1428,62 @@ function renderRegisterSkeleton(){
   });
   updateFormVisibility();
 
+  $$('.card-head.collapsible').forEach(head=>{
+    head.addEventListener('click', ()=>{
+      const wrap = document.getElementById(head.dataset.collapse);
+      const collapsed = !head.classList.contains('collapsed');
+      head.classList.toggle('collapsed', collapsed);
+      if(wrap) wrap.classList.toggle('collapsed', collapsed);
+    });
+  });
+
+  function exitEditMode(){
+    editingDeviceId = null;
+    $('#reg-form-title').textContent = '새 장비 등록';
+    $('#reg-form-sub').textContent = 'Agent는 실측 전체 지표, Ping은 도달성, SNMP는 장치 정보와 인터페이스 트래픽까지 실측합니다';
+    $('#edit-mode-banner').style.display = 'none';
+    $('#reg-cat-chips').style.display = '';
+    $('#reg-mode-chips').style.display = '';
+    $('#reg-submit-btn').textContent = '장비 등록';
+    $('#f-snmp-community').placeholder = 'public';
+    $('#reg-form').reset();
+    updateFormVisibility();
+    $('#reg-form-card').classList.remove('modal-mode');
+    $('#reg-edit-overlay').classList.remove('show');
+  }
+  $('#edit-cancel-btn').addEventListener('click', exitEditMode);
+  $('#reg-edit-overlay').addEventListener('click', exitEditMode);
+  window.exitRegisterEditMode = exitEditMode;
+  window.startEditDevice = function(entity, cat){
+    editingDeviceId = entity.id;
+    regCategory = cat;
+    regMode = entity.mode;
+    $$('#reg-cat-chips .chip-btn').forEach(x=> x.classList.toggle('active', x.dataset.cat===cat));
+    updateFormVisibility();
+    $('#reg-cat-chips').style.display = 'none';
+    $('#reg-mode-chips').style.display = 'none';
+    $('#reg-form-title').textContent = '장비 수정';
+    $('#reg-form-sub').textContent = `"${entity.name}" 정보를 수정합니다`;
+    $('#edit-mode-name').textContent = entity.name;
+    $('#edit-mode-banner').style.display = 'flex';
+    $('#reg-submit-btn').textContent = '수정 완료';
+    $('#f-name').value = entity.name || '';
+    $('#f-ip').value = entity.ip || '';
+    if(cat==='server'){ $('#f-os').value = entity.os||'linux'; $('#f-role-server').value = entity.role||''; }
+    else if(cat==='db'){ $('#f-engine').value = entity.engine||'Oracle'; $('#f-role-db').value = entity.role||''; }
+    else if(cat==='net'){ $('#f-nettype').value = entity.type||'공유기'; $('#f-role-net').value = entity.role||''; }
+    else if(cat==='fac'){ $('#f-factype').value = entity.type||'UPS'; $('#f-role-fac').value = entity.role||''; }
+    if(entity.mode==='snmp'){
+      $('#f-snmp-community').value = '';
+      $('#f-snmp-community').placeholder = '변경하려면 입력 (비워두면 기존 값 유지)';
+      $('#f-snmp-version').value = entity.snmpVersion || 'v2c';
+      $('#f-snmp-port').value = entity.snmpPort || 161;
+    }
+    $('#agent-command-box').style.display = 'none';
+    $('#reg-form-card').classList.add('modal-mode');
+    $('#reg-edit-overlay').classList.add('show');
+  };
+
   $('#reg-form').addEventListener('submit', async (e)=>{
     e.preventDefault();
     const errEl = $('#reg-error');
@@ -1357,26 +1499,38 @@ function renderRegisterSkeleton(){
     else if(regCategory==='net'){ fields.type=$('#f-nettype').value; fields.role=$('#f-role-net').value.trim(); }
     else if(regCategory==='fac'){ fields.type=$('#f-factype').value; fields.role=$('#f-role-fac').value.trim(); }
     if(effMode==='snmp'){
-      fields.community = $('#f-snmp-community').value.trim() || 'public';
+      const communityInput = $('#f-snmp-community').value.trim();
+      // Editing: blank means "keep the existing secret" (it's never sent
+      // back to the client to prefill, so blank is the only way to say
+      // that). Adding: blank falls back to the common SNMP default.
+      if(communityInput || !editingDeviceId) fields.community = communityInput || 'public';
       fields.snmpVersion = $('#f-snmp-version').value;
       fields.snmpPort = parseInt($('#f-snmp-port').value)||161;
     }
 
     try{
-      const result = await registerDevice(regCategory, effMode, name, ip, fields);
-      await afterDeviceChange();
-      if(result.agentCommand){
-        $('#agent-command-text').textContent = result.agentCommand;
-        if(result.agentDownloadUrl) $('#agent-download-link').href = result.agentDownloadUrl;
-        if(result.agentInstallerUrl) $('#agent-installer-link').href = result.agentInstallerUrl;
-        $('#agent-command-box').style.display = '';
+      if(editingDeviceId){
+        await updateDevice(editingDeviceId, name, ip, fields);
+        await afterDeviceChange();
+        exitEditMode();
       } else {
-        e.target.reset();
-        $('#agent-command-box').style.display = 'none';
-        updateFormVisibility();
+        const result = await registerDevice(regCategory, effMode, name, ip, fields);
+        await afterDeviceChange();
+        if(result.agentCommand){
+          $('#agent-command-text').textContent = result.agentCommand;
+          if(result.agentDownloadUrl) $('#agent-download-link').href = result.agentDownloadUrl;
+          if(result.agentInstallerUrl) $('#agent-installer-link').href = result.agentInstallerUrl;
+          $('#agent-command-box').style.display = '';
+        } else {
+          e.target.reset();
+          $('#agent-command-box').style.display = 'none';
+          updateFormVisibility();
+        }
       }
     }catch(err){
-      errEl.textContent = err.message || '등록에 실패했습니다';
+      const msg = err.message || (editingDeviceId ? '수정에 실패했습니다' : '등록에 실패했습니다');
+      errEl.textContent = msg;
+      alert(msg);
     }
   });
 }
@@ -1389,26 +1543,37 @@ function modeLabel(e){
 function renderRegister(){
   const sub = $('#reg-count-sub');
   if(!sub) return;
-  const all = [
-    ...SERVERS.map(e=>({...e,__cat:'server'})), ...DBS.map(e=>({...e,__cat:'db'})),
-    ...NETS.map(e=>({...e,__cat:'net'})), ...FACS.map(e=>({...e,__cat:'fac'})),
+  const groups = [
+    {cat:'server', list:SERVERS, tbody:'#reg-tbody-server', countEl:'#reg-count-server'},
+    {cat:'db', list:DBS, tbody:'#reg-tbody-db', countEl:'#reg-count-db'},
+    {cat:'net', list:NETS, tbody:'#reg-tbody-net', countEl:'#reg-count-net'},
+    {cat:'fac', list:FACS, tbody:'#reg-tbody-fac', countEl:'#reg-count-fac'},
   ];
+  const all = groups.flatMap(g=>g.list);
   const userCount = all.filter(e=>e.origin==='user').length;
   sub.textContent = `총 ${all.length}대 (사용자 등록 ${userCount}건)`;
-  const catLabel = {server:'서버(SMS)',db:'DBMS',net:'NMS',fac:'FMS'};
-  $('#reg-tbody').innerHTML = all.map(e=>`
-    <tr>
-      <td><span class="pill neutral">${catLabel[e.__cat]}</span></td>
-      <td class="name">${escapeHtml(e.name)}${regTag(e)}</td>
-      <td class="mono">${modeLabel(e)}</td>
-      <td class="mono">${e.ip||'-'}</td>
-      <td><span class="pill ${e.status}"><span class="dot"></span>${statusLabel(e.status)}</span></td>
-      <td class="mono">${e.createdAt ? new Date(e.createdAt).toLocaleDateString('ko-KR') : '-'}</td>
-      <td>${e.origin==='user' ? `<button type="button" class="btn" data-del="${e.id}">삭제</button>` : ''}</td>
-    </tr>`).join('') || `<tr><td colspan="7"><div class="empty-note">등록된 장비가 없습니다. 위 양식에서 새 장비를 추가해보세요.</div></td></tr>`;
-  $$('#reg-tbody [data-del]').forEach(b=> b.addEventListener('click', async ()=>{
+  groups.forEach(g=>{
+    const groupUserCount = g.list.filter(e=>e.origin==='user').length;
+    $(g.countEl).textContent = `${g.list.length}대 (사용자 등록 ${groupUserCount}건)`;
+    $(g.tbody).innerHTML = g.list.map(e=>`
+      <tr>
+        <td class="name">${escapeHtml(e.name)}${regTag(e)}</td>
+        <td class="mono">${modeLabel(e)}</td>
+        <td class="mono">${e.ip||'-'}</td>
+        <td><span class="pill ${e.status}"><span class="dot"></span>${statusLabel(e.status)}</span></td>
+        <td class="mono">${e.createdAt ? new Date(e.createdAt).toLocaleDateString('ko-KR') : '-'}</td>
+        <td>${e.origin==='user' ? `<div style="display:flex;gap:6px"><button type="button" class="btn" data-edit="${e.id}" data-cat="${g.cat}">수정</button><button type="button" class="btn" data-del="${e.id}">삭제</button></div>` : ''}</td>
+      </tr>`).join('') || `<tr><td colspan="6"><div class="empty-note">등록된 장비가 없습니다.</div></td></tr>`;
+  });
+  const selDel = groups.map(g=> `${g.tbody} [data-del]`).join(', ');
+  const selEdit = groups.map(g=> `${g.tbody} [data-edit]`).join(', ');
+  $$(selDel).forEach(b=> b.addEventListener('click', async ()=>{
     await unregisterDevice(b.dataset.del);
     afterDeviceChange();
+  }));
+  $$(selEdit).forEach(b=> b.addEventListener('click', ()=>{
+    const entity = findEntity(b.dataset.edit);
+    if(entity) window.startEditDevice(entity, b.dataset.cat);
   }));
 }
 
@@ -1421,7 +1586,6 @@ function renderUsersSkeleton(){
       <div class="card-head"><div><h3>새 계정 추가</h3><span class="sub">아이디 / 비밀번호(8자 이상) / 역할</span></div></div>
       <form id="userAddForm" class="form-grid">
         <div class="field"><label>아이디</label><input id="u-username" required></div>
-        <div class="field"><label>비밀번호</label><input id="u-password" type="password" required minlength="8"></div>
         <div class="field"><label>역할</label>
           <select id="u-role">
             <option value="VIEWER">조회자 (VIEWER) - 읽기 전용</option>
@@ -1429,7 +1593,9 @@ function renderUsersSkeleton(){
             <option value="ADMIN">관리자 (ADMIN) - 전체 권한</option>
           </select>
         </div>
-        <div class="field" style="justify-content:flex-end;flex-direction:row;align-items:flex-end">
+        <div class="field"><label>비밀번호</label><input id="u-password" type="password" required minlength="8"></div>
+        <div class="field"><label>비밀번호 확인</label><input id="u-password2" type="password" required minlength="8"></div>
+        <div class="field" style="justify-content:flex-end;flex-direction:row;align-items:flex-end;grid-column:1/-1">
           <button type="submit" class="btn primary" style="width:100%">추가</button>
         </div>
       </form>
@@ -1448,12 +1614,14 @@ function renderUsersSkeleton(){
     $('#userAddError').textContent = '';
     const username = $('#u-username').value.trim();
     const password = $('#u-password').value;
+    const password2 = $('#u-password2').value;
     const role = $('#u-role').value;
+    if(password !== password2){ $('#userAddError').textContent = '비밀번호가 일치하지 않습니다.'; return; }
     try{
       const r = await apiFetch('/api/users', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username,password,role})});
       const j = await r.json();
       if(!r.ok) throw new Error(j.error||'추가 실패');
-      $('#u-username').value=''; $('#u-password').value='';
+      $('#u-username').value=''; $('#u-password').value=''; $('#u-password2').value='';
       renderUsers();
     }catch(err){ $('#userAddError').textContent = err.message; }
   });
@@ -1740,9 +1908,14 @@ let currentView = 'overview';
 function initSkeletons(){ Object.values(VIEWS).forEach(v=>v.skeleton()); }
 function switchView(name){
   if(!VIEWS[name]) return;
+  if(currentView==='register' && name!=='register' && editingDeviceId){
+    if(!confirm('수정을 취소할까요?')) return;
+    if(typeof window.exitRegisterEditMode==='function') window.exitRegisterEditMode();
+  }
   currentView = name;
   $$('.view').forEach(v=> v.classList.toggle('active', v.dataset.view===name));
   $$('.nav-item').forEach(b=> b.classList.toggle('active', b.dataset.view===name));
+  expandNavGroupFor(name);
   $('#pageTitle').textContent = VIEWS[name].title;
   $('#pageSub').textContent = VIEWS[name].sub;
   VIEWS[name].render();
@@ -1750,6 +1923,23 @@ function switchView(name){
   $('#sidebarScrim').classList.remove('show');
 }
 $$('.nav-item').forEach(btn=> btn.addEventListener('click', ()=> switchView(btn.dataset.view)));
+
+/* ================= collapsible nav groups ================= */
+function setNavGroupCollapsed(label, collapsed){
+  label.classList.toggle('collapsed', collapsed);
+  const wrap = document.getElementById(label.dataset.group);
+  if(wrap) wrap.classList.toggle('collapsed', collapsed);
+}
+$$('.nav-group-label').forEach(label=>{
+  label.addEventListener('click', ()=> setNavGroupCollapsed(label, !label.classList.contains('collapsed')));
+});
+function expandNavGroupFor(viewName){
+  const btn = $(`.nav-item[data-view="${viewName}"]`);
+  const wrap = btn && btn.closest('.nav-group-wrap');
+  if(!wrap) return;
+  const label = $(`.nav-group-label[data-group="${wrap.id}"]`);
+  if(label) setNavGroupCollapsed(label, false);
+}
 
 /* ================= clock ================= */
 function tickClock(){

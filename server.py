@@ -25,8 +25,9 @@ import storage
 import validation
 from applog import app_logger, safe_log_value
 from collector import state, scheduler, health, metrics
-from collector import agent_collector
+from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
+from collector import snmp_collector
 
 BASE_DIR = storage.BASE_DIR
 PORT = storage.PORT
@@ -270,7 +271,7 @@ def api_unlock_user(user_id):
 # ------------------------------------------------------------------ API --
 def serialize_device(d):
     entity = {k: v for k, v in state.LIVE.get(d['id'], {}).items() if not k.startswith('_')}
-    f = {k: v for k, v in d['fields'].items() if k not in ('community', 'snmpPort', 'snmpVersion')}
+    f = {k: v for k, v in d['fields'].items() if k != 'community'}
     base = {
         'id': d['id'], 'category': d['category'], 'name': d['name'], 'mode': d['mode'],
         'ip': d['ip'], 'origin': 'local' if d['id'] == LOCAL_ID else 'user',
@@ -321,10 +322,10 @@ def api_register_device():
     fields = body.get('fields') or {}
     if category not in ('server', 'db', 'net', 'fac') or mode not in ('agent', 'ping', 'snmp') or not name:
         return jsonify({'error': 'invalid payload'}), 400
-    # Security hardening Phase C sections 12/18: name is embedded verbatim in
-    # the generated installer .bat (title/echo lines) -- validating the
-    # character set here is what actually prevents cmd.exe injection through
-    # it, not escaping on the display side alone.
+    # Security hardening Phase C sections 12/18: name is used verbatim in a
+    # per-device installer filename and title -- validating the character set
+    # here is what actually prevents any downstream injection through it, not
+    # escaping on the display side alone.
     if not validation.is_safe_name(name):
         return jsonify({'error': '장비 이름에 사용할 수 없는 문자가 포함되어 있습니다 (특수문자 &|<>^%"\'` 등 제외, 80자 이하)'}), 400
     if mode in ('ping', 'snmp') and not ip:
@@ -342,6 +343,24 @@ def api_register_device():
     snmp_port = fields.get('snmpPort')
     if snmp_port not in (None, '') and not validation.is_valid_port(snmp_port):
         return jsonify({'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}), 400
+    if mode == 'ping':
+        # Registering a device that's already unreachable just guarantees an
+        # immediate "위험" incident with nothing anyone can do about it from
+        # here -- almost always a typo'd IP. Check reachability up front with
+        # the exact same port-or-ICMP logic the ongoing monitor uses (a DB
+        # engine's known port, or fields['port'] if the form set one -- both
+        # already validated above -- falling back to plain ping).
+        #
+        # A single attempt isn't enough: a flaky/intermittent device (weak
+        # wifi, power-saving network mode, etc.) can easily win one ping out
+        # of several tries, which let one straight through here despite it
+        # failing almost every real poll afterward. Require the majority of
+        # a few quick attempts to succeed instead of just one.
+        check_port = ping_collector.DB_PORTS.get(fields.get('engine')) if category == 'db' else port_field
+        attempts, needed = 3, 2
+        successes = sum(1 for _ in range(attempts) if ping_collector._attempt(ip, check_port or None, timeout_s=1.5)[0])
+        if successes < needed:
+            return jsonify({'error': f'"{ip}"에 연결할 수 없습니다 ({attempts}회 중 {successes}회만 응답). IP 주소를 확인해주세요. 응답이 불안정해도 꼭 등록해야 한다면 SNMP나 Agent 방식을 이용해주세요.'}), 400
     # Generic length cap on every free-text field value -- these are all
     # display-only (already HTML-escaped on the frontend) so this is just a
     # sanity bound against absurd payloads, not itself an XSS control.
@@ -359,6 +378,19 @@ def api_register_device():
     v3_priv_protocol = fields.pop('snmpv3PrivProtocol', None)
     v3_priv_password = fields.pop('snmpv3PrivPassword', None)
     vendor_profile = fields.pop('vendorProfile', None)
+    if mode == 'snmp':
+        # Same reasoning as the ping check above: one lucky reply out of a
+        # flaky device isn't good enough evidence to register on.
+        snmp_version = fields.get('snmpVersion') or 'v2c'
+        snmp_port_val = fields.get('snmpPort') or 161
+        auth_data = snmp_collector.build_auth_data_raw(
+            snmp_version, community or 'public', v3_username,
+            v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password)
+        attempts, needed = 3, 2
+        successes = sum(1 for _ in range(attempts)
+                         if snmp_collector.check_reachable(ip, auth_data, snmp_port_val, timeout=1.5))
+        if successes < needed:
+            return jsonify({'error': f'"{ip}"에서 SNMP 응답을 받지 못했습니다 ({attempts}회 중 {successes}회만 응답). Community 문자열/버전/포트를 확인해주세요. 응답이 없어도 꼭 등록해야 한다면 Ping이나 Agent 방식을 이용해주세요.'}), 400
     device_id = uuid.uuid4().hex[:10]
     token = secrets.token_hex(16) if mode == 'agent' else None
     conn = storage.get_db()
@@ -394,10 +426,77 @@ def api_register_device():
     if token:
         lan_ip = storage.get_lan_ip()
         resp['token'] = token
-        resp['agentDownloadUrl'] = f"http://{lan_ip}:{PORT}/download/agent"
-        resp['agentInstallerUrl'] = f"http://{lan_ip}:{PORT}/download/installer/{token}"
+        # Relative, not absolute-http -- the dashboard may now be loaded over
+        # https://...:8443 via the Phase E Caddy proxy, and a browser blocks
+        # (or silently drops) a download link that points at a plain-http
+        # origin from an https page ("insecure download" blocking). A
+        # relative URL resolves against whatever origin the browser is
+        # actually on -- https:8443 through Caddy, or http:5057 direct --
+        # and Caddy forwards /download/* to this same backend either way.
+        resp['agentDownloadUrl'] = '/download/agent'
+        resp['agentInstallerUrl'] = f'/download/installer/{token}'
+        # Unaffected by the above: this is the address the agent *process*
+        # itself connects back to (a plain HTTP client, not a browser), so
+        # it must stay the direct backend host:port, not a relative path.
         resp['agentCommand'] = f"InfraSightAgent.exe --server http://{lan_ip}:{PORT} --token {token} --install-startup"
     return jsonify(resp)
+
+
+@app.put('/api/devices/<device_id>')
+@require_role('ADMIN')
+def api_update_device(device_id):
+    device_row = storage.load_device(device_id)
+    if not device_row or device_id == LOCAL_ID:
+        return jsonify({'error': 'device not found'}), 404
+    body = request.get_json(force=True)
+    name = (body.get('name') or '').strip()
+    ip = (body.get('ip') or '').strip() or None
+    fields = body.get('fields') or {}
+    mode = device_row['mode']  # category/mode are fixed at registration time -- not editable here
+    if not name:
+        return jsonify({'error': 'invalid payload'}), 400
+    if not validation.is_safe_name(name):
+        return jsonify({'error': '장비 이름에 사용할 수 없는 문자가 포함되어 있습니다 (특수문자 &|<>^%"\'` 등 제외, 80자 이하)'}), 400
+    if mode in ('ping', 'snmp') and not ip:
+        return jsonify({'error': 'ip required for this mode'}), 400
+    if ip and not validation.is_valid_host(ip):
+        return jsonify({'error': 'IP 주소 또는 호스트명 형식이 올바르지 않습니다'}), 400
+    snmp_port = fields.get('snmpPort')
+    if snmp_port not in (None, '') and not validation.is_valid_port(snmp_port):
+        return jsonify({'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}), 400
+    for k, v in list(fields.items()):
+        if isinstance(v, str) and len(v) > 200:
+            fields[k] = v[:200]
+    # Credential fields are never sent back to the client on load (see
+    # api_agent_info / the register endpoint's own comments), so an edit
+    # form always starts these blank. Only overwrite the stored secret when
+    # the admin actually typed a new value here -- an empty submission means
+    # "leave it as-is", not "erase it".
+    community = fields.pop('community', None)
+    v3_username = fields.pop('snmpv3Username', None)
+    v3_auth_protocol = fields.pop('snmpv3AuthProtocol', None)
+    v3_auth_password = fields.pop('snmpv3AuthPassword', None)
+    v3_priv_protocol = fields.pop('snmpv3PrivProtocol', None)
+    v3_priv_password = fields.pop('snmpv3PrivPassword', None)
+    conn = storage.get_db()
+    conn.execute('UPDATE devices SET name=?, ip=?, fields=? WHERE id=?',
+                 (name, ip, json.dumps(fields), device_id))
+    conn.commit()
+    conn.close()
+    if community:
+        storage.set_credential(device_id, 'snmp_community', community)
+    if v3_username:
+        storage.set_credential(device_id, 'snmpv3_username', v3_username)
+    if v3_auth_protocol:
+        storage.set_credential(device_id, 'snmpv3_auth_protocol', v3_auth_protocol)
+    if v3_auth_password:
+        storage.set_credential(device_id, 'snmpv3_auth_password', v3_auth_password)
+    if v3_priv_protocol:
+        storage.set_credential(device_id, 'snmpv3_priv_protocol', v3_priv_protocol)
+    if v3_priv_password:
+        storage.set_credential(device_id, 'snmpv3_priv_password', v3_priv_password)
+    audit('UPDATE_DEVICE', target=device_id, details=name)
+    return jsonify({'ok': True, 'id': device_id})
 
 
 @app.delete('/api/devices/<device_id>')
@@ -500,7 +599,10 @@ def api_reissue_token(device_id):
     lan_ip = storage.get_lan_ip()
     return jsonify({
         'token': new_token,
-        'agentInstallerUrl': f"http://{lan_ip}:{PORT}/download/installer/{new_token}",
+        # See the matching comment in api_register_device: relative so it
+        # resolves against whatever origin (https:8443 via Caddy, or
+        # http:5057 direct) the browser making this request is actually on.
+        'agentInstallerUrl': f'/download/installer/{new_token}',
         'agentCommand': f"InfraSightAgent.exe --server http://{lan_ip}:{PORT} --token {new_token} --install-startup",
     })
 
@@ -637,59 +739,29 @@ def download_agent():
     return send_from_directory(BASE_DIR, 'agent.py', as_attachment=True)
 
 
+# Keep the marker in sync with agent.py's EMBEDDED_CONFIG_MARKER. Appending
+# bytes after the exe's own PE image doesn't corrupt it (Windows only reads
+# up to where the executable's real sections end), so this single download
+# is both a fully working InfraSightAgent.exe *and* carries this one device's
+# server URL + token -- no separate .bat wrapper, no curl step, no typed
+# command. agent.py looks for this marker in its own file on first run.
+_AGENT_CONFIG_MARKER = b'\n===INFRASIGHT_CONFIG===\n'
+
+
 @app.get('/download/installer/<token>')
 def download_installer(token):
     device_row = storage.find_device_by_token(token)
     if not device_row:
         return jsonify({'error': 'invalid or expired token'}), 404
+    exe_path = _agent_exe_path()
+    if not os.path.exists(exe_path):
+        return jsonify({'error': '에이전트 실행 파일이 서버에 없습니다. 관리자에게 문의하세요.'}), 500
     server_url = f"http://{storage.get_lan_ip()}:{PORT}"
-    device_name = device_row['name']
-    # Defense in depth on top of the registration-time check in
-    # api_register_device: this name is about to be embedded verbatim into a
-    # generated .bat (title/echo lines). A device registered before this
-    # validation existed could still have an unsafe name sitting in the DB,
-    # so re-check here rather than trusting the stored value.
-    if not validation.is_safe_name(device_name):
-        return jsonify({'error': '이 장비 이름에는 설치 스크립트에 안전하게 포함할 수 없는 문자가 있습니다. 장비를 다시 등록해주세요.'}), 400
-    exe_hash = _agent_exe_sha256()
-    # A single double-click: downloads the real agent exe, then runs it once
-    # with the server+token already filled in (--install-startup also sets up
-    # auto-start), so the person never has to type anything by hand.
-    # chcp 65001 + a UTF-8 BOM keep the Korean text below from being misread
-    # as the system ANSI codepage, which otherwise corrupts cmd's own parsing
-    # of later lines (garbled multi-byte text can look like stray quotes/operators).
-    lines = [
-        '@echo off',
-        'chcp 65001 >nul',
-        f'title InfraSight Agent Install - {device_name}',
-        'setlocal',
-        'set INSTALL_DIR=%LOCALAPPDATA%\\InfraSightAgent',
-        'if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%" >nul 2>&1',
-        'echo.',
-        f'echo InfraSight 에이전트를 설치합니다 ({device_name})...',
-        'echo.',
-        f'curl -L -o "%INSTALL_DIR%\\InfraSightAgent.exe" "{server_url}/download/agent"',
-        'if not exist "%INSTALL_DIR%\\InfraSightAgent.exe" (',
-        '  echo.',
-        '  echo 다운로드에 실패했습니다. 인터넷 연결과 서버 주소를 확인해주세요.',
-        '  pause',
-        '  exit /b 1',
-        ')',
-    ] + ([f'echo 참고: 서버가 서명한 SHA-256 = {exe_hash}'] if exe_hash else []) + [
-        'echo.',
-        'echo 설정 중...',
-        f'"%INSTALL_DIR%\\InfraSightAgent.exe" --server "{server_url}" --token "{token}" --install-startup --setup-only',
-        'echo.',
-        'echo 모니터링을 시작합니다...',
-        'start "" /min "%INSTALL_DIR%\\InfraSightAgent.exe"',
-        'echo.',
-        'echo 설치가 완료되었습니다! 잠시 후 이 창은 자동으로 닫힙니다.',
-        'ping -n 4 127.0.0.1 >nul',
-        '',
-    ]
-    script = '﻿' + '\r\n'.join(lines)
-    resp = Response(script, mimetype='text/plain; charset=utf-8')
-    resp.headers['Content-Disposition'] = 'attachment; filename="InfraSight-Install.bat"'
+    payload = json.dumps({'server': server_url, 'token': token}).encode('utf-8')
+    with open(exe_path, 'rb') as f:
+        exe_bytes = f.read()
+    resp = Response(exe_bytes + _AGENT_CONFIG_MARKER + payload, mimetype='application/octet-stream')
+    resp.headers['Content-Disposition'] = 'attachment; filename="InfraSight-Install.exe"'
     return resp
 
 

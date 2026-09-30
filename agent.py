@@ -21,6 +21,8 @@ Requirements when run as a .py script (not needed for the packaged .exe):
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -28,6 +30,55 @@ import urllib.request
 import psutil
 
 IS_WINDOWS = os.name == 'nt'
+
+# Marker + JSON payload the server appends after the compiled exe's own bytes
+# when it hands out a per-device "InfraSight-Install.exe" from the dashboard's
+# device-registration screen (see server.py's /download/installer route).
+# Appending data past a PE file's real image doesn't corrupt it -- the OS
+# loader only reads up to where the executable's own sections end -- so the
+# exe still runs completely normally; this file just also knows how to look
+# for its own trailing config when frozen.
+EMBEDDED_CONFIG_MARKER = b'\n===INFRASIGHT_CONFIG===\n'
+
+
+def read_embedded_config():
+    if not getattr(sys, 'frozen', False):
+        return None
+    try:
+        with open(sys.executable, 'rb') as f:
+            data = f.read()
+        idx = data.rfind(EMBEDDED_CONFIG_MARKER)
+        if idx == -1:
+            return None
+        return json.loads(data[idx + len(EMBEDDED_CONFIG_MARKER):].decode('utf-8'))
+    except Exception:
+        return None
+
+
+def relocate_and_relaunch_if_needed():
+    """A one-click installer exe downloaded straight from the dashboard often
+    sits in Downloads/Desktop -- fine to run once, but install_startup()
+    below points the Windows auto-start entry at *this exact file path*, so
+    if the user later deletes or moves it, monitoring silently stops. Copy
+    ourselves into the same stable per-user folder the old install script
+    used, and hand off to that copy, so auto-start keeps working regardless
+    of what happens to the originally-downloaded file. Best-effort: any
+    failure here just falls back to running in place."""
+    if not IS_WINDOWS or not getattr(sys, 'frozen', False):
+        return False
+    target_dir = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'InfraSightAgent')
+    target = os.path.join(target_dir, 'InfraSightAgent.exe')
+    current = os.path.abspath(sys.executable)
+    if os.path.normcase(current) == os.path.normcase(target):
+        return False
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        shutil.copy2(current, target)
+        subprocess.Popen([target] + sys.argv[1:], creationflags=subprocess.CREATE_NO_WINDOW)
+        return True
+    except Exception as e:
+        print('[agent] 파일을 표준 위치로 복사하지 못해 현재 위치에서 계속 실행합니다:', e)
+        return False
 
 
 def config_path():
@@ -189,8 +240,14 @@ def main():
         return
 
     existing_cfg = load_config()
-    server = args.server or existing_cfg.get('server')
-    token = args.token or existing_cfg.get('token')
+    embedded_cfg = None
+    if not existing_cfg.get('server') or not existing_cfg.get('token'):
+        embedded_cfg = read_embedded_config()
+    if embedded_cfg and relocate_and_relaunch_if_needed():
+        return  # the relocated copy takes over from here; this process is done
+
+    server = args.server or existing_cfg.get('server') or (embedded_cfg or {}).get('server')
+    token = args.token or existing_cfg.get('token') or (embedded_cfg or {}).get('token')
     from_prompt = False
 
     if not server or not token:
@@ -202,10 +259,10 @@ def main():
         print('[agent] 서버 주소와 토큰이 필요합니다.')
         sys.exit(1)
 
-    if args.server or args.token or from_prompt:
+    if args.server or args.token or from_prompt or embedded_cfg:
         save_config({'server': server, 'token': token})
 
-    if args.install_startup:
+    if args.install_startup or embedded_cfg:
         install_startup()
 
     if args.setup_only:
