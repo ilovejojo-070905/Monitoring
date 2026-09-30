@@ -218,7 +218,9 @@ def sample_snmp(entity, device_row):
     storage.update_failure_state(
         device_row['id'], failures,
         None if result['reachable'] else 'SNMP_TIMEOUT',
-        now_ms if result['reachable'] else device_row.get('last_success_at'))
+        now_ms if result['reachable'] else device_row.get('last_success_at'),
+        now_ms,
+        device_row.get('last_failure_at') if result['reachable'] else now_ms)
 
     if not result['reachable']:
         entity['status'] = status

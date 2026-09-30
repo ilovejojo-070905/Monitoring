@@ -34,6 +34,24 @@ _NEW_DEVICE_COLUMNS = [
     ('consecutive_failures', 'INTEGER DEFAULT 0'),
     ('last_failure_reason', 'TEXT DEFAULT NULL'),
     ('last_success_at', 'INTEGER DEFAULT NULL'),
+    # Device status management pass: last_success_at only ever records a WIN,
+    # so there was no way to tell "never polled" from "polled once, ages ago"
+    # (both showed NULL), and no timestamp at all for *when* the current
+    # failure streak began. last_collected_at is touched on every attempt
+    # (win or lose); last_failure_at only on a loss.
+    ('last_collected_at', 'INTEGER DEFAULT NULL'),
+    ('last_failure_at', 'INTEGER DEFAULT NULL'),
+    # Agent management pass: what an agent-mode device's own process last
+    # told us about itself, on every report -- separate from the fields
+    # above (which are about whether we could reach/collect it at all).
+    ('agent_version', 'TEXT DEFAULT NULL'),
+    ('agent_os', 'TEXT DEFAULT NULL'),
+    ('agent_started_at', 'INTEGER DEFAULT NULL'),
+    # Captured server-side from the request's own peer address (via the
+    # existing _TrustedProxyFix in server.py), never from a client-supplied
+    # field -- an agent claiming its own IP can't be trusted the same way.
+    ('agent_reported_ip', 'TEXT DEFAULT NULL'),
+    ('agent_last_error', 'TEXT DEFAULT NULL'),
     # Phase 2: maintenance mode (directive section 15) -- polling keeps running
     # while a device is under maintenance, only add_incident() calls are skipped.
     ('maintenance_enabled', 'INTEGER DEFAULT 0'),
@@ -246,13 +264,94 @@ def load_device(device_id):
     return dict(row, fields=json.loads(row['fields'])) if row else None
 
 
-def update_failure_state(device_id, consecutive_failures, last_failure_reason, last_success_at):
+def update_failure_state(device_id, consecutive_failures, last_failure_reason, last_success_at,
+                          last_collected_at, last_failure_at):
+    """Called once per collection attempt (win or lose) by every sampler
+    (ping/snmp/agent/local) and by the scheduler's own except-block on an
+    unexpected collector error. last_collected_at is always "now"; the
+    other four fields are the caller's already-computed win/lose state for
+    this attempt (last_success_at/last_failure_at are each left as their
+    previous value on the *other* outcome -- callers pass the row's current
+    value through unchanged rather than this function guessing)."""
     conn = get_db()
     conn.execute(
-        'UPDATE devices SET consecutive_failures=?, last_failure_reason=?, last_success_at=? WHERE id=?',
-        (consecutive_failures, last_failure_reason, last_success_at, device_id))
+        'UPDATE devices SET consecutive_failures=?, last_failure_reason=?, last_success_at=?, '
+        'last_collected_at=?, last_failure_at=? WHERE id=?',
+        (consecutive_failures, last_failure_reason, last_success_at, last_collected_at, last_failure_at, device_id))
     conn.commit()
     conn.close()
+
+
+def update_agent_info(device_id, version, os_info, started_at, reported_ip, last_error):
+    """Persists what an agent-mode device's own process last told us about
+    itself (called from agent_collector.record_report on every incoming
+    report) -- separate from update_failure_state's reachability bookkeeping
+    above, since these describe the agent *process*, not the poll outcome."""
+    conn = get_db()
+    conn.execute(
+        'UPDATE devices SET agent_version=?, agent_os=?, agent_started_at=?, agent_reported_ip=?, agent_last_error=? '
+        'WHERE id=?',
+        (version, os_info, started_at, reported_ip, last_error, device_id))
+    conn.commit()
+    conn.close()
+
+
+# Agent management pass: the version this server can currently hand out via
+# /download/agent and /download/installer/<token> -- keep in sync with
+# agent.py's own AGENT_VERSION constant when bumping it and rebuilding
+# dist/InfraSightAgent.exe. Exposed through /api/agent/info so the frontend
+# can flag a device whose agentVersion (reported live, see above) doesn't
+# match -- the version-comparison groundwork an eventual auto-update feature
+# would need, without this pass implementing any actual update mechanism.
+AGENT_VERSION = '1.0.0'
+
+
+# Mirrors agent_collector.ONLINE_WINDOW_SEC / WARN_WINDOW_SEC. Duplicated
+# (rather than imported) because collector.agent_collector imports storage,
+# so importing it back here would be circular.
+_AGENT_ONLINE_WINDOW_SEC = 15
+_AGENT_WARN_WINDOW_SEC = 60
+
+
+def compute_collection_state(device_row, warn_at=1, crit_at=2):
+    """Derives the 5-value collection-health status (정상/주의/장애/미수집/알 수
+    없음) from persisted fields alone, so it's always consistent with what
+    the device list/drawer show and never drifts out of sync with a
+    separately-cached value.
+
+      good ('정상')     - responding normally
+      warn ('주의')     - a few consecutive misses; likely transient, not yet
+                          declared down (this is the buffer the packet-loss
+                          requirement asked for)
+      crit ('장애')     - misses have persisted past the threshold
+      nodata ('미수집') - monitoring is off, or it has never been polled yet
+      unknown ('알 수 없음') - the collector itself errored (a bug, a library
+                          crash, ...) rather than getting a clean
+                          reachable/unreachable answer
+
+    warn_at/crit_at are consecutive-failure-count thresholds for ping/snmp/
+    local; agent mode instead reuses its own existing time-window constants
+    (report freshness, not poll count) since it's push- not poll-based.
+    """
+    if not device_row.get('monitoring_enabled', 1):
+        return 'nodata'
+    reason = device_row.get('last_failure_reason') or ''
+    failures = device_row.get('consecutive_failures') or 0
+    if failures > 0 and reason.startswith('COLLECTOR_ERROR'):
+        return 'unknown'
+    if device_row.get('mode') == 'agent':
+        last_success = device_row.get('last_success_at')
+        if not last_success:
+            return 'nodata'
+        age_sec = (time.time() * 1000 - last_success) / 1000.0
+        if age_sec <= _AGENT_ONLINE_WINDOW_SEC:
+            return 'good'
+        return 'crit' if age_sec > _AGENT_WARN_WINDOW_SEC else 'warn'
+    if not device_row.get('last_collected_at'):
+        return 'nodata'
+    if failures <= 0:
+        return 'good'
+    return 'crit' if failures >= crit_at else 'warn' if failures >= warn_at else 'good'
 
 
 def add_incident(severity, source, category, message, device_id=None, event_type=None, _no_alert=False):
@@ -493,6 +592,22 @@ def delete_user(user_id):
     conn.close()
 
 
+def update_user(user_id, role=None, new_password=None):
+    """Admin-initiated edit of another account's role and/or password (the
+    account's own self-service change_password() above is separate and
+    still requires the current password). Bumps session_version on either
+    change so a role downgrade or a forced password reset can't be
+    outlived by a session someone's already holding."""
+    conn = get_db()
+    if role:
+        conn.execute('UPDATE users SET role=?, session_version=session_version+1 WHERE id=?', (role, user_id))
+    if new_password:
+        conn.execute('UPDATE users SET password_hash=?, session_version=session_version+1 WHERE id=?',
+                     (generate_password_hash(new_password, method='scrypt'), user_id))
+    conn.commit()
+    conn.close()
+
+
 def unlock_user(username):
     conn = get_db()
     conn.execute('UPDATE users SET failed_attempts=0, locked_until=NULL WHERE username=?', (username,))
@@ -720,6 +835,15 @@ def load_metric_history(device_id, metric, granularity='raw', since_ms=None, lim
         conn.close()
 
 
+# Data backup pass: the single knob for "최근 N일간 백업 유지" -- both the
+# daily scheduled job (collector/scheduler.py's _run_backup_job) and the
+# manual "지금 백업" admin button (server.py's /api/system/backup) call
+# backup_database with this instead of their own literal 14, so there's one
+# place to change the retention window rather than two that could drift out
+# of sync with each other.
+BACKUP_RETENTION_COUNT = 14
+
+
 def backup_database(backup_dir, keep=14):
     """Uses sqlite3's own backup API (not a raw file copy) so a backup taken
     while the collector thread is mid-write is still a consistent snapshot.
@@ -885,15 +1009,34 @@ def set_smtp_config(host, port, username, password=None, use_tls=True, alert_to=
         set_credential(SMTP_SYSTEM_ID, 'smtp_password', password)
 
 
+def _get_alert_channels():
+    """Every currently-configured outbound alert channel. Each entry is
+    (name, AlertChannel instance, destination, this channel's own min-severity
+    floor). Adding a new one later (Teams, Slack, ...) is: write an
+    alerts/<x>_channel.py implementing alerts.base.AlertChannel, add a
+    get_<x>_config()/set_<x>_config() pair next to get_smtp_config() above
+    for its settings, and append one line here -- _dispatch_alert itself
+    never has to change.
+
+    The web channel isn't listed here because it doesn't need dispatching:
+    every incident is already a DB row the instant add_incident() writes it,
+    and the dashboard's existing 2.2s poll (index.html's syncState) picks it
+    up and raises a toast for anything new/escalated/recovered. This list is
+    only for channels that need an explicit outbound push."""
+    channels = []
+    smtp_cfg = get_smtp_config()
+    if smtp_cfg:
+        from alerts.email_channel import EmailChannel
+        channel = EmailChannel(smtp_cfg['host'], smtp_cfg['port'], smtp_cfg['username'], smtp_cfg['password'], smtp_cfg['use_tls'])
+        channels.append(('email', channel, smtp_cfg['alert_to'], smtp_cfg['min_severity']))
+    return channels
+
+
 def _dispatch_alert(severity, source, message):
-    cfg = get_smtp_config()
-    if not cfg:
-        return
-    if _SEVERITY_RANK.get(severity, 0) < _SEVERITY_RANK.get(cfg['min_severity'], 2):
-        return
-    from alerts.email_channel import EmailChannel
-    channel = EmailChannel(cfg['host'], cfg['port'], cfg['username'], cfg['password'], cfg['use_tls'])
-    subject = f"[InfraSight] {severity.upper()} - {source}"
-    ok, err = channel.send(cfg['alert_to'], subject, message)
-    if not ok:
-        add_incident('warn', 'InfraSight', 'SYSTEM', f"이메일 알림 발송 실패: {err}", _no_alert=True)
+    for name, channel, destination, min_severity in _get_alert_channels():
+        if _SEVERITY_RANK.get(severity, 0) < _SEVERITY_RANK.get(min_severity, 2):
+            continue
+        subject = f"[InfraSight] {severity.upper()} - {source}"
+        ok, err = channel.send(destination, subject, message)
+        if not ok:
+            add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)

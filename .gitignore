@@ -9,6 +9,7 @@
 .infrasight_secret_key_backup_*
 .infrasight_credentials_key
 logs/
+run/
 backups/
 server.log
 server_phase*.log

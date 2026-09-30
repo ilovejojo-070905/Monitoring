@@ -68,6 +68,12 @@ def sample_local(entity, device_row):
     push_cap(entity['hist']['cpu'], entity['cpu'])
     push_cap(entity['hist']['mem'], entity['mem'])
     push_cap(entity['hist']['net'], round(net_in + net_out, 2))
+    # This PC is always "reachable" to itself -- there's no reachability
+    # failure mode here -- but it still needs last_collected_at/
+    # last_success_at populated, otherwise the device-status view would show
+    # "미수집" forever for the one device that's actually the most reliable.
+    now_ms = int(time.time() * 1000)
+    storage.update_failure_state(device_row['id'], 0, None, now_ms, now_ms, device_row.get('last_failure_at'))
     if storage.in_maintenance(device_row):
         return
     rank = {'good': 0, 'warn': 1, 'crit': 2}

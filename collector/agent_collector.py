@@ -39,9 +39,21 @@ def check_freshness(entity, device_row):
     if was_online and not entity['online'] and not storage.in_maintenance(device_row):
         storage.add_incident('warn', device_row['name'], 'SMS', f"{device_row['name']} 에이전트 응답 없음 (통신 두절)",
                               device_id=device_id, event_type='REACHABILITY')
+    # Bookkeeping for the 5-state collection status (연속 실패 횟수/마지막 수집
+    # 시간 등): the actual online/offline classification above is unchanged
+    # (still time-window based, since agent mode is push- not poll-based),
+    # this just records that a freshness *check* happened and what it found.
+    # A success is already recorded by record_report() when the report
+    # itself arrives, so there's nothing to do here on the online branch.
+    if not entity['online']:
+        now_ms = int(now * 1000)
+        prev_failures = device_row.get('consecutive_failures') or 0
+        storage.update_failure_state(
+            device_id, prev_failures + 1, 'AGENT_OFFLINE',
+            device_row.get('last_success_at'), now_ms, now_ms)
 
 
-def record_report(entity, device_row, body):
+def record_report(entity, device_row, body, remote_addr=None):
     cpu = float(body.get('cpu', 0)); mem = float(body.get('mem', 0)); disk = float(body.get('disk', 0))
     status = 'crit' if (cpu >= 90 or mem >= 92 or disk >= 92) else 'warn' if (cpu >= 75 or mem >= 80 or disk >= 80) else 'good'
     prev_status = entity.get('status', 'good')
@@ -56,7 +68,22 @@ def record_report(entity, device_row, body):
     push_cap(entity['hist']['net'], round(entity['netIn'] + entity['netOut'], 2))
     now = time.time()
     LAST_REPORT[device_row['id']] = now
-    storage.update_failure_state(device_row['id'], 0, None, int(now * 1000))
+    now_ms = int(now * 1000)
+    storage.update_failure_state(device_row['id'], 0, None, now_ms, now_ms, device_row.get('last_failure_at'))
+    # Agent management pass: what the agent process itself says about
+    # itself. These are display-only fields (already escaped on the
+    # frontend), but capped here regardless as a sanity bound against an
+    # absurd payload -- same convention as the free-text device fields in
+    # server.py's api_register_device.
+    started_at = body.get('startedAt')
+    storage.update_agent_info(
+        device_row['id'],
+        str(body.get('version') or '')[:40] or None,
+        str(body.get('os') or '')[:200] or None,
+        int(started_at) if isinstance(started_at, (int, float)) else None,
+        remote_addr,
+        str(body.get('lastError') or '')[:300] or None,
+    )
     if storage.in_maintenance(device_row):
         return
     if not was_online:

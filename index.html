@@ -7,8 +7,11 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
 <style>
   :root{
-    --bg:#dee9fb;
-    --bg-elevated:rgba(226,237,252,.86);
+    --bg:#101d38;
+    --bg-elevated:rgba(27,44,80,.92);
+    --chrome-text:#f2f5fc;
+    --chrome-text-dim:rgba(242,245,252,.72);
+    --chrome-text-faint:rgba(242,245,252,.5);
     --surface:#ffffff;
     --surface-2:#f1f4fa;
     --surface-hover:#e9edf6;
@@ -124,17 +127,17 @@
     grid-area:topbar;background:var(--bg-elevated);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-bottom:1px solid var(--border);
     display:flex;align-items:center;gap:18px;padding:0 22px;position:sticky;top:0;z-index:20;
   }
-  .hamburger{display:none;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:var(--radius-sm);width:34px;height:34px;align-items:center;justify-content:center}
+  .hamburger{display:none;background:none;border:1px solid var(--border);color:var(--chrome-text-dim);border-radius:var(--radius-sm);width:34px;height:34px;align-items:center;justify-content:center}
   .hamburger svg{width:18px;height:18px}
   .page-title{display:flex;flex-direction:column;gap:1px;margin-right:auto}
-  .page-title h1{font-size:16.5px;font-weight:600}
-  .page-title span{font-size:11.5px;color:var(--text-faint)}
+  .page-title h1{font-size:16.5px;font-weight:600;color:var(--chrome-text)}
+  .page-title span{font-size:11.5px;color:var(--chrome-text-faint)}
   .status-pills{display:flex;gap:8px}
   .status-pill{display:flex;align-items:center;gap:6px;font-size:12px;font-family:var(--font-mono);padding:5px 10px;border-radius:20px;background:var(--surface);border:1px solid var(--border)}
   .status-pill .dot{width:7px;height:7px;border-radius:50%}
   .clock{display:flex;flex-direction:column;align-items:flex-end;padding-left:14px;border-left:1px solid var(--border)}
-  .clock .time{font-family:var(--font-mono);font-size:14px;font-weight:600;letter-spacing:.02em}
-  .clock .date{font-size:10.5px;color:var(--text-faint)}
+  .clock .time{font-family:var(--font-mono);font-size:14px;font-weight:600;letter-spacing:.02em;color:var(--chrome-text)}
+  .clock .date{font-size:10.5px;color:var(--chrome-text-faint)}
   .live-badge{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--good);font-weight:600;letter-spacing:.03em}
   .live-dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 8px 1px rgba(0,230,168,.7);animation:pulse 1.8s infinite}
   @keyframes pulse{0%{box-shadow:0 0 8px 1px rgba(0,230,168,.7),0 0 0 0 rgba(0,230,168,.55)}70%{box-shadow:0 0 8px 1px rgba(0,230,168,.7),0 0 0 8px rgba(0,230,168,0)}100%{box-shadow:0 0 8px 1px rgba(0,230,168,.7),0 0 0 0 rgba(0,230,168,0)}}
@@ -195,7 +198,7 @@
   .table-wrap{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border)}
   table.data{width:100%;min-width:640px;border-collapse:collapse;font-size:12.5px}
   table.data thead th{
-    text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);
+    text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--chrome-text-faint);
     background:var(--bg-elevated);padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap;position:sticky;top:0;
   }
   table.data tbody td{padding:11px 14px;border-bottom:1px solid var(--border);white-space:nowrap;color:var(--text-dim)}
@@ -206,17 +209,21 @@
   table.data tbody tr:last-child td{border-bottom:none}
   table.data td.name{color:var(--text);font-weight:600}
   table.data td.mono{font-family:var(--font-mono)}
+  table.data.reg-device-table{font-size:14.5px}
+  table.data.reg-device-table thead th{font-size:13px;text-align:center;color:var(--chrome-text)}
+  table.data.reg-device-table tbody td{padding:13px 14px;text-align:center}
+  table.data.reg-device-table td.name{font-weight:700}
 
   .gauge{position:relative;width:104px;height:104px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 10px rgba(124,92,255,.25))}
   .gauge::before{content:'';position:absolute;inset:9px;border-radius:50%;background:var(--bg-elevated);backdrop-filter:blur(14px)}
   .gauge-label{position:relative;display:flex;flex-direction:column;align-items:center;z-index:1}
   .gauge-label b{font-family:var(--font-mono);font-size:19px}
-  .gauge-label span{font-size:9.5px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em}
+  .gauge-label span{font-size:9.5px;color:var(--chrome-text-faint);text-transform:uppercase;letter-spacing:.05em}
   .gauge-row{display:flex;gap:22px;flex-wrap:wrap;align-items:center}
   .gauge-row .g-item{display:flex;flex-direction:column;align-items:center;gap:8px}
   .gauge-row .g-item > span{font-size:11px;color:var(--text-faint)}
 
-  .chip-btn{background:var(--surface-2);border:1px solid var(--border);color:var(--text-dim);font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:20px;transition:all .15s}
+  .chip-btn{background:var(--sidebar-bg);border:1px solid transparent;color:#fff;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;transition:all .15s}
   .chip-btn.active{background:var(--accent-gradient);color:#fff;border-color:transparent;box-shadow:0 4px 14px rgba(124,92,255,.3)}
   .chip-row{display:flex;gap:8px;flex-wrap:wrap}
 
@@ -246,7 +253,7 @@
   }
   .topo-node .node-box svg{width:24px;height:24px;stroke:var(--text-dim)}
   .topo-node .node-status{position:absolute;bottom:-3px;right:-3px;width:13px;height:13px;border-radius:50%;border:2.5px solid var(--bg-elevated)}
-  .topo-node .node-name{font-size:10.5px;font-weight:600;text-align:center;color:var(--text-dim);font-family:var(--font-mono);white-space:nowrap}
+  .topo-node .node-name{font-size:10.5px;font-weight:600;text-align:center;color:var(--chrome-text-dim);font-family:var(--font-mono);white-space:nowrap}
   .topo-node:hover .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
   .topo-node.sel .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
   .topo-node.dim{opacity:.32}
@@ -256,10 +263,10 @@
     font-family:var(--font-mono);opacity:0;transition:opacity .1s;
   }
   .topo-tip.show{opacity:1}
-  .topo-tip .t-title{font-family:var(--font-ui);font-weight:600;color:var(--text);margin-bottom:5px;font-size:11.5px}
-  .topo-tip .t-row{display:flex;justify-content:space-between;gap:14px;color:var(--text-dim)}
+  .topo-tip .t-title{font-family:var(--font-ui);font-weight:600;color:var(--chrome-text);margin-bottom:5px;font-size:11.5px}
+  .topo-tip .t-row{display:flex;justify-content:space-between;gap:14px;color:var(--chrome-text-dim)}
   .topo-legend{display:flex;gap:16px;flex-wrap:wrap;padding-top:2px}
-  .topo-legend .l{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-faint)}
+  .topo-legend .l{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--chrome-text-faint)}
   .topo-legend .sw{width:16px;height:2.5px;border-radius:2px}
 
   /* ---------- port view ---------- */
@@ -290,6 +297,42 @@
   .fac-metric span{font-size:10px;color:var(--text-faint)}
   .fac-metric b{font-family:var(--font-mono);font-size:15px}
 
+  /* ---------- toast notifications (web alert channel) ---------- */
+  .toast-stack{position:fixed;top:76px;right:18px;z-index:80;display:flex;flex-direction:column;gap:10px;width:min(340px,90vw);pointer-events:none}
+  .toast{
+    display:flex;align-items:flex-start;gap:10px;background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--text-faint);
+    border-radius:var(--radius-sm);padding:11px 12px;box-shadow:0 12px 28px rgba(30,41,59,.16);cursor:pointer;pointer-events:auto;
+    animation:toastIn .22s ease;
+  }
+  .toast.closing{animation:toastOut .2s ease forwards}
+  @keyframes toastIn{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:translateX(0)}}
+  @keyframes toastOut{to{opacity:0;transform:translateX(16px)}}
+  .toast .dot{width:9px;height:9px;border-radius:50%;flex:none;margin-top:4px;background:var(--text-faint)}
+  .toast-crit{border-left-color:var(--crit)} .toast-crit .dot{background:var(--crit);box-shadow:0 0 6px rgba(239,59,92,.7)}
+  .toast-warn{border-left-color:var(--warn)} .toast-warn .dot{background:var(--warn);box-shadow:0 0 6px rgba(230,150,15,.7)}
+  .toast-info{border-left-color:var(--info)} .toast-info .dot{background:var(--info)}
+  .toast-good{border-left-color:var(--good)} .toast-good .dot{background:var(--good);box-shadow:0 0 6px rgba(0,176,135,.7)}
+  .toast-body{flex:1;min-width:0}
+  .toast-head{display:flex;justify-content:space-between;gap:8px;font-size:11.5px;margin-bottom:3px}
+  .toast-head b{color:var(--text)}
+  .toast-head span{color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .toast-msg{font-size:12px;color:var(--text-dim);line-height:1.4}
+  .toast-close{background:none;border:none;color:var(--text-faint);font-size:16px;line-height:1;cursor:pointer;flex:none;padding:0 0 0 4px}
+  .toast-close:hover{color:var(--text)}
+  @media (max-width:600px){ .toast-stack{top:auto;bottom:14px;left:14px;right:14px;width:auto} }
+
+  /* ---------- custom confirm dialog (replaces native confirm(), always centered) ---------- */
+  .confirm-modal{
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(.96);
+    width:min(380px,90vw);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    padding:22px;z-index:90;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;
+    box-shadow:0 30px 70px rgba(30,41,59,.28);
+  }
+  .confirm-modal.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
+  .confirm-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:8px}
+  .confirm-msg{font-size:13px;color:var(--text-dim);line-height:1.5;margin-bottom:20px;white-space:pre-line}
+  .confirm-actions{display:flex;justify-content:flex-end;gap:8px}
+
   /* ---------- drawer ---------- */
   .overlay{position:fixed;inset:0;background:rgba(4,7,14,.6);backdrop-filter:blur(2px);z-index:50;opacity:0;pointer-events:none;transition:opacity .18s}
   .overlay.show{opacity:1;pointer-events:auto}
@@ -308,8 +351,8 @@
   }
   .drawer.show{transform:translate(-50%,-50%) scale(1);opacity:1;pointer-events:auto}
   .drawer-head{display:flex;align-items:flex-start;justify-content:space-between;padding:20px 20px 14px;border-bottom:1px solid var(--border)}
-  .drawer-head h2{font-size:16px;font-weight:700;font-family:var(--font-mono)}
-  .drawer-head .role{font-size:11.5px;color:var(--text-faint);margin-top:3px}
+  .drawer-head h2{font-size:16px;font-weight:700;font-family:var(--font-mono);color:var(--chrome-text)}
+  .drawer-head .role{font-size:11.5px;color:var(--chrome-text-faint);margin-top:3px}
   .drawer-close{background:var(--surface);border:1px solid var(--border);width:30px;height:30px;border-radius:8px;color:var(--text-dim);display:flex;align-items:center;justify-content:center;flex:none}
   .drawer-close svg{width:15px;height:15px}
 
@@ -513,6 +556,33 @@
   </form>
 </div>
 
+<div class="toast-stack" id="toastStack"></div>
+<div class="overlay" id="confirmOverlay" style="z-index:89"></div>
+<div class="confirm-modal" id="confirmModal">
+  <div class="confirm-title" id="confirmTitle">확인</div>
+  <div class="confirm-msg" id="confirmMsg"></div>
+  <div class="confirm-actions">
+    <button type="button" class="btn" id="confirmCancelBtn">취소</button>
+    <button type="button" class="btn primary" id="confirmOkBtn">확인</button>
+  </div>
+</div>
+<div class="overlay" id="userEditOverlay" style="z-index:89"></div>
+<div class="confirm-modal" id="userEditModal">
+  <div class="confirm-title" id="userEditTitle">계정 수정</div>
+  <div class="field" style="margin-bottom:12px"><label>역할</label>
+    <select id="ue-role">
+      <option value="VIEWER">조회자 (VIEWER)</option>
+      <option value="OPERATOR">운영자 (OPERATOR)</option>
+      <option value="ADMIN">관리자 (ADMIN)</option>
+    </select>
+  </div>
+  <div class="field" style="margin-bottom:8px"><label>새 비밀번호 (선택, 8자 이상)</label><input type="password" id="ue-password" placeholder="변경하려면 입력"></div>
+  <div id="userEditError" style="color:var(--crit);font-size:12px;min-height:16px;margin-bottom:8px"></div>
+  <div class="confirm-actions">
+    <button type="button" class="btn" id="userEditCancelBtn">취소</button>
+    <button type="button" class="btn primary" id="userEditOkBtn">저장</button>
+  </div>
+</div>
 <div class="overlay" id="overlay"></div>
 <div class="drawer" id="drawer">
   <div class="drawer-head">
@@ -652,15 +722,96 @@ function applyRoleUI(){
 let SERVERS = [], DBS = [], NETS = [], FACS = [], INCIDENTS = [];
 let SERVER_INFO = { lanIp: location.hostname || 'localhost', port: location.port || '5057' };
 
+/* ================= alert design: web notification channel =================
+   "1단계: 웹 화면 알림". Every incident already lands in the DB the instant
+   add_incident() (in storage.py) writes it -- this just watches the same
+   incidents list syncState() already polls every 2.2s and raises a toast for
+   anything genuinely new-worth-surfacing, using the exact same "new or
+   escalated or recovered" definition storage.py uses to decide whether to
+   fire an email (so the web toast and an eventual email never disagree about
+   what counts as noteworthy). Never re-toasts a repeat occurrence of an
+   already-open incident (occurrence_count bump only) -- that's the
+   알림 폭주 방지 requirement. */
+let _seenIncidents = new Map();  // id -> {severity, status}
+let _firstIncidentSync = true;
+const SEVERITY_LABEL = {crit:'위험', warn:'주의', info:'정보'};
+function notifyNewIncidents(list){
+  if(_firstIncidentSync){
+    _firstIncidentSync = false;
+    list.forEach(i=> _seenIncidents.set(i.id, {severity:i.severity, status:i.status}));
+    return;
+  }
+  list.forEach(i=>{
+    const prev = _seenIncidents.get(i.id);
+    if(prev === undefined){
+      if(i.status==='open') showToast(i, 'new');
+      else if(i.status==='resolved' && i.severity==='info') showToast(i, 'recovery');
+    } else if(i.status==='open' && prev.severity !== i.severity){
+      showToast(i, 'escalation');
+    }
+    _seenIncidents.set(i.id, {severity:i.severity, status:i.status});
+  });
+}
+/* ================= custom confirm dialog (always centered, unlike native confirm()) ================= */
+function showConfirm(message, opts){
+  opts = opts || {};
+  return new Promise(resolve=>{
+    $('#confirmTitle').textContent = opts.title || '확인';
+    $('#confirmMsg').textContent = message;
+    $('#confirmOkBtn').textContent = opts.okText || '확인';
+    $('#confirmOverlay').classList.add('show');
+    $('#confirmModal').classList.add('show');
+    function cleanup(result){
+      $('#confirmOverlay').classList.remove('show');
+      $('#confirmModal').classList.remove('show');
+      $('#confirmOkBtn').removeEventListener('click', onOk);
+      $('#confirmCancelBtn').removeEventListener('click', onCancel);
+      $('#confirmOverlay').removeEventListener('click', onCancel);
+      resolve(result);
+    }
+    function onOk(){ cleanup(true); }
+    function onCancel(){ cleanup(false); }
+    $('#confirmOkBtn').addEventListener('click', onOk);
+    $('#confirmCancelBtn').addEventListener('click', onCancel);
+    $('#confirmOverlay').addEventListener('click', onCancel);
+  });
+}
+function showToast(inc, kind){
+  const stack = $('#toastStack');
+  if(!stack) return;
+  const sevClass = kind==='recovery' ? 'good' : (inc.severity==='crit'?'crit':inc.severity==='warn'?'warn':'info');
+  const kindLabel = kind==='recovery' ? '복구' : kind==='escalation' ? '심각도 변경' : SEVERITY_LABEL[inc.severity]||'알림';
+  const el = document.createElement('div');
+  el.className = `toast toast-${sevClass}`;
+  el.innerHTML = `
+    <span class="dot"></span>
+    <div class="toast-body">
+      <div class="toast-head"><b>${escapeHtml(inc.category||'')} · ${kindLabel}</b><span>${escapeHtml(inc.source||'')}</span></div>
+      <div class="toast-msg">${escapeHtml(inc.message||'')}</div>
+    </div>
+    <button type="button" class="toast-close" aria-label="닫기">&times;</button>`;
+  el.addEventListener('click', (e)=>{
+    if(e.target.closest('.toast-close')){ el.remove(); return; }
+    switchView('incidents'); el.remove();
+  });
+  stack.appendChild(el);
+  while(stack.children.length > 5) stack.removeChild(stack.firstChild);
+  setTimeout(()=>{ el.classList.add('closing'); setTimeout(()=> el.remove(), 220); }, 8000);
+}
+
 async function syncState(){
   try{
     const r = await apiFetch('/api/state', {cache:'no-store'});
     if(!r.ok) throw new Error('bad status');
     const j = await r.json();
     SERVERS = j.servers; DBS = j.dbs; NETS = j.nets; FACS = j.facs;
-    INCIDENTS = j.incidents.map(i=>({ id:i.id, time:new Date(i.ts), severity:i.severity, source:i.source, category:i.category, message:i.message, status:i.status }));
+    INCIDENTS = j.incidents.map(i=>({
+      id:i.id, time:new Date(i.ts), severity:i.severity, source:i.source, category:i.category, message:i.message,
+      status:i.status, deviceId:i.device_id, eventType:i.event_type, occurrenceCount:i.occurrence_count,
+    }));
     if(j.serverInfo) SERVER_INFO = j.serverInfo;
     rebuildTopology();
+    notifyNewIncidents(INCIDENTS);
     return true;
   }catch(e){
     return false;
@@ -1009,7 +1160,7 @@ function renderServersSkeleton(){
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="srv-search" placeholder="서버명 / IP 검색"></div>
       </div>
-      <div class="table-wrap"><table class="data">
+      <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th></tr></thead>
         <tbody id="srv-tbody"></tbody>
       </table></div>
@@ -1078,7 +1229,7 @@ function renderDatabaseSkeleton(){
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="db-search" placeholder="인스턴스명 / IP 검색"></div>
       </div>
-      <div class="table-wrap"><table class="data">
+      <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
         <tbody id="db-tbody"></tbody>
       </table></div>
@@ -1116,7 +1267,7 @@ function renderNetworkSkeleton(){
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="net-search" placeholder="장비명 / IP 검색"></div>
       </div>
-      <div class="table-wrap"><table class="data">
+      <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
         <tbody id="net-tbody"></tbody>
       </table></div>
@@ -1370,36 +1521,36 @@ function renderRegisterSkeleton(){
       <div class="card-head" style="font-size:17px"><h3 style="font-size:1em">등록된 장비 목록</h3><span class="sub" id="reg-count-sub" style="font-size:.75em">-</span></div>
     </div>
     <div class="card">
-      <div class="card-head collapsible" data-collapse="reg-collapse-server"><div><h3>서버 (SMS)</h3><span class="sub" id="reg-count-server">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
-      <div class="collapse-wrap" id="reg-collapse-server"><div class="collapse-inner">
-      <div class="table-wrap" style="margin-top:12px"><table class="data">
+      <div class="card-head collapsible collapsed" data-collapse="reg-collapse-server"><div><h3>서버 (SMS)</h3><span class="sub" id="reg-count-server">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+      <div class="collapse-wrap collapsed" id="reg-collapse-server"><div class="collapse-inner">
+      <div class="table-wrap" style="margin-top:12px"><table class="data reg-device-table">
         <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
         <tbody id="reg-tbody-server"></tbody>
       </table></div>
       </div></div>
     </div>
     <div class="card">
-      <div class="card-head collapsible" data-collapse="reg-collapse-db"><div><h3>데이터베이스 (DBMS)</h3><span class="sub" id="reg-count-db">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
-      <div class="collapse-wrap" id="reg-collapse-db"><div class="collapse-inner">
-      <div class="table-wrap" style="margin-top:12px"><table class="data">
+      <div class="card-head collapsible collapsed" data-collapse="reg-collapse-db"><div><h3>데이터베이스 (DBMS)</h3><span class="sub" id="reg-count-db">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+      <div class="collapse-wrap collapsed" id="reg-collapse-db"><div class="collapse-inner">
+      <div class="table-wrap" style="margin-top:12px"><table class="data reg-device-table">
         <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
         <tbody id="reg-tbody-db"></tbody>
       </table></div>
       </div></div>
     </div>
     <div class="card">
-      <div class="card-head collapsible" data-collapse="reg-collapse-net"><div><h3>네트워크 (NMS)</h3><span class="sub" id="reg-count-net">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
-      <div class="collapse-wrap" id="reg-collapse-net"><div class="collapse-inner">
-      <div class="table-wrap" style="margin-top:12px"><table class="data">
+      <div class="card-head collapsible collapsed" data-collapse="reg-collapse-net"><div><h3>네트워크 (NMS)</h3><span class="sub" id="reg-count-net">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+      <div class="collapse-wrap collapsed" id="reg-collapse-net"><div class="collapse-inner">
+      <div class="table-wrap" style="margin-top:12px"><table class="data reg-device-table">
         <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
         <tbody id="reg-tbody-net"></tbody>
       </table></div>
       </div></div>
     </div>
     <div class="card">
-      <div class="card-head collapsible" data-collapse="reg-collapse-fac"><div><h3>전산실 설비 (FMS)</h3><span class="sub" id="reg-count-fac">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
-      <div class="collapse-wrap" id="reg-collapse-fac"><div class="collapse-inner">
-      <div class="table-wrap" style="margin-top:12px"><table class="data">
+      <div class="card-head collapsible collapsed" data-collapse="reg-collapse-fac"><div><h3>전산실 설비 (FMS)</h3><span class="sub" id="reg-count-fac">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
+      <div class="collapse-wrap collapsed" id="reg-collapse-fac"><div class="collapse-inner">
+      <div class="table-wrap" style="margin-top:12px"><table class="data reg-device-table">
         <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
         <tbody id="reg-tbody-fac"></tbody>
       </table></div>
@@ -1450,6 +1601,12 @@ function renderRegisterSkeleton(){
     updateFormVisibility();
     $('#reg-form-card').classList.remove('modal-mode');
     $('#reg-edit-overlay').classList.remove('show');
+    // Also the reset target for simply leaving the 등록 screen after a
+    // successful registration -- without this, the "설치 파일 다운로드"
+    // box from the last device you registered just sits there showing
+    // (and re-showing) every time you come back, even for an unrelated
+    // later visit.
+    $('#agent-command-box').style.display = 'none';
   }
   $('#edit-cancel-btn').addEventListener('click', exitEditMode);
   $('#reg-edit-overlay').addEventListener('click', exitEditMode);
@@ -1508,6 +1665,13 @@ function renderRegisterSkeleton(){
       fields.snmpPort = parseInt($('#f-snmp-port').value)||161;
     }
 
+    // Prevents an impatient/accidental double-click on 장비 등록 from firing
+    // two separate registration requests before the first one's response
+    // (and the resulting form-reset) ever lands -- exactly how a device could
+    // previously end up registered twice under the same name.
+    const submitBtn = $('#reg-submit-btn');
+    submitBtn.disabled = true;
+    submitBtn.textContent = editingDeviceId ? '수정 중...' : '등록 중...';
     try{
       if(editingDeviceId){
         await updateDevice(editingDeviceId, name, ip, fields);
@@ -1531,6 +1695,9 @@ function renderRegisterSkeleton(){
       const msg = err.message || (editingDeviceId ? '수정에 실패했습니다' : '등록에 실패했습니다');
       errEl.textContent = msg;
       alert(msg);
+    }finally{
+      submitBtn.disabled = false;
+      submitBtn.textContent = editingDeviceId ? '수정 완료' : '장비 등록';
     }
   });
 }
@@ -1568,6 +1735,10 @@ function renderRegister(){
   const selDel = groups.map(g=> `${g.tbody} [data-del]`).join(', ');
   const selEdit = groups.map(g=> `${g.tbody} [data-edit]`).join(', ');
   $$(selDel).forEach(b=> b.addEventListener('click', async ()=>{
+    const entity = findEntity(b.dataset.del);
+    const label = entity ? `"${entity.name}"` : '이 장비를';
+    const ok = await showConfirm(`${label} 삭제할까요?\n등록된 설정과 이력이 함께 삭제됩니다.`, {title:'장비 삭제', okText:'삭제'});
+    if(!ok) return;
     await unregisterDevice(b.dataset.del);
     afterDeviceChange();
   }));
@@ -1603,7 +1774,7 @@ function renderUsersSkeleton(){
     </div>
     <div class="card">
       <div class="card-head"><div><h3>계정 목록</h3><span class="sub" id="user-count-sub"></span></div></div>
-      <div class="table-wrap"><table class="data">
+      <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>아이디</th><th>역할</th><th>생성일</th><th>마지막 로그인</th><th>상태</th><th></th></tr></thead>
         <tbody id="user-tbody"></tbody>
       </table></div>
@@ -1642,13 +1813,14 @@ async function renderUsers(){
       <td class="mono">${u.last_login_at ? new Date(u.last_login_at).toLocaleString('ko-KR') : '-'}</td>
       <td>${locked ? `<span class="pill crit">잠김</span>` : `<span class="pill good">정상</span>`}</td>
       <td style="display:flex;gap:6px">
+        <button type="button" class="btn" data-edituser="${u.id}" data-role="${u.role}" data-username="${escapeHtml(u.username)}">수정</button>
         ${locked ? `<button type="button" class="btn" data-unlock="${u.id}">잠금 해제</button>` : ''}
         ${u.username!==CURRENT_USER ? `<button type="button" class="btn" data-deluser="${u.id}">삭제</button>` : ''}
       </td>
     </tr>`;
   }).join('') || `<tr><td colspan="6"><div class="empty-note">계정이 없습니다</div></td></tr>`;
   $$('#user-tbody [data-deluser]').forEach(b=> b.addEventListener('click', async ()=>{
-    if(!confirm('이 계정을 삭제할까요?')) return;
+    if(!(await showConfirm('이 계정을 삭제할까요?', {title:'계정 삭제', okText:'삭제'}))) return;
     const r = await apiFetch('/api/users/'+b.dataset.deluser, {method:'DELETE'});
     const j = await r.json();
     if(!r.ok){ alert(j.error||'삭제 실패'); return; }
@@ -1658,10 +1830,86 @@ async function renderUsers(){
     await apiFetch('/api/users/'+b.dataset.unlock+'/unlock', {method:'POST'});
     renderUsers();
   }));
+  $$('#user-tbody [data-edituser]').forEach(b=> b.addEventListener('click', ()=>{
+    openUserEditModal(b.dataset.edituser, b.dataset.username, b.dataset.role);
+  }));
+}
+
+/* ================= user edit modal ================= */
+function openUserEditModal(userId, username, role){
+  $('#userEditTitle').textContent = `"${username}" 수정`;
+  $('#ue-role').value = role;
+  $('#ue-password').value = '';
+  $('#userEditError').textContent = '';
+  $('#userEditOverlay').classList.add('show');
+  $('#userEditModal').classList.add('show');
+  function close(){
+    $('#userEditOverlay').classList.remove('show');
+    $('#userEditModal').classList.remove('show');
+    $('#userEditOkBtn').removeEventListener('click', onSave);
+    $('#userEditCancelBtn').removeEventListener('click', close);
+    $('#userEditOverlay').removeEventListener('click', close);
+  }
+  async function onSave(){
+    const newRole = $('#ue-role').value;
+    const newPassword = $('#ue-password').value;
+    if(newPassword && newPassword.length < 8){
+      $('#userEditError').textContent = '새 비밀번호는 8자 이상이어야 합니다';
+      return;
+    }
+    const body = {};
+    if(newRole !== role) body.role = newRole;
+    if(newPassword) body.password = newPassword;
+    if(!Object.keys(body).length){ close(); return; }
+    const r = await apiFetch('/api/users/'+userId, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ $('#userEditError').textContent = j.error||'수정 실패'; return; }
+    close();
+    renderUsers();
+  }
+  $('#userEditOkBtn').addEventListener('click', onSave);
+  $('#userEditCancelBtn').addEventListener('click', close);
+  $('#userEditOverlay').addEventListener('click', close);
 }
 
 /* ================= DRAWER ================= */
 let openDrawerId = null;
+function collectionStateLabel(cs){ return {good:'정상', warn:'주의', crit:'장애', nodata:'미수집', unknown:'알 수 없음'}[cs] || '알 수 없음'; }
+function collectionStatePillClass(cs){ return {good:'good', warn:'warn', crit:'crit', nodata:'neutral', unknown:'info'}[cs] || 'neutral'; }
+function fmtWhen(ms){ return ms ? new Date(ms).toLocaleString('ko-KR') : '-'; }
+function collectionStateBlock(e){
+  const cs = e.collectionState || 'nodata';
+  return `
+    <div class="card">
+      <div class="card-head"><h3>수집 상태</h3><span class="sub">등록/수집 관점의 상태 (위 리소스 상태와 별개)</span></div>
+      <div class="kv-grid">
+        <div class="kv"><span>현재 상태</span><span class="pill ${collectionStatePillClass(cs)}" style="width:fit-content"><span class="dot"></span>${collectionStateLabel(cs)}</span></div>
+        <div class="kv"><span>연속 실패 횟수</span><b>${e.consecutiveFailures||0}회</b></div>
+        <div class="kv"><span>마지막 정상 응답</span><b style="font-size:12px">${fmtWhen(e.lastSuccessAt)}</b></div>
+        <div class="kv"><span>마지막 수집 시도</span><b style="font-size:12px">${fmtWhen(e.lastCollectedAt)}</b></div>
+        <div class="kv"><span>마지막 장애 발생</span><b style="font-size:12px">${fmtWhen(e.lastFailureAt)}</b></div>
+        <div class="kv"><span>마지막 오류 내용</span><b style="font-size:11.5px">${e.lastFailureReason ? escapeHtml(e.lastFailureReason) : '-'}</b></div>
+      </div>
+    </div>`;
+}
+function agentInfoBlock(e){
+  if(e.mode !== 'agent') return '';
+  const isOld = e.agentVersion && e.agentLatestVersion && e.agentVersion !== e.agentLatestVersion;
+  return `
+    <div class="card">
+      <div class="card-head"><h3>Agent 정보</h3><span class="sub">에이전트 프로세스 자체 보고 값</span></div>
+      <div class="kv-grid">
+        <div class="kv">
+          <span>Agent 버전</span>
+          <b>${e.agentVersion ? escapeHtml(e.agentVersion) : '-'}${isOld ? ` <span class="pill warn" style="margin-left:4px">구버전 (서버: ${escapeHtml(e.agentLatestVersion)})</span>` : ''}</b>
+        </div>
+        <div class="kv"><span>OS 정보</span><b style="font-size:12px">${e.agentOs ? escapeHtml(e.agentOs) : '-'}</b></div>
+        <div class="kv"><span>보고된 IP</span><b>${e.agentReportedIp ? escapeHtml(e.agentReportedIp) : '-'}</b></div>
+        <div class="kv"><span>Agent 시작 시간</span><b style="font-size:12px">${fmtWhen(e.agentStartedAt)}</b></div>
+        <div class="kv" style="grid-column:span 2"><span>마지막 오류</span><b style="font-size:11.5px">${e.agentLastError ? escapeHtml(e.agentLastError) : '-'}</b></div>
+      </div>
+    </div>`;
+}
 function openDrawerFor(id){
   const s = SERVERS.find(x=>x.id===id);
   const d = DBS.find(x=>x.id===id);
@@ -1690,6 +1938,7 @@ function openDrawerFor(id){
   else if(entity.mode==='agent' && !entity.online) drawAgentPending(entity, catLabel);
   else if(s) drawServer(s);
   else drawPingDevice(entity, catLabel);
+  $('#drawerBody').insertAdjacentHTML('beforeend', collectionStateBlock(entity) + agentInfoBlock(entity));
   $('#overlay').classList.add('show'); $('#drawer').classList.add('show');
 }
 function closeDrawer(){
@@ -1908,8 +2157,8 @@ let currentView = 'overview';
 function initSkeletons(){ Object.values(VIEWS).forEach(v=>v.skeleton()); }
 function switchView(name){
   if(!VIEWS[name]) return;
-  if(currentView==='register' && name!=='register' && editingDeviceId){
-    if(!confirm('수정을 취소할까요?')) return;
+  if(currentView==='register' && name!=='register'){
+    if(editingDeviceId && !confirm('수정을 취소할까요?')) return;
     if(typeof window.exitRegisterEditMode==='function') window.exitRegisterEditMode();
   }
   currentView = name;

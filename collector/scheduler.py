@@ -60,8 +60,45 @@ def _run_job(device_id):
             snmp_collector.sample_snmp(entity, device_row)
             metrics.record_entity_metrics(device_id, entity)
         health.record_tick_success()
+        # Alert design section [4]/[5]: a device that was mid-outage due to a
+        # collector-internal error (not a clean reachability failure) just
+        # collected successfully again -- close out that alert the same way
+        # the samplers close out a reachability alert (device_id+event_type
+        # dedup in add_incident folds this into a recovery of the same
+        # open incident, never a flood of new rows).
+        if entity.get('_collectorError'):
+            entity['_collectorError'] = False
+            if not storage.in_maintenance(device_row):
+                storage.add_incident(
+                    'info', device_row['name'], storage.category_label(device_row['category']),
+                    f"{device_row['name']} 수집 오류 복구", device_id=device_id, event_type='COLLECTION_ERROR')
     except Exception as e:
         health.record_tick_error(f"{device_id}: {e}")
+        # Distinct from a clean "no response" result (that's the sampler's
+        # own job, above): this is the collector *itself* blowing up --
+        # a bug, a crashed library, etc. -- which storage.compute_
+        # collection_state() surfaces as '알 수 없음' rather than folding it
+        # into the normal 정상/주의/장애 reachability ladder. Alert design
+        # section [1]: this is the "서버/DB 수집 오류" alert type -- the one
+        # case that had no incident at all before (the sampler never even
+        # ran, so none of its own add_incident calls could fire).
+        try:
+            now_ms = int(datetime.now().timestamp() * 1000)
+            prev_failures = device_row.get('consecutive_failures') or 0
+            storage.update_failure_state(
+                device_id, prev_failures + 1, f'COLLECTOR_ERROR: {str(e)[:180]}',
+                device_row.get('last_success_at'), now_ms, now_ms)
+            with state.LOCK:
+                err_entity = state.LIVE.get(device_id)
+                if err_entity is not None:
+                    err_entity['_collectorError'] = True
+            if not storage.in_maintenance(device_row):
+                storage.add_incident(
+                    'crit', device_row['name'], storage.category_label(device_row['category']),
+                    f"{device_row['name']} 수집 중 오류가 발생했습니다 ({str(e)[:120]})",
+                    device_id=device_id, event_type='COLLECTION_ERROR')
+        except Exception:
+            pass  # never let bookkeeping itself take down the scheduler job
 
 
 def add_device_job(device_row):
@@ -92,7 +129,7 @@ def _run_backup_job():
     import os
     backup_dir = os.path.join(storage.BASE_DIR, 'backups')
     try:
-        storage.backup_database(backup_dir, keep=14)
+        storage.backup_database(backup_dir, keep=storage.BACKUP_RETENTION_COUNT)
     except Exception as e:
         health.record_tick_error(f"backup: {e}")
         storage.add_incident('warn', 'InfraSight', 'SYSTEM', f"DB 백업 실패: {e}")

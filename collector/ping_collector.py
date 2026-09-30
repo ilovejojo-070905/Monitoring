@@ -92,7 +92,9 @@ def sample_ping(entity, device_row):
     storage.update_failure_state(
         device_row['id'], failures,
         None if reachable else 'PING_TIMEOUT',
-        now_ms if reachable else device_row.get('last_success_at'))
+        now_ms if reachable else device_row.get('last_success_at'),
+        now_ms,
+        device_row.get('last_failure_at') if reachable else now_ms)
 
     if storage.in_maintenance(device_row):
         return

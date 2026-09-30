@@ -87,13 +87,23 @@ app.secret_key = _load_or_create_secret_key()
 # window -- a dashboard tab left open and actively polling never idles out,
 # but a closed/forgotten one does). SameSite=Lax stops the cookie being sent
 # on cross-site POST/PUT/DELETE, which is most of what CSRF relies on; the
-# explicit CSRF token below covers the rest. Secure is left off deliberately
-# -- there is no HTTPS reverse proxy in front of this deployment yet, and a
-# Secure cookie simply never gets sent over plain HTTP, which would break
-# login entirely. Revisit once Phase E (HTTPS) is in place.
+# explicit CSRF token below covers the rest.
+#
+# Security review pass: SESSION_COOKIE_SECURE was left off through Phase E
+# (HTTPS via Caddy) landing -- the comment here used to say "revisit once
+# HTTPS is in place" and then nobody did, so the login session cookie was
+# still being sent over plain HTTP too. Now that Caddy is the supervised,
+# always-on way this app is accessed, Secure is on: the browser will refuse
+# to store or send this cookie over anything but HTTPS. This is a deliberate
+# breaking change for the *old* http://<ip>:5057-direct login path (see
+# start.bat, updated to open the HTTPS address) -- accepted intentionally
+# rather than leaving the session cookie interceptable on the LAN.
+# api_agent_report is unaffected either way: it was never cookie-based (the
+# device token travels in the request body, not a cookie).
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = True
 # Security hardening Phase G (audit item #17, "요청 크기 제한 없음"): without
 # this, waitress's own default (1GB) is the only limit on a request body --
 # a device-registration or SMTP-settings payload has no legitimate reason to
@@ -257,6 +267,28 @@ def api_delete_user(user_id):
     return jsonify({'ok': True})
 
 
+@app.put('/api/users/<int:user_id>')
+@require_role('ADMIN')
+def api_update_user(user_id):
+    target = storage.get_user_by_id(user_id)
+    if not target:
+        return jsonify({'error': 'not found'}), 404
+    body = request.get_json(force=True)
+    role = (body.get('role') or '').upper() or None
+    new_password = body.get('password') or ''
+    if role and role not in storage.ROLES:
+        return jsonify({'error': 'role은 ADMIN, OPERATOR, VIEWER 중 하나여야 합니다'}), 400
+    if role and target['role'] == 'ADMIN' and role != 'ADMIN' and storage.count_admins() <= 1:
+        return jsonify({'error': '마지막 관리자 계정의 권한은 변경할 수 없습니다'}), 400
+    if new_password and len(new_password) < 8:
+        return jsonify({'error': '새 비밀번호는 8자 이상이어야 합니다'}), 400
+    if not role and not new_password:
+        return jsonify({'error': '변경할 내용이 없습니다'}), 400
+    storage.update_user(user_id, role=role, new_password=new_password or None)
+    audit('UPDATE_USER', target=target['username'], details=(f"role->{role}" if role else '') + (' password_reset' if new_password else ''))
+    return jsonify({'ok': True})
+
+
 @app.post('/api/users/<int:user_id>/unlock')
 @require_role('ADMIN')
 def api_unlock_user(user_id):
@@ -285,6 +317,26 @@ def serialize_device(d):
         'end': d.get('maintenance_end'),
         'reason': d.get('maintenance_reason'),
     }
+    # Device status management pass: a persisted, always-consistent 5-value
+    # collection-health status (정상/주의/장애/미수집/알 수 없음) plus the
+    # timestamps/counters it's derived from -- separate from `status` above
+    # (which stays exactly as it was: the existing resource/reachability
+    # severity that topology colors, KPI counts, etc. already depend on).
+    base['collectionState'] = storage.compute_collection_state(d)
+    base['lastSuccessAt'] = d.get('last_success_at')
+    base['lastCollectedAt'] = d.get('last_collected_at')
+    base['lastFailureAt'] = d.get('last_failure_at')
+    base['consecutiveFailures'] = d.get('consecutive_failures') or 0
+    base['lastFailureReason'] = d.get('last_failure_reason')
+    # Agent management pass: only meaningful for mode=='agent' devices, but
+    # harmless (just null) to include for every other mode.
+    if d['mode'] == 'agent':
+        base['agentVersion'] = d.get('agent_version')
+        base['agentOs'] = d.get('agent_os')
+        base['agentStartedAt'] = d.get('agent_started_at')
+        base['agentReportedIp'] = d.get('agent_reported_ip')
+        base['agentLastError'] = d.get('agent_last_error')
+        base['agentLatestVersion'] = storage.AGENT_VERSION
     return base
 
 
@@ -526,7 +578,10 @@ def api_agent_report():
         return jsonify({'error': 'unknown token'}), 404
     with state.LOCK:
         entity = state.ensure_entity(device_row)
-        agent_collector.record_report(entity, device_row, body)
+        # request.remote_addr (not any client-supplied field) so a device
+        # can't misreport its own address -- this is the real TCP peer,
+        # correctly resolved through Caddy too via _TrustedProxyFix above.
+        agent_collector.record_report(entity, device_row, body, request.remote_addr)
     metrics.record_entity_metrics(device_row['id'], entity)
     return jsonify({'ok': True})
 
@@ -686,7 +741,7 @@ def api_test_smtp():
 def api_trigger_backup():
     backup_dir = os.path.join(BASE_DIR, 'backups')
     try:
-        path = storage.backup_database(backup_dir, keep=14)
+        path = storage.backup_database(backup_dir, keep=storage.BACKUP_RETENTION_COUNT)
     except Exception as e:
         audit('BACKUP_FAILURE', details=str(e))
         return jsonify({'error': '백업에 실패했습니다. 감사 로그에서 자세한 내용을 확인하세요.'}), 500
@@ -726,6 +781,7 @@ def api_agent_info():
     exists = os.path.exists(exe_path)
     return jsonify({
         'available': exists,
+        'version': storage.AGENT_VERSION,
         'sha256': _agent_exe_sha256() if exists else None,
         'sizeBytes': os.path.getsize(exe_path) if exists else None,
         'buildDate': time.strftime('%Y-%m-%d', time.gmtime(os.path.getmtime(exe_path))) if exists else None,

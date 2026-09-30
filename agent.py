@@ -21,6 +21,7 @@ Requirements when run as a .py script (not needed for the packaged .exe):
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -30,6 +31,18 @@ import urllib.request
 import psutil
 
 IS_WINDOWS = os.name == 'nt'
+
+# Agent management pass: bump this on every change to agent.py, then rebuild
+# dist/InfraSightAgent.exe -- keep server.py's AGENT_VERSION (near the top of
+# api_agent_info) in sync so the dashboard can tell a device "this agent is
+# older than what the server has available". This version is the whole
+# foundation an eventual auto-update feature would compare against; nothing
+# here downloads or applies updates yet, by design (see the directive this
+# was built from).
+AGENT_VERSION = '1.0.0'
+
+_START_TIME = time.time()
+_LAST_ERROR = None  # most recent local exception message, if any (sample() or the report request itself)
 
 # Marker + JSON payload the server appends after the compiled exe's own bytes
 # when it hands out a per-device "InfraSight-Install.exe" from the dashboard's
@@ -194,6 +207,13 @@ def sample(last_net, last_net_t):
         'cpu': round(cpu, 1), 'mem': round(mem, 1), 'disk': round(disk, 1),
         'netIn': round(net_in, 2), 'netOut': round(net_out, 2),
         'load': round(load, 2), 'uptime': uptime_days, 'procs': procs[:6],
+        # Agent management pass: version/OS/start time are static per-process
+        # (constant every report -- the server only needs the latest one),
+        # lastError carries forward whatever the most recent local exception
+        # was until a newer one replaces it, so it's visible even on a report
+        # cycle that itself succeeded.
+        'version': AGENT_VERSION, 'os': platform.platform(), 'startedAt': int(_START_TIME * 1000),
+        'lastError': _LAST_ERROR,
     }
     return payload, net, now
 
@@ -212,6 +232,7 @@ def run(server, token, interval):
     last_net_t = time.time()
     time.sleep(1)
 
+    global _LAST_ERROR
     while True:
         try:
             payload, last_net, last_net_t = sample(last_net, last_net_t)
@@ -222,6 +243,7 @@ def run(server, token, interval):
                 resp.read()
         except Exception as e:
             print('[agent] report failed:', e)
+            _LAST_ERROR = str(e)[:300]
         time.sleep(interval)
 
 
@@ -240,14 +262,20 @@ def main():
         return
 
     existing_cfg = load_config()
-    embedded_cfg = None
-    if not existing_cfg.get('server') or not existing_cfg.get('token'):
-        embedded_cfg = read_embedded_config()
-    if embedded_cfg and relocate_and_relaunch_if_needed():
+    embedded_cfg = read_embedded_config()
+    # A *different* embedded token than whatever's already saved means this
+    # exe was just downloaded for a fresh (re)registration -- re-installing
+    # on a machine that already has an old config.json from a previous
+    # install (delete + re-register the same PC, for example) is exactly
+    # this case, and it used to lose silently: the old check only looked at
+    # embedded_cfg when there was *no* existing config at all, so a stale
+    # saved token always won and the new one was never even read.
+    is_fresh_embedded = bool(embedded_cfg) and embedded_cfg.get('token') and embedded_cfg.get('token') != existing_cfg.get('token')
+    if is_fresh_embedded and relocate_and_relaunch_if_needed():
         return  # the relocated copy takes over from here; this process is done
 
-    server = args.server or existing_cfg.get('server') or (embedded_cfg or {}).get('server')
-    token = args.token or existing_cfg.get('token') or (embedded_cfg or {}).get('token')
+    server = args.server or (embedded_cfg.get('server') if is_fresh_embedded else None) or existing_cfg.get('server')
+    token = args.token or (embedded_cfg.get('token') if is_fresh_embedded else None) or existing_cfg.get('token')
     from_prompt = False
 
     if not server or not token:
@@ -259,10 +287,10 @@ def main():
         print('[agent] 서버 주소와 토큰이 필요합니다.')
         sys.exit(1)
 
-    if args.server or args.token or from_prompt or embedded_cfg:
+    if args.server or args.token or from_prompt or is_fresh_embedded:
         save_config({'server': server, 'token': token})
 
-    if args.install_startup or embedded_cfg:
+    if args.install_startup or is_fresh_embedded:
         install_startup()
 
     if args.setup_only:
