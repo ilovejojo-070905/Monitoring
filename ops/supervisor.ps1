@@ -49,18 +49,30 @@ function Write-Log([string]$Level, [string]$Message) {
 }
 
 # ---------- duplicate-run guard ----------
+# Two supervisor implementations can exist on the same machine now: this
+# script (the git-clone/dev deployment) and installer.py's run_supervise()
+# (the one-click InfraSight.exe deployment) -- both point at the same
+# run/supervisor.lock when installed to the same folder. This used to only
+# recognize a PID whose process path contained "powershell", so a still-alive
+# PID belonging to the *other* implementation (python.exe / InfraSight.exe)
+# was wrongly treated as stale, and this script would start its own
+# Backend+Caddy on top of the other's -- a silent double-bind of 5057/8443.
+# Liveness alone (matching installer.py's own guard) is what actually
+# matters here; the lock file's second line is only for clearer logging.
 if (Test-Path $LockFile) {
-    $oldPid = Get-Content $LockFile -ErrorAction SilentlyContinue | Select-Object -First 1
+    $lockLines = Get-Content $LockFile -ErrorAction SilentlyContinue
+    $oldPid = $lockLines | Select-Object -First 1
+    $oldKind = if ($lockLines.Count -ge 2) { $lockLines[1] } else { 'unknown' }
     $existing = if ($oldPid) { Get-Process -Id $oldPid -ErrorAction SilentlyContinue } else { $null }
-    if ($existing -and $existing.Path -and $existing.Path -like '*powershell*') {
-        Write-Log 'INFO' "이미 실행 중인 supervisor(PID $oldPid)를 발견해 이번 실행은 종료합니다 (중복 실행 방지)."
+    if ($existing) {
+        Write-Log 'INFO' "이미 실행 중인 supervisor(PID $oldPid, $oldKind)를 발견해 이번 실행은 종료합니다 (중복 실행 방지)."
         exit 0
     } else {
         Write-Log 'WARN' "이전 lock 파일이 남아있었지만 해당 PID($oldPid)는 더 이상 실행 중이 아닙니다. 새로 시작합니다."
     }
 }
 Remove-Item $StopMarker -ErrorAction SilentlyContinue
-$PID | Out-File -FilePath $LockFile -Encoding ascii -Force
+"$PID`nps1" | Out-File -FilePath $LockFile -Encoding ascii -Force
 
 Write-Log 'INFO' "===== supervisor 시작 (PID $PID) ====="
 

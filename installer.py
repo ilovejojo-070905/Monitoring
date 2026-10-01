@@ -311,12 +311,19 @@ def run_supervise(open_browser=False):
         with open(log_file, 'a', encoding='utf-8') as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{level}] {msg}\n")
 
+    # See ops/supervisor.ps1's matching comment: this lock file can belong to
+    # either implementation (this one, or the git-clone deployment's ps1
+    # supervisor) if both ever point at the same install folder. Liveness
+    # alone is what matters for not double-binding 5057/8443 -- the second
+    # line is only for clearer logging.
     if os.path.exists(lock_file):
         try:
             import psutil
-            old_pid = int(open(lock_file).read().strip())
+            lines = open(lock_file, encoding='utf-8').read().splitlines()
+            old_pid = int(lines[0].strip())
+            old_kind = lines[1].strip() if len(lines) > 1 else 'unknown'
             if psutil.pid_exists(old_pid):
-                log('INFO', f"이미 실행 중인 supervisor(PID {old_pid})를 발견해 이번 실행은 종료합니다.")
+                log('INFO', f"이미 실행 중인 supervisor(PID {old_pid}, {old_kind})를 발견해 이번 실행은 종료합니다.")
                 return
         except Exception:
             pass
@@ -327,7 +334,7 @@ def run_supervise(open_browser=False):
     except FileNotFoundError:
         pass
     with open(lock_file, 'w', encoding='utf-8') as f:
-        f.write(str(os.getpid()))
+        f.write(f"{os.getpid()}\npy")
 
     log('INFO', f"===== supervisor 시작 (PID {os.getpid()}) =====")
 
