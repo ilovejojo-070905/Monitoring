@@ -941,6 +941,11 @@ function gaugeHtml(pct, lv, label, valueText){
 function countStatus(list){ return {good:list.filter(x=>x.status==='good').length, warn:list.filter(x=>x.status==='warn').length, crit:list.filter(x=>x.status==='crit').length}; }
 const OV_CAT_LABEL = {server:'서버 (SMS)', db:'데이터베이스 (DBMS)', net:'네트워크 (NMS)', fac:'전산실 설비 (FMS)'};
 const OV_CAT_RANK = {crit:0, warn:1, good:2};
+// 2nd-dev-pass Dashboard pass (item 6): named failure-cause tiles ("Agent
+// 미접속", "SNMP 수집 실패") called out explicitly in the spec, distinct from
+// the category good/warn/crit bars above -- those answer "어디가 문제인가",
+// this answers "왜 문제인가" without having to expand every category to spot it.
+const OV_FAIL_LABEL = {agent:'Agent 미접속', snmp:'SNMP 수집 실패', ping:'Ping 실패'};
 
 function renderOverviewSkeleton(){
   const el = $('#view-overview');
@@ -986,8 +991,25 @@ function renderOverviewSkeleton(){
         <div id="ov-recent-inc" style="display:flex;flex-direction:column;gap:9px;max-height:300px;overflow-y:auto"></div>
       </div>
     </div>
+    <div class="grid grid-3">
+      <div class="card grid-span3">
+        <div class="card-head"><h3>장애 유형별 요약</h3><span class="sub">클릭하여 해당 장비 목록 보기</span></div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap">
+          ${['agent','snmp','ping'].map(key=>`
+          <div style="flex:1;min-width:170px">
+            <div class="mini-toggle collapsed" data-collapse="ov-fail-list-wrap-${key}" style="margin-top:0;padding:11px 13px;background:var(--surface-2);border-radius:9px">
+              <span style="font-size:12.5px;color:var(--text-dim)"><b id="ov-fail-count-${key}" style="font-size:17px;color:var(--text)">0</b>건 · ${OV_FAIL_LABEL[key]}</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+            </div>
+            <div class="collapse-wrap collapsed" id="ov-fail-list-wrap-${key}"><div class="collapse-inner">
+              <div style="max-height:150px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding:8px 4px 0" id="ov-fail-list-${key}"></div>
+            </div></div>
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>
   `;
-  $$('#ov-cat-summary .mini-toggle').forEach(head=>{
+  $$('#ov-cat-summary .mini-toggle, #view-overview .grid-span3 .mini-toggle').forEach(head=>{
     head.addEventListener('click', ()=>{
       const wrap = document.getElementById(head.dataset.collapse);
       const collapsed = !head.classList.contains('collapsed');
@@ -1081,6 +1103,27 @@ function renderOverview(){
       </div>
     </div>`).join('') || `<div class="empty-note">이벤트가 없습니다</div>`;
   incBody.scrollTop = incScroll;
+
+  const allEntities = [...SERVERS, ...DBS, ...NETS, ...FACS];
+  const failBuckets = {
+    agent: allEntities.filter(e=>e.mode==='agent' && e.online===false),
+    snmp: allEntities.filter(e=>e.mode==='snmp' && e.collectionState && e.collectionState!=='good'),
+    ping: allEntities.filter(e=>e.mode==='ping' && e.collectionState && e.collectionState!=='good'),
+  };
+  Object.keys(failBuckets).forEach(key=>{
+    const list = failBuckets[key];
+    const countEl = $(`#ov-fail-count-${key}`);
+    if(countEl) countEl.style.color = list.length ? 'var(--crit)' : 'var(--text)';
+    if(countEl) countEl.textContent = list.length;
+    const listEl = $(`#ov-fail-list-${key}`);
+    if(listEl){
+      listEl.innerHTML = list.map(e=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="font-size:11px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(e.name)}</span>
+          <span class="mono" style="font-size:10px;color:var(--text-faint);flex:none">${e.ip||'-'}</span>
+        </div>`).join('') || `<div class="empty-note" style="padding:8px;font-size:11px">해당 없음</div>`;
+    }
+  });
 }
 
 function sevColor(sev){ return sev==='critical'||sev==='crit' ? 'var(--crit)' : sev==='warning'||sev==='warn' ? 'var(--warn)' : 'var(--info)'; }
