@@ -146,6 +146,21 @@ def audit(action, target=None, details=None):
     storage.write_audit(session.get('user'), action, target, details, request.remote_addr)
 
 
+def _diff_str(before, after, keys):
+    """Short 'field: old->new' summary for an audit log `details` string,
+    listing only fields that actually changed (2nd dev pass, finding #2:
+    edits used to log just the target id/name, with no record of what
+    changed). Never pass a dict containing a password/token/SNMP credential
+    here -- those stay out of every audit call by design (see the Security
+    Hardening Phase review)."""
+    parts = []
+    for k in keys:
+        b, a = before.get(k), after.get(k)
+        if b != a:
+            parts.append(f"{k}: {b!r}->{a!r}")
+    return ', '.join(parts)
+
+
 def require_role(min_role='VIEWER'):
     """Replaces the old login_required for every protected route: checks the
     user is logged in, that their session hasn't been invalidated by a
@@ -294,7 +309,12 @@ def api_update_user(user_id):
     if not role and not new_password:
         return jsonify({'error': '변경할 내용이 없습니다'}), 400
     storage.update_user(user_id, role=role, new_password=new_password or None)
-    audit('UPDATE_USER', target=target['username'], details=(f"role->{role}" if role else '') + (' password_reset' if new_password else ''))
+    detail_parts = []
+    if role and role != target['role']:
+        detail_parts.append(f"role: {target['role']}->{role}")
+    if new_password:
+        detail_parts.append('password_reset')
+    audit('UPDATE_USER', target=target['username'], details=', '.join(detail_parts) or None)
     return jsonify({'ok': True})
 
 
@@ -556,7 +576,14 @@ def api_update_device(device_id):
         storage.set_credential(device_id, 'snmpv3_priv_protocol', v3_priv_protocol)
     if v3_priv_password:
         storage.set_credential(device_id, 'snmpv3_priv_password', v3_priv_password)
-    audit('UPDATE_DEVICE', target=device_id, details=name)
+    before_summary = {'name': device_row['name'], 'ip': device_row['ip'], **(device_row['fields'] or {})}
+    after_summary = {'name': name, 'ip': ip, **fields}
+    diff = _diff_str(before_summary, after_summary, set(before_summary) | set(after_summary))
+    has_credential = bool(community or v3_username or v3_auth_password or v3_priv_password)
+    detail_parts = [diff] if diff else []
+    if has_credential:
+        detail_parts.append('SNMP 인증정보 변경됨')
+    audit('UPDATE_DEVICE', target=device_id, details='; '.join(detail_parts) or name)
     return jsonify({'ok': True, 'id': device_id})
 
 
