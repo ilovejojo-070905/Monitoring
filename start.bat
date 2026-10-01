@@ -7,5 +7,7 @@ rem never actually keep you logged in. Opens the HTTPS address via Caddy
 rem instead; see ops\supervisor.ps1 for the normal (auto-start, auto-restart)
 rem way to run both the backend and Caddy together.
 start "" "https://localhost:8443"
-"C:\Users\ilove\AppData\Local\Programs\Python\Python314\python.exe" server.py
+rem Resolved via PATH rather than this machine's exact Python install path
+rem (portability pass) so this script also works on another PC.
+python server.py
 pause

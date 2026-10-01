@@ -16,8 +16,18 @@ creates). That is the ONLY normal way this should ever end -- anything else
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
-$PythonExe   = 'C:\Users\ilove\AppData\Local\Programs\Python\Python314\python.exe'
-$CaddyExe    = 'C:\Users\ilove\AppData\Local\Microsoft\WinGet\Packages\CaddyServer.Caddy_Microsoft.Winget.Source_8wekyb3d8bbwe\caddy.exe'
+
+# Resolved from PATH rather than hardcoded (portability pass): this file used
+# to hardcode this machine's exact python.exe/caddy.exe locations (including
+# the WinGet package's hash-named folder for Caddy), which broke silently on
+# any other PC -- different Windows username, different WinGet package hash,
+# or a Python installed to a different path. `Get-Command` finds whatever
+# `python`/`caddy` already resolve to in a normal shell on THIS machine too
+# (verified identical), so this is a no-op here and just portable elsewhere.
+$PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
+$CaddyExe  = (Get-Command caddy  -ErrorAction SilentlyContinue).Source
+if (-not $PythonExe) { throw "python.exe를 PATH에서 찾을 수 없습니다. Python 설치 후 PATH에 추가되어 있는지 확인하세요." }
+if (-not $CaddyExe)  { throw "caddy.exe를 PATH에서 찾을 수 없습니다. Caddy 설치 후 PATH에 추가되어 있는지 확인하세요 (예: winget install CaddyServer.Caddy)." }
 
 $RunDir      = Join-Path $ProjectRoot 'run'
 $LogDir      = Join-Path $ProjectRoot 'logs'

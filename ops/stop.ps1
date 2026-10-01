@@ -28,7 +28,14 @@ if (Test-Path $LockFile) {
     Write-Host "30초 안에 정상 종료되지 않아 강제로 정리합니다."
     $lockPid = Get-Content $LockFile -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($lockPid) { Stop-Process -Id $lockPid -Force -ErrorAction SilentlyContinue }
-    Get-Process python  -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*Python314*' } | Stop-Process -Force -ErrorAction SilentlyContinue
+    # Matched by command line (server.py), not by Python version/path (portability
+    # pass) -- the old '*Python314*' path match was both unportable to another
+    # machine's Python install AND too broad (would hit any unrelated Python314
+    # process on this one), where this would never match a script doing something
+    # else.
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*server.py*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Get-Process caddy   -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Remove-Item $LockFile -ErrorAction SilentlyContinue
 }

@@ -15,9 +15,18 @@
 # to the other machine and run `mkcert -install` there (or import rootCA.pem
 # into that OS's trust store directly).
 #
-# If this PC's LAN IP changes, regenerate the cert (see README) and update
-# the address below to match.
-192.168.30.15:8443, localhost:8443, infrasight.local:8443 {
+# Portability pass: this used to list this PC's LAN IP explicitly
+# (192.168.30.15:8443, localhost:8443, infrasight.local:8443), which meant
+# moving the whole app to a different PC/location required editing this file
+# to match its new IP. A bare port binds every local interface regardless of
+# what hostname/IP the browser used to connect (Caddy has no other site block
+# to disambiguate against), so the same Caddyfile now works unchanged on any
+# machine -- only the cert below still needs to be reissued for that
+# machine's actual LAN IP (mkcert -install, then e.g.
+# mkcert -cert-file certs/infrasight.crt -key-file certs/infrasight.key
+#   <new-lan-ip> localhost infrasight.local
+# from this project's folder).
+:8443 {
 	tls certs/infrasight.crt certs/infrasight.key
 
 	encode gzip
