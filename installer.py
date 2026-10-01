@@ -11,8 +11,11 @@ as data files -- see build_installer.ps1 for the exact --add-data list.
 
 Modes (chosen automatically on first run; the scheduled task set up by the
 wizard always launches with --supervise):
-  (no flag, not yet installed) -> first-run setup wizard, then --supervise
-  (no flag, already installed) -> straight to --supervise (manual re-run)
+  (no flag, not yet installed) -> elevate via UAC if needed, then first-run
+                                    setup wizard, then --supervise
+  (no flag, already installed) -> straight to --supervise (manual re-run,
+                                    runs as whatever user double-clicked it --
+                                    no elevation, matching the scheduled task)
   --serve                       -> runs the Flask/waitress backend in this
                                     process (what used to be `python server.py`)
   --supervise                   -> keeps --serve and caddy.exe alive,
@@ -66,6 +69,35 @@ def this_executable_command():
     if getattr(sys, 'frozen', False):
         return [sys.executable]
     return [sys.executable, os.path.abspath(__file__)]
+
+
+def is_elevated():
+    if not IS_WINDOWS:
+        return True
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def relaunch_elevated():
+    """Re-invokes this same exe, with the same arguments, through a UAC
+    prompt (ShellExecuteW 'runas'). Without this, a non-admin double-click
+    (the common case) would silently fail to register the firewall rules
+    in setup_firewall() later, defeating the whole point of a "one-click"
+    installer -- the user would still have to find and run a PowerShell
+    command by hand. A child process normally inherits its parent's
+    elevation, so doing this once here, before relocate_and_relaunch_if_needed()
+    spawns the copy at the stable path, covers the entire setup wizard with
+    a single approval. Returns True if the elevated relaunch was *started*
+    (not whether the user actually clicked Yes -- Windows gives no way to
+    tell the difference from here)."""
+    try:
+        params = ' '.join(f'"{a}"' for a in sys.argv[1:])
+        ret = ctypes.windll.shell32.ShellExecuteW(None, 'runas', sys.executable, params, None, 1)
+        return ret > 32
+    except Exception:
+        return False
 
 
 def _stop_other_running_instances():
@@ -303,15 +335,29 @@ def run_supervise(open_browser=False):
     backoff_until = {'backend': None, 'caddy': None}
 
     def start_backend():
-        p = subprocess.Popen(this_executable_command() + ['--serve'], cwd=d, creationflags=CREATE_NO_WINDOW)
-        log('INFO', f"Backend 시작됨 (PID {p.pid})")
-        return p
+        # A launch failure (missing/quarantined file, bad permissions) used to
+        # raise straight out of this function -- uncaught, it tore down the
+        # whole try block below including an already-started Caddy, crashing
+        # the entire supervisor instead of just this one piece. Returning
+        # None instead lets the existing alive()/register_crash() retry loop
+        # handle "never started" exactly like "started then died".
+        try:
+            p = subprocess.Popen(this_executable_command() + ['--serve'], cwd=d, creationflags=CREATE_NO_WINDOW)
+            log('INFO', f"Backend 시작됨 (PID {p.pid})")
+            return p
+        except Exception as e:
+            log('ERROR', f"Backend 시작 실패: {e}")
+            return None
 
     def start_caddy():
-        p = subprocess.Popen([os.path.join(d, 'caddy.exe'), 'run', '--config', 'Caddyfile'],
-                              cwd=d, creationflags=CREATE_NO_WINDOW)
-        log('INFO', f"Caddy 시작됨 (PID {p.pid})")
-        return p
+        try:
+            p = subprocess.Popen([os.path.join(d, 'caddy.exe'), 'run', '--config', 'Caddyfile'],
+                                  cwd=d, creationflags=CREATE_NO_WINDOW)
+            log('INFO', f"Caddy 시작됨 (PID {p.pid})")
+            return p
+        except Exception as e:
+            log('ERROR', f"Caddy 시작 실패: {e}")
+            return None
 
     def alive(p):
         return p is not None and p.poll() is None
@@ -453,6 +499,26 @@ def main():
         if relocate_and_relaunch_if_needed():
             return
         run_supervise(open_browser=True)
+        return
+
+    # Fresh install: elevate once, up front -- mkcert -install doesn't need
+    # it (CurrentUser cert store), but the firewall rules later in the
+    # wizard do, and relocate_and_relaunch_if_needed()'s spawned copy below
+    # inherits whatever elevation this process already has. One UAC prompt
+    # here, instead of a silent "방화벽 규칙을 자동으로 추가하지 못했습니다"
+    # at the very end that would have sent the user to find and run a
+    # PowerShell command themselves.
+    if IS_WINDOWS and not is_elevated():
+        print('관리자 권한이 필요합니다 (인증서 등록 · 방화벽 설정).')
+        print('잠시 후 "사용자 계정 컨트롤" 승인 창이 뜨면 "예"를 눌러주세요.')
+        ok = relaunch_elevated()
+        if not ok:
+            print('관리자 권한 요청에 실패했습니다. 이 파일을 마우스 오른쪽 버튼으로 누른 뒤 "관리자 권한으로 실행"을 선택해 다시 시도해주세요.')
+        # This window is about to close either way (the real work continues
+        # in the elevated relaunch, or the user needs to read the error
+        # above) -- without this pause it would vanish mid-UAC-prompt,
+        # which looks like a crash rather than the expected hand-off.
+        time.sleep(4)
         return
 
     if relocate_and_relaunch_if_needed():
