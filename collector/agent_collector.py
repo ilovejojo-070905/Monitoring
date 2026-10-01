@@ -10,6 +10,7 @@ freshness window now survives a restart instead of resetting to None.
 """
 import time
 
+from collector import state
 from collector.state import LAST_REPORT, push_cap
 import storage
 
@@ -27,16 +28,22 @@ def check_freshness(entity, device_row):
     device_id = device_row['id']
     last = LAST_REPORT.get(device_id)
     now = time.time()
-    was_online = entity.get('online', False)
-    if last is None:
-        entity.update(mode='agent', online=False, reachable=False, status='warn')
-    else:
-        age = now - last
-        entity['online'] = age <= ONLINE_WINDOW_SEC
-        if not entity['online']:
-            entity['status'] = 'crit' if age > WARN_WINDOW_SEC else 'warn'
-            entity['reachable'] = False
-    if was_online and not entity['online'] and not storage.in_maintenance(device_row):
+    # Code review pass, finding #5: no slow I/O anywhere in this function
+    # (this is push-based -- the network wait already happened on the HTTP
+    # request thread that called record_report below), so the whole
+    # mutation can just be one lock scope with no parallelism cost.
+    with state.LOCK:
+        was_online = entity.get('online', False)
+        if last is None:
+            entity.update(mode='agent', online=False, reachable=False, status='warn')
+        else:
+            age = now - last
+            entity['online'] = age <= ONLINE_WINDOW_SEC
+            if not entity['online']:
+                entity['status'] = 'crit' if age > WARN_WINDOW_SEC else 'warn'
+                entity['reachable'] = False
+        is_online_now = entity['online']
+    if was_online and not is_online_now and not storage.in_maintenance(device_row):
         storage.add_incident('warn', device_row['name'], 'SMS', f"{device_row['name']} 에이전트 응답 없음 (통신 두절)",
                               device_id=device_id, event_type='REACHABILITY')
     # Bookkeeping for the 5-state collection status (연속 실패 횟수/마지막 수집
@@ -56,16 +63,22 @@ def check_freshness(entity, device_row):
 def record_report(entity, device_row, body, remote_addr=None):
     cpu = float(body.get('cpu', 0)); mem = float(body.get('mem', 0)); disk = float(body.get('disk', 0))
     status = 'crit' if (cpu >= 90 or mem >= 92 or disk >= 92) else 'warn' if (cpu >= 75 or mem >= 80 or disk >= 80) else 'good'
-    prev_status = entity.get('status', 'good')
-    was_online = entity.get('online', True)
-    entity.update(mode='agent', online=True, reachable=True, latencyMs=0,
-                  cpu=round(cpu, 1), mem=round(mem, 1), disk=round(disk, 1),
-                  netIn=round(float(body.get('netIn', 0)), 2), netOut=round(float(body.get('netOut', 0)), 2),
-                  load=round(float(body.get('load', 0)), 2), uptime=round(float(body.get('uptime', 0)), 1),
-                  status=status, procs=(body.get('procs') or [])[:6])
-    push_cap(entity['hist']['cpu'], entity['cpu'])
-    push_cap(entity['hist']['mem'], entity['mem'])
-    push_cap(entity['hist']['net'], round(entity['netIn'] + entity['netOut'], 2))
+    with state.LOCK:
+        prev_status = entity.get('status', 'good')
+        was_online = entity.get('online', True)
+        entity.update(mode='agent', online=True, reachable=True, latencyMs=0,
+                      cpu=round(cpu, 1), mem=round(mem, 1), disk=round(disk, 1),
+                      netIn=round(float(body.get('netIn', 0)), 2), netOut=round(float(body.get('netOut', 0)), 2),
+                      load=round(float(body.get('load', 0)), 2), uptime=round(float(body.get('uptime', 0)), 1),
+                      status=status, procs=(body.get('procs') or [])[:12],
+                      # More-detail pass: disks/nics/services are already capped and
+                      # shaped by the agent itself (sample_disks/sample_nics/
+                      # sample_services in agent.py) -- stored as-is, display-only.
+                      disks=(body.get('disks') or [])[:12], nics=(body.get('nics') or [])[:10],
+                      services=body.get('services') or {'running': 0, 'total': 0, 'stoppedAutoStart': []})
+        push_cap(entity['hist']['cpu'], entity['cpu'])
+        push_cap(entity['hist']['mem'], entity['mem'])
+        push_cap(entity['hist']['net'], round(entity['netIn'] + entity['netOut'], 2))
     now = time.time()
     LAST_REPORT[device_row['id']] = now
     now_ms = int(now * 1000)

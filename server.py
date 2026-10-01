@@ -124,6 +124,15 @@ IP_MAX_ATTEMPTS = 20
 
 def _ip_rate_limited(ip):
     now = time.time()
+    # Code review pass, finding #2: an IP's own deque emptying out (the loop
+    # below) only ever gets noticed if that same IP shows up again later --
+    # one attempt from an IP that never returns left a permanent, never-
+    # collected dict entry. This endpoint is low-traffic (login attempts
+    # only), so sweeping every known IP here each call is cheap, and it's
+    # the only reliable way to actually bound the dict's size over time.
+    stale = [k for k, dq in _login_attempts_by_ip.items() if not dq or now - dq[-1] > IP_WINDOW_SEC]
+    for k in stale:
+        del _login_attempts_by_ip[k]
     dq = _login_attempts_by_ip[ip]
     while dq and now - dq[0] > IP_WINDOW_SEC:
         dq.popleft()
@@ -578,10 +587,17 @@ def api_agent_report():
         return jsonify({'error': 'unknown token'}), 404
     with state.LOCK:
         entity = state.ensure_entity(device_row)
-        # request.remote_addr (not any client-supplied field) so a device
-        # can't misreport its own address -- this is the real TCP peer,
-        # correctly resolved through Caddy too via _TrustedProxyFix above.
-        agent_collector.record_report(entity, device_row, body, request.remote_addr)
+    # Bug fix: record_report acquires state.LOCK itself now (the code review
+    # pass's finding #5 fix) to protect only its actual entity mutation, not
+    # the slow bits around it -- calling it while *this* call site still held
+    # the same lock around it deadlocked every single agent report (the lock
+    # isn't reentrant, so the thread blocked on itself forever). This is
+    # exactly scheduler.py's own _run_job pattern: hold the lock only for
+    # ensure_entity, release it, then call into the collector unlocked.
+    # request.remote_addr (not any client-supplied field) so a device can't
+    # misreport its own address -- the real TCP peer, correctly resolved
+    # through Caddy too via _TrustedProxyFix above.
+    agent_collector.record_report(entity, device_row, body, request.remote_addr)
     metrics.record_entity_metrics(device_row['id'], entity)
     return jsonify({'ok': True})
 

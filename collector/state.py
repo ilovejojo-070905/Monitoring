@@ -9,7 +9,14 @@ import threading
 
 HIST_LEN = 30
 
-LOCK = threading.Lock()
+# Reentrant deliberately: a plain Lock deadlocks a thread that acquires it
+# twice (even on purpose, e.g. a caller holding it around ensure_entity()
+# while also calling into a collector function that takes it again for its
+# own mutation) -- this already happened once (api_agent_report + agent_
+# collector.record_report, fixed by not double-acquiring there), and an
+# RLock means the same mistake in a *future* call site is a no-op instead
+# of silently hanging that request forever.
+LOCK = threading.RLock()
 LIVE = {}          # device_id -> metrics dict (see shapes below)
 LAST_REPORT = {}   # device_id -> epoch seconds of last agent report
 

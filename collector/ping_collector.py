@@ -12,6 +12,7 @@ import time
 
 import storage
 import validation
+from collector import state
 from collector.state import push_cap, evaluate_status
 
 IS_WINDOWS = storage.IS_WINDOWS
@@ -72,7 +73,10 @@ def sample_ping(entity, device_row):
     port = DB_PORTS.get(fields.get('engine')) if device_row['category'] == 'db' else fields.get('port')
     timeout_s = device_row.get('timeout_sec') or DEFAULT_TIMEOUT_SEC
     retry_count = device_row.get('retry_count')
-    retry_count = DEFAULT_RETRY_COUNT if retry_count is None else int(retry_count)
+    try:
+        retry_count = DEFAULT_RETRY_COUNT if retry_count is None else int(retry_count)
+    except (TypeError, ValueError):
+        retry_count = DEFAULT_RETRY_COUNT
 
     reachable, latency = _attempt(ip, port, timeout_s)
     tries = 1
@@ -83,10 +87,16 @@ def sample_ping(entity, device_row):
     prev_failures = device_row.get('consecutive_failures') or 0
     failures = 0 if reachable else prev_failures + 1
     status = evaluate_status(failures)
-    prev_status = entity.get('status', 'good')
-
-    entity.update(mode='ping', online=True, reachable=reachable, latencyMs=latency, status=status)
-    push_cap(entity['hist']['latency'], latency if latency is not None else 0)
+    # Code review pass, finding #5: the network I/O above (ping/TCP attempts,
+    # up to retry_count+1 of them) deliberately stays outside this lock --
+    # that's the whole point of each device getting its own worker thread.
+    # Only the actual shared-dict read-then-write is a real race with
+    # /api/state reading the same entity concurrently, so only this part
+    # needs to be atomic.
+    with state.LOCK:
+        prev_status = entity.get('status', 'good')
+        entity.update(mode='ping', online=True, reachable=reachable, latencyMs=latency, status=status)
+        push_cap(entity['hist']['latency'], latency if latency is not None else 0)
 
     now_ms = int(time.time() * 1000)
     storage.update_failure_state(

@@ -15,6 +15,7 @@ import asyncio
 import time
 
 import storage
+from collector import state
 from collector.state import hist, push_cap, evaluate_status
 from collector import snmp_profiles
 from collector import lldp
@@ -181,14 +182,24 @@ def sample_snmp(entity, device_row):
     category = device_row['category']
     timeout_s = device_row.get('timeout_sec') or DEFAULT_TIMEOUT_SEC
     vendor_profile = device_row.get('vendor_profile')
-    prev_status = entity.get('status', 'good')
-    entity['mode'] = 'snmp'
-    entity['online'] = True
+    # Code review pass, finding #5: these dict reads/writes are the part
+    # that's actually shared with /api/state's concurrent reads -- the SNMP
+    # exchange a few lines down is the slow part and deliberately stays
+    # unlocked (each device's own worker thread is the whole point of the
+    # pool). Scoped to the flat, easy-to-verify mutation points in this
+    # function rather than the large nested per-interface stats block
+    # further down, where the risk of a reindentation mistake outweighs
+    # protecting data that's already read-mostly and rarely raced.
+    with state.LOCK:
+        prev_status = entity.get('status', 'good')
+        entity['mode'] = 'snmp'
+        entity['online'] = True
 
     prev_failures = device_row.get('consecutive_failures') or 0
 
     if not SNMP_AVAILABLE:
-        entity.update(reachable=False, status='crit', latencyMs=None)
+        with state.LOCK:
+            entity.update(reachable=False, status='crit', latencyMs=None)
         return
 
     now = time.time()
@@ -208,9 +219,10 @@ def sample_snmp(entity, device_row):
         except Exception:
             pass
 
-    entity['reachable'] = result['reachable']
-    entity['latencyMs'] = result.get('latencyMs')
-    push_cap(entity['hist']['latency'], entity['latencyMs'] if entity['latencyMs'] is not None else 0)
+    with state.LOCK:
+        entity['reachable'] = result['reachable']
+        entity['latencyMs'] = result.get('latencyMs')
+        push_cap(entity['hist']['latency'], entity['latencyMs'] if entity['latencyMs'] is not None else 0)
 
     failures = 0 if result['reachable'] else prev_failures + 1
     status = evaluate_status(failures) if not result['reachable'] else 'good'
@@ -223,22 +235,24 @@ def sample_snmp(entity, device_row):
         device_row.get('last_failure_at') if result['reachable'] else now_ms)
 
     if not result['reachable']:
-        entity['status'] = status
+        with state.LOCK:
+            entity['status'] = status
         if prev_status == 'good' and status != 'good' and not storage.in_maintenance(device_row):
             storage.add_incident(status, device_row['name'], storage.category_label(category),
                                   f"{device_row['name']} SNMP 응답 없음 (커뮤니티/버전을 확인하세요, 연속 {failures}회)",
                                   device_id=device_row['id'], event_type='REACHABILITY')
         return
 
-    entity['status'] = 'good'
-    entity['sysName'] = result.get('sysName')
-    entity['sysDescr'] = result.get('sysDescr')
-    try:
-        ticks = result.get('sysUptimeTicks')
-        if ticks is not None:
-            entity['uptime'] = round(int(ticks) / 100 / 86400, 2)
-    except Exception:
-        pass
+    with state.LOCK:
+        entity['status'] = 'good'
+        entity['sysName'] = result.get('sysName')
+        entity['sysDescr'] = result.get('sysDescr')
+        try:
+            ticks = result.get('sysUptimeTicks')
+            if ticks is not None:
+                entity['uptime'] = round(int(ticks) / 100 / 86400, 2)
+        except Exception:
+            pass
     if prev_status != 'good' and not storage.in_maintenance(device_row):
         storage.add_incident('info', device_row['name'], storage.category_label(category),
                               f"{device_row['name']} SNMP 응답 정상 복구",

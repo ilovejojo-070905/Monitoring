@@ -318,7 +318,7 @@ def update_agent_info(device_id, version, os_info, started_at, reported_ip, last
 # can flag a device whose agentVersion (reported live, see above) doesn't
 # match -- the version-comparison groundwork an eventual auto-update feature
 # would need, without this pass implementing any actual update mechanism.
-AGENT_VERSION = '1.0.0'
+AGENT_VERSION = '1.1.0'
 
 
 # Mirrors agent_collector.ONLINE_WINDOW_SEC / WARN_WINDOW_SEC. Duplicated
@@ -819,6 +819,29 @@ def run_metrics_retention():
         conn.execute('DELETE FROM metrics_raw WHERE ts < ?', (now - RAW_RETENTION_MS,))
         conn.execute('DELETE FROM metrics_5m WHERE bucket_ts < ?', (now - FIVE_MIN_RETENTION_MS,))
         conn.execute('DELETE FROM metrics_1h WHERE bucket_ts < ?', (now - ONE_HOUR_RETENTION_MS,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# Code review pass, finding #3: metrics had a retention policy; incidents
+# and audit_log never did, so both grow without bound for as long as the
+# app runs. An *open* incident is still something someone needs to act on
+# no matter how old it is, so only resolved/ack'd ones are ever purged here
+# -- audit_log has no such "still needs attention" concept, so it's purged
+# by age alone.
+INCIDENT_RETENTION_DAYS = 90
+AUDIT_LOG_RETENTION_DAYS = 365
+
+
+def run_incident_retention():
+    now = int(time.time() * 1000)
+    incident_cutoff = now - INCIDENT_RETENTION_DAYS * 86400 * 1000
+    audit_cutoff = now - AUDIT_LOG_RETENTION_DAYS * 86400 * 1000
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM incidents WHERE status!='open' AND ts<?", (incident_cutoff,))
+        conn.execute('DELETE FROM audit_log WHERE ts<?', (audit_cutoff,))
         conn.commit()
     finally:
         conn.close()

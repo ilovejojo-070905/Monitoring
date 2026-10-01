@@ -39,7 +39,7 @@ IS_WINDOWS = os.name == 'nt'
 # foundation an eventual auto-update feature would compare against; nothing
 # here downloads or applies updates yet, by design (see the directive this
 # was built from).
-AGENT_VERSION = '1.0.0'
+AGENT_VERSION = '1.1.0'
 
 _START_TIME = time.time()
 _LAST_ERROR = None  # most recent local exception message, if any (sample() or the report request itself)
@@ -68,6 +68,28 @@ def read_embedded_config():
         return None
 
 
+def _stop_other_running_instances():
+    """A stale copy already running from a previous install (old token)
+    holds the target exe file locked on Windows, which silently breaks the
+    copy below -- this process then falls back to running from wherever it
+    was downloaded instead of the stable path, and the *old* process just
+    keeps running on its *old* (by now revoked) token forever. This used to
+    require manually ending InfraSightAgent.exe in Task Manager before
+    reinstalling; now a fresh install (a genuinely different embedded
+    token -- see is_fresh_embedded in main()) does it automatically.
+    Best-effort: any failure here just means the copy below may fail too,
+    same as before this existed."""
+    my_pid = os.getpid()
+    for p in psutil.process_iter(['pid', 'name']):
+        try:
+            if p.info['pid'] == my_pid or (p.info['name'] or '').lower() != 'infrasightagent.exe':
+                continue
+            p.terminate()
+            p.wait(timeout=3)
+        except Exception:
+            pass
+
+
 def relocate_and_relaunch_if_needed():
     """A one-click installer exe downloaded straight from the dashboard often
     sits in Downloads/Desktop -- fine to run once, but install_startup()
@@ -84,6 +106,7 @@ def relocate_and_relaunch_if_needed():
     current = os.path.abspath(sys.executable)
     if os.path.normcase(current) == os.path.normcase(target):
         return False
+    _stop_other_running_instances()
     try:
         os.makedirs(target_dir, exist_ok=True)
         shutil.copy2(current, target)
@@ -177,7 +200,80 @@ def prompt_for_config():
     return {'server': server, 'token': token}
 
 
-def sample(last_net, last_net_t):
+def sample_disks():
+    """Per-partition usage (more detail pass): disk_usage() can raise for
+    unready removable drives (empty CD slot, disconnected network share), so
+    each partition is sampled independently -- one bad drive shouldn't blank
+    out the rest."""
+    out = []
+    try:
+        parts = psutil.disk_partitions(all=False)
+    except Exception:
+        parts = []
+    for p in parts:
+        try:
+            u = psutil.disk_usage(p.mountpoint)
+        except Exception:
+            continue
+        out.append({
+            'mount': p.mountpoint, 'total': round(u.total / 1_073_741_824, 1),
+            'used': round(u.used / 1_073_741_824, 1), 'pct': round(u.percent, 1),
+        })
+    return out[:12]
+
+
+def sample_nics(last_nics, dt):
+    """Per-interface in/out (more detail pass): mirrors the existing
+    aggregate net_in/net_out math, just keyed by interface name instead of
+    summed across all of them. Interfaces that only just appeared (no prior
+    sample) report 0 for this cycle rather than a misleading spike."""
+    out = []
+    try:
+        current = psutil.net_io_counters(pernic=True)
+    except Exception:
+        current = {}
+    for name, c in current.items():
+        prev = last_nics.get(name)
+        if prev is None:
+            in_mbps = out_mbps = 0.0
+        else:
+            in_mbps = max((c.bytes_recv - prev.bytes_recv) * 8 / dt / 1_000_000, 0)
+            out_mbps = max((c.bytes_sent - prev.bytes_sent) * 8 / dt / 1_000_000, 0)
+        if c.bytes_recv or c.bytes_sent:
+            out.append({'name': name, 'inMbps': round(in_mbps, 2), 'outMbps': round(out_mbps, 2)})
+    out.sort(key=lambda x: x['inMbps'] + x['outMbps'], reverse=True)
+    return out[:10], current
+
+
+def sample_services():
+    """Windows auto-start services that aren't running (service/daemon-status
+    pass): reporting all ~200 services every cycle would be noise -- a
+    service set to start automatically but not currently running is the
+    actionable anomaly worth surfacing, so only that subset (plus a running/
+    total count for context) goes in the payload. Windows-only: psutil has
+    no win_service_iter() equivalent on Linux/Mac."""
+    if not IS_WINDOWS:
+        return {'running': 0, 'total': 0, 'stoppedAutoStart': []}
+    running = 0
+    total = 0
+    anomalies = []
+    try:
+        for svc in psutil.win_service_iter():
+            try:
+                info = svc.as_dict()
+            except Exception:
+                continue
+            total += 1
+            if info.get('status') == 'running':
+                running += 1
+            elif info.get('start_type') == 'automatic':
+                anomalies.append({'name': info.get('display_name') or info.get('name'), 'status': info.get('status')})
+    except Exception:
+        pass
+    return {'running': running, 'total': total, 'stoppedAutoStart': anomalies[:30]}
+
+
+def sample(last_net, last_net_t, last_nics):
     cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory().percent
     try:
@@ -189,6 +285,7 @@ def sample(last_net, last_net_t):
     dt = max(now - last_net_t, 0.5)
     net_in = max((net.bytes_recv - last_net.bytes_recv) * 8 / dt / 1_000_000, 0)
     net_out = max((net.bytes_sent - last_net.bytes_sent) * 8 / dt / 1_000_000, 0)
+    nics, current_nics = sample_nics(last_nics, dt)
     try:
         load = os.getloadavg()[0]
     except Exception:
@@ -196,17 +293,22 @@ def sample(last_net, last_net_t):
     uptime_days = round((time.time() - psutil.boot_time()) / 86400, 1)
     ncpu = psutil.cpu_count() or 1
     procs = []
-    for p in psutil.process_iter(['name', 'cpu_percent']):
+    for p in psutil.process_iter(['name', 'cpu_percent', 'memory_percent']):
         try:
             info = p.info
-            procs.append({'name': info.get('name') or '-', 'pct': round((info.get('cpu_percent') or 0.0) / ncpu, 1)})
+            procs.append({
+                'name': info.get('name') or '-',
+                'pct': round((info.get('cpu_percent') or 0.0) / ncpu, 1),
+                'memPct': round(info.get('memory_percent') or 0.0, 1),
+            })
         except Exception:
             pass
     procs.sort(key=lambda x: x['pct'], reverse=True)
     payload = {
         'cpu': round(cpu, 1), 'mem': round(mem, 1), 'disk': round(disk, 1),
         'netIn': round(net_in, 2), 'netOut': round(net_out, 2),
-        'load': round(load, 2), 'uptime': uptime_days, 'procs': procs[:6],
+        'load': round(load, 2), 'uptime': uptime_days, 'procs': procs[:12],
+        'disks': sample_disks(), 'nics': nics, 'services': sample_services(),
         # Agent management pass: version/OS/start time are static per-process
         # (constant every report -- the server only needs the latest one),
         # lastError carries forward whatever the most recent local exception
@@ -215,7 +317,7 @@ def sample(last_net, last_net_t):
         'version': AGENT_VERSION, 'os': platform.platform(), 'startedAt': int(_START_TIME * 1000),
         'lastError': _LAST_ERROR,
     }
-    return payload, net, now
+    return payload, net, now, current_nics
 
 
 def run(server, token, interval):
@@ -230,12 +332,16 @@ def run(server, token, interval):
             pass
     last_net = psutil.net_io_counters()
     last_net_t = time.time()
+    try:
+        last_nics = psutil.net_io_counters(pernic=True)
+    except Exception:
+        last_nics = {}
     time.sleep(1)
 
     global _LAST_ERROR
     while True:
         try:
-            payload, last_net, last_net_t = sample(last_net, last_net_t)
+            payload, last_net, last_net_t, last_nics = sample(last_net, last_net_t, last_nics)
             payload['token'] = token
             req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'),
                                           headers={'Content-Type': 'application/json'}, method='POST')

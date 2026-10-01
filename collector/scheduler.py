@@ -19,7 +19,31 @@ import storage
 from collector import state, health, metrics
 from collector import local_collector, ping_collector, snmp_collector, agent_collector
 
-MAX_WORKERS = 10
+def _compute_max_workers():
+    """Code review pass, finding #4: this was a flat, hardcoded 10
+    regardless of how many devices were actually registered -- fine at
+    small scale, but a handful of slow/unreachable devices can occupy every
+    worker for their full timeout and delay healthy devices' polls once
+    registered-device count grows well past it. Scales with however many
+    devices exist right now, within a floor (today's old default, so small
+    deployments are unaffected) and a ceiling (so a huge device count can't
+    spawn an unreasonable number of threads).
+
+    Computed once at import time, so a count that grows a lot later is
+    picked up on the next restart rather than instantly -- rebuilding a
+    running thread pool isn't worth it for something that only needs to
+    keep pace with slow, deliberate growth. Falls back to the old default
+    if the DB isn't ready yet (this module loads before storage.init_db()
+    runs on a brand-new install) or on any other error.
+    """
+    try:
+        n = len(storage.load_devices())
+    except Exception:
+        n = 0
+    return max(10, min(50, int(n * 1.5)))
+
+
+MAX_WORKERS = _compute_max_workers()
 
 # NULL polling_interval on a device falls back to this per-mode default.
 # Values match the old global TICK_SECONDS (2.0s) exactly, so devices that
@@ -120,6 +144,7 @@ def remove_device_job(device_id):
 def _run_retention_job():
     try:
         storage.run_metrics_retention()
+        storage.run_incident_retention()
         health.record_tick_success()
     except Exception as e:
         health.record_tick_error(f"retention: {e}")
