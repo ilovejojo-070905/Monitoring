@@ -784,7 +784,7 @@ def api_test_smtp():
 def api_trigger_backup():
     backup_dir = os.path.join(BASE_DIR, 'backups')
     try:
-        path = storage.backup_database(backup_dir, keep=storage.BACKUP_RETENTION_COUNT)
+        path = storage.backup_database(backup_dir, keep_days=storage.BACKUP_RETENTION_DAYS)
     except Exception as e:
         audit('BACKUP_FAILURE', details=str(e))
         return jsonify({'error': '백업에 실패했습니다. 감사 로그에서 자세한 내용을 확인하세요.'}), 500

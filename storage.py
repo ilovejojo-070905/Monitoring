@@ -884,16 +884,25 @@ def load_metric_history(device_id, metric, granularity='raw', since_ms=None, lim
 # Data backup pass: the single knob for "최근 N일간 백업 유지" -- both the
 # daily scheduled job (collector/scheduler.py's _run_backup_job) and the
 # manual "지금 백업" admin button (server.py's /api/system/backup) call
-# backup_database with this instead of their own literal 14, so there's one
+# backup_database with this instead of their own literal, so there's one
 # place to change the retention window rather than two that could drift out
 # of sync with each other.
-BACKUP_RETENTION_COUNT = 14
+#
+# 2nd-dev-pass finding #5: this used to be BACKUP_RETENTION_COUNT=14, a
+# "keep the latest 14 files" count -- which only equals "14 days" if backup
+# runs exactly once a day. The manual "지금 백업" button shares this same
+# cleanup, so a few manual backups taken between daily runs silently pushed
+# older-but-still-recent daily backups out of the window early. Retention is
+# now based on each file's actual age, matching what the comment (and the
+# 2nd-dev-pass spec's "최근 30일 검토") always said it did.
+BACKUP_RETENTION_DAYS = 30
 
 
-def backup_database(backup_dir, keep=14):
+def backup_database(backup_dir, keep_days=BACKUP_RETENTION_DAYS):
     """Uses sqlite3's own backup API (not a raw file copy) so a backup taken
     while the collector thread is mid-write is still a consistent snapshot.
-    Keeps only the most recent `keep` backups.
+    Deletes backup files older than `keep_days`, regardless of how many
+    accumulated in that window (daily cron + any manual ones).
 
     Phase F addition: runs PRAGMA integrity_check on the freshly-written copy
     before trusting it. A backup that never gets restored until the day it's
@@ -923,12 +932,14 @@ def backup_database(backup_dir, keep=14):
         raise
     finally:
         src.close()
-    existing = sorted(
-        f for f in os.listdir(backup_dir) if f.startswith('infrasight_') and f.endswith('.db')
-    )
-    for old_file in (existing[:-keep] if len(existing) > keep else []):
+    cutoff = time.time() - keep_days * 86400
+    for f in os.listdir(backup_dir):
+        if not (f.startswith('infrasight_') and f.endswith('.db')):
+            continue
+        path = os.path.join(backup_dir, f)
         try:
-            os.remove(os.path.join(backup_dir, old_file))
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
         except OSError:
             pass
     return dest_path

@@ -154,7 +154,7 @@ def _run_backup_job():
     import os
     backup_dir = os.path.join(storage.BASE_DIR, 'backups')
     try:
-        storage.backup_database(backup_dir, keep=storage.BACKUP_RETENTION_COUNT)
+        storage.backup_database(backup_dir, keep_days=storage.BACKUP_RETENTION_DAYS)
     except Exception as e:
         health.record_tick_error(f"backup: {e}")
         storage.add_incident('warn', 'InfraSight', 'SYSTEM', f"DB 백업 실패: {e}")
