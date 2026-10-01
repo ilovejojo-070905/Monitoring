@@ -31,8 +31,15 @@ login.
 import logging
 import logging.handlers
 import os
+import sys
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# One-click installer pass: a PyInstaller-frozen exe's __file__ resolves
+# inside the ephemeral per-run extraction folder (sys._MEIPASS), not the
+# stable install directory -- logs would otherwise vanish into a temp folder
+# that's wiped on every restart. sys.executable is the frozen exe's own
+# (stable) path; this is a no-op when run as a plain script (python server.py),
+# where sys.frozen is never set.
+BASE_DIR = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 

@@ -12,15 +12,23 @@ import os
 import secrets
 import socket
 import sqlite3
+import sys
 import time
 
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import secrets_crypto
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# One-click installer pass: see applog.py's identical comment -- a frozen
+# exe's __file__ is inside a throw-away temp extraction folder, so the DB
+# (and everything else under BASE_DIR) would silently reset on every restart
+# without this.
+BASE_DIR = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, 'infrasight.db')
-PORT = 5057
+# Overridable via env var (default unchanged: 5057) -- lets a second,
+# isolated instance run side by side with the real one for testing, without
+# needing a code change each time.
+PORT = int(os.environ.get('INFRASIGHT_PORT', '5057'))
 LOCAL_ID = 'local-pc'
 IS_WINDOWS = os.name == 'nt'
 

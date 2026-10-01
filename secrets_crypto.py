@@ -9,10 +9,15 @@ infrasight.db means a copy of the DB alone (e.g. a backup file) is useless
 without also having this key.
 """
 import os
+import sys
 
 from cryptography.fernet import Fernet, InvalidToken
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# One-click installer pass: see applog.py's identical comment -- a frozen
+# exe's __file__ is inside a throw-away temp extraction folder, so the key
+# would silently regenerate (and orphan every encrypted credential) on each
+# restart without this.
+BASE_DIR = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 _KEY_PATH = os.path.join(BASE_DIR, '.infrasight_credentials_key')
 
 _fernet = None

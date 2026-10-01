@@ -1,0 +1,464 @@
+"""
+InfraSight one-click installer / supervisor.
+
+This single frozen exe (built via build_installer.ps1 into InfraSight.exe)
+replaces the whole "install Python, pip install, install Caddy, install
+mkcert, generate a cert, create an admin account, register autostart, open
+the firewall" manual sequence (see the install guide) with one double-click.
+It bundles the backend itself (server.py and everything it imports) plus
+caddy.exe, mkcert.exe, index.html, agent.py and the prebuilt agent installer
+as data files -- see build_installer.ps1 for the exact --add-data list.
+
+Modes (chosen automatically on first run; the scheduled task set up by the
+wizard always launches with --supervise):
+  (no flag, not yet installed) -> first-run setup wizard, then --supervise
+  (no flag, already installed) -> straight to --supervise (manual re-run)
+  --serve                       -> runs the Flask/waitress backend in this
+                                    process (what used to be `python server.py`)
+  --supervise                   -> keeps --serve and caddy.exe alive,
+                                    restarting whichever dies; mirrors
+                                    ops/supervisor.ps1's crash-loop backoff,
+                                    just with nothing to resolve on PATH --
+                                    everything it launches lives next to it
+  --stop                        -> asks a running --supervise instance to
+                                    shut down cleanly (mirrors ops/stop.ps1)
+  --status                      -> prints whether backend/Caddy are alive
+"""
+import argparse
+import ctypes
+import getpass
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import webbrowser
+
+IS_WINDOWS = os.name == 'nt'
+INSTALLED_MARKER = 'installed.marker'
+CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
+
+POLL_SECONDS = 5
+CRASH_WINDOW_SECONDS = 120
+CRASH_LIMIT = 5
+BACKOFF_SECONDS = 300
+
+
+def install_dir():
+    base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    d = os.path.join(base, 'InfraSight')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def bundle_root():
+    """Where PyInstaller's --add-data payloads land at runtime: an ephemeral
+    per-run temp folder when frozen, this script's own folder otherwise (lets
+    installer.py also be run unfrozen, straight from the project folder, for
+    testing)."""
+    if getattr(sys, 'frozen', False):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def this_executable_command():
+    if getattr(sys, 'frozen', False):
+        return [sys.executable]
+    return [sys.executable, os.path.abspath(__file__)]
+
+
+def _stop_other_running_instances():
+    """Mirrors agent.py's _stop_other_running_instances: a stale InfraSight.exe
+    left running from a previous install holds files locked (or two
+    supervisors would both try to bind :5057/:8443), so a fresh relocation
+    kills any sibling first. Best-effort -- psutil is already a transitive
+    dependency via collector.local_collector."""
+    import psutil
+    my_pid = os.getpid()
+    for p in psutil.process_iter(['pid', 'name']):
+        try:
+            if p.info['pid'] == my_pid or (p.info['name'] or '').lower() != 'infrasight.exe':
+                continue
+            p.terminate()
+            p.wait(timeout=3)
+        except Exception:
+            pass
+
+
+def relocate_and_relaunch_if_needed():
+    """A freshly downloaded installer often sits in Downloads -- fine to run
+    once, but the scheduled task registered in the setup wizard points at a
+    *stable* path, so this copies itself there first (same pattern as
+    agent.py's relocate_and_relaunch_if_needed)."""
+    if not IS_WINDOWS or not getattr(sys, 'frozen', False):
+        return False
+    d = install_dir()
+    target = os.path.join(d, 'InfraSight.exe')
+    current = os.path.abspath(sys.executable)
+    if os.path.normcase(current) == os.path.normcase(target):
+        return False
+    _stop_other_running_instances()
+    try:
+        shutil.copy2(current, target)
+        # Only --supervise/--serve/--stop/--status are non-interactive -- the
+        # no-flag first run continues into run_setup_wizard(), which prompts
+        # on the console for the admin username/password. Relaunching THAT
+        # hidden (CREATE_NO_WINDOW) would leave the user staring at a window
+        # that silently did nothing forever, waiting on a console input() no
+        # one can see or type into. Only hide the window for the modes that
+        # never read stdin.
+        hide = bool(set(sys.argv[1:]) & {'--supervise', '--serve', '--stop', '--status'})
+        subprocess.Popen([target] + sys.argv[1:], cwd=d,
+                          creationflags=CREATE_NO_WINDOW if hide else subprocess.CREATE_NEW_CONSOLE)
+        return True
+    except Exception as e:
+        print(f"[installer] 표준 위치({target})로 복사하지 못해 현재 위치에서 계속합니다: {e}")
+        return False
+
+
+def extract_bundled_files(dest_dir):
+    src_root = bundle_root()
+    for name in ('index.html', 'agent.py', 'Caddyfile', 'caddy.exe', 'mkcert.exe'):
+        s = os.path.join(src_root, name)
+        if os.path.exists(s):
+            shutil.copy2(s, os.path.join(dest_dir, name))
+        else:
+            print(f"  (경고) 번들 파일을 찾을 수 없습니다: {name}")
+    dist_src = os.path.join(src_root, 'dist', 'InfraSightAgent.exe')
+    if os.path.exists(dist_src):
+        os.makedirs(os.path.join(dest_dir, 'dist'), exist_ok=True)
+        shutil.copy2(dist_src, os.path.join(dest_dir, 'dist', 'InfraSightAgent.exe'))
+
+
+def setup_certs(d):
+    import storage
+    mkcert_exe = os.path.join(d, 'mkcert.exe')
+    try:
+        subprocess.run([mkcert_exe, '-install'], cwd=d)
+    except Exception as e:
+        print(f"  mkcert -install 실행 중 문제: {e}")
+    lan_ip = storage.get_lan_ip()
+    cert_path = os.path.join(d, 'certs', 'infrasight.crt')
+    key_path = os.path.join(d, 'certs', 'infrasight.key')
+    try:
+        subprocess.run(
+            [mkcert_exe, '-cert-file', cert_path, '-key-file', key_path, lan_ip, 'localhost', 'infrasight.local'],
+            check=True, cwd=d)
+        print(f"  인증서 발급 완료 (이 PC의 LAN IP: {lan_ip})")
+    except Exception as e:
+        print(f"  인증서 발급 실패: {e}")
+        print("  나중에 설치 폴더에서 아래 명령을 직접 실행해주세요:")
+        print(f'    mkcert.exe -cert-file certs\\infrasight.crt -key-file certs\\infrasight.key {lan_ip} localhost infrasight.local')
+
+
+def create_admin_account():
+    import storage
+    print("  로그인에 사용할 관리자 계정을 만듭니다.")
+    while True:
+        username = input("  아이디: ").strip()
+        if username:
+            break
+        print("  아이디를 입력해주세요.")
+    while True:
+        pw = getpass.getpass("  비밀번호 (8자 이상, 화면에 보이지 않습니다): ")
+        if len(pw) < 8:
+            print("  8자 이상 입력해주세요.")
+            continue
+        pw2 = getpass.getpass("  비밀번호 확인: ")
+        if pw != pw2:
+            print("  비밀번호가 일치하지 않습니다. 다시 입력하세요.")
+            continue
+        break
+    storage.create_admin_if_missing(username, pw)
+    print(f"  관리자 계정 '{username}' 생성 완료")
+
+
+def register_autostart(d):
+    exe_path = os.path.join(d, 'InfraSight.exe')
+    ps_script = (
+        f'$action = New-ScheduledTaskAction -Execute "{exe_path}" -Argument "--supervise" -WorkingDirectory "{d}"; '
+        f'$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; '
+        f'$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries '
+        f'-StartWhenAvailable -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 '
+        f'-RestartInterval (New-TimeSpan -Minutes 1); '
+        f'Register-ScheduledTask -TaskName "InfraSight Supervisor" -Action $action -Trigger $trigger '
+        f'-Settings $settings -RunLevel Limited -Force | Out-Null'
+    )
+    try:
+        subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', ps_script],
+                        check=True, capture_output=True, text=True)
+        print("  로그온 시 자동 시작 등록 완료")
+    except Exception as e:
+        print(f"  자동 시작 등록 실패: {e}")
+        print("  나중에 PowerShell에서 직접 실행해 등록할 수 있습니다 (설치 폴더에서 InfraSight.exe --supervise 를 가리키도록).")
+
+
+def setup_firewall():
+    rules = [('InfraSight HTTPS (Caddy)', 8443), ('InfraSight HTTP (legacy direct, agents)', 5057)]
+    for name, port in rules:
+        ps = (f'New-NetFirewallRule -DisplayName "{name}" -Direction Inbound -Protocol TCP '
+              f'-LocalPort {port} -Action Allow -ErrorAction Stop | Out-Null')
+        try:
+            subprocess.run(['powershell', '-NoProfile', '-Command', ps], check=True, capture_output=True, text=True)
+            print(f"  방화벽 규칙 추가됨: {name}")
+        except Exception:
+            print(f"  방화벽 규칙을 자동으로 추가하지 못했습니다 ({name}).")
+            print(f"  다른 PC/장비에서 접속이 안 되면, 관리자 권한 PowerShell에서 아래 명령을 실행해주세요:")
+            print(f'    New-NetFirewallRule -DisplayName "{name}" -Direction Inbound -Protocol TCP -LocalPort {port} -Action Allow')
+
+
+def run_setup_wizard(d):
+    print('=' * 60)
+    print(' InfraSight 설치를 시작합니다')
+    print(f' 설치 위치: {d}')
+    print('=' * 60)
+    for sub in ('certs', 'logs', 'run', 'backups'):
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+
+    print('\n[1/6] 필요한 파일을 설치 위치로 복사합니다...')
+    extract_bundled_files(d)
+
+    print('\n[2/6] HTTPS 인증서를 준비합니다 (Windows가 동의 창을 띄울 수 있습니다)...')
+    setup_certs(d)
+
+    print('\n[3/6] 데이터베이스를 초기화합니다...')
+    import storage
+    storage.init_db()
+
+    print('\n[4/6] 관리자 계정을 만듭니다.')
+    create_admin_account()
+
+    print('\n[5/6] 로그온 시 자동 시작을 등록합니다...')
+    register_autostart(d)
+
+    print('\n[6/6] 방화벽 인바운드 규칙을 추가합니다 (관리자 권한이 필요할 수 있습니다)...')
+    setup_firewall()
+
+    with open(os.path.join(d, INSTALLED_MARKER), 'w', encoding='utf-8') as f:
+        f.write(str(int(time.time())))
+
+    lan_ip = storage.get_lan_ip()
+    print('\n' + '=' * 60)
+    print(' 설치가 완료되었습니다!')
+    print(f'   이 PC:        https://localhost:8443')
+    print(f'   다른 기기에서: https://{lan_ip}:8443')
+    print('=' * 60)
+    print('\n잠시 후 브라우저가 열립니다. 이 창은 자동으로 백그라운드로 전환됩니다.')
+    run_supervise(open_browser=True)
+
+
+def _hide_console():
+    if not IS_WINDOWS:
+        return
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
+    except Exception:
+        pass
+
+
+def run_serve():
+    import server
+    server.main()
+
+
+def run_supervise(open_browser=False):
+    d = install_dir()
+    run_dir = os.path.join(d, 'run')
+    log_dir = os.path.join(d, 'logs')
+    os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    lock_file = os.path.join(run_dir, 'supervisor.lock')
+    stop_marker = os.path.join(run_dir, 'stop.marker')
+    log_file = os.path.join(log_dir, 'supervisor.log')
+    status_file = os.path.join(run_dir, 'status.json')
+
+    def log(level, msg):
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{level}] {msg}\n")
+
+    if os.path.exists(lock_file):
+        try:
+            import psutil
+            old_pid = int(open(lock_file).read().strip())
+            if psutil.pid_exists(old_pid):
+                log('INFO', f"이미 실행 중인 supervisor(PID {old_pid})를 발견해 이번 실행은 종료합니다.")
+                return
+        except Exception:
+            pass
+        log('WARN', "이전 lock 파일이 남아있었지만 더 이상 실행 중이 아닙니다. 새로 시작합니다.")
+
+    try:
+        os.remove(stop_marker)
+    except FileNotFoundError:
+        pass
+    with open(lock_file, 'w', encoding='utf-8') as f:
+        f.write(str(os.getpid()))
+
+    log('INFO', f"===== supervisor 시작 (PID {os.getpid()}) =====")
+
+    crash_times = {'backend': [], 'caddy': []}
+    backoff_until = {'backend': None, 'caddy': None}
+
+    def start_backend():
+        p = subprocess.Popen(this_executable_command() + ['--serve'], cwd=d, creationflags=CREATE_NO_WINDOW)
+        log('INFO', f"Backend 시작됨 (PID {p.pid})")
+        return p
+
+    def start_caddy():
+        p = subprocess.Popen([os.path.join(d, 'caddy.exe'), 'run', '--config', 'Caddyfile'],
+                              cwd=d, creationflags=CREATE_NO_WINDOW)
+        log('INFO', f"Caddy 시작됨 (PID {p.pid})")
+        return p
+
+    def alive(p):
+        return p is not None and p.poll() is None
+
+    def should_restart(name):
+        now = time.time()
+        if backoff_until[name]:
+            if now < backoff_until[name]:
+                return False
+            backoff_until[name] = None
+            crash_times[name] = []
+        return True
+
+    def register_crash(name):
+        now = time.time()
+        crash_times[name] = [t for t in crash_times[name] if now - t <= CRASH_WINDOW_SECONDS] + [now]
+        if len(crash_times[name]) >= CRASH_LIMIT and not backoff_until[name]:
+            backoff_until[name] = now + BACKOFF_SECONDS
+            log('ERROR', f"{name} 이(가) 최근 {CRASH_WINDOW_SECONDS}초 동안 {CRASH_LIMIT}회 이상 종료되었습니다. "
+                          f"{BACKOFF_SECONDS}초 동안 재시작을 멈춥니다.")
+
+    def write_status(backend, caddy):
+        status = {
+            'supervisorPid': os.getpid(),
+            'updatedAt': time.strftime('%Y-%m-%dT%H:%M:%S'),
+            'backend': {'pid': backend.pid if backend else None, 'alive': alive(backend)},
+            'caddy': {'pid': caddy.pid if caddy else None, 'alive': alive(caddy)},
+        }
+        with open(status_file, 'w', encoding='utf-8') as f:
+            json.dump(status, f)
+
+    try:
+        backend = start_backend()
+        caddy = start_caddy()
+        write_status(backend, caddy)
+
+        if open_browser:
+            time.sleep(3)
+            try:
+                webbrowser.open('https://localhost:8443')
+            except Exception:
+                pass
+            _hide_console()
+
+        while True:
+            time.sleep(POLL_SECONDS)
+
+            if os.path.exists(stop_marker):
+                log('INFO', "정상 종료 요청 감지 (stop.marker). Backend/Caddy를 종료합니다.")
+                for p in (backend, caddy):
+                    if alive(p):
+                        p.terminate()
+                try:
+                    os.remove(stop_marker)
+                except FileNotFoundError:
+                    pass
+                log('INFO', "정상 종료 완료. ===== supervisor 종료 =====")
+                break
+
+            if not alive(backend):
+                log('WARN', f"Backend가 비정상 종료된 것을 감지했습니다 (이전 PID {backend.pid}).")
+                register_crash('backend')
+                if should_restart('backend'):
+                    backend = start_backend()
+
+            if not alive(caddy):
+                log('WARN', f"Caddy가 비정상 종료된 것을 감지했습니다 (이전 PID {caddy.pid}).")
+                register_crash('caddy')
+                if should_restart('caddy'):
+                    caddy = start_caddy()
+
+            write_status(backend, caddy)
+    finally:
+        try:
+            os.remove(lock_file)
+        except FileNotFoundError:
+            pass
+        try:
+            os.remove(status_file)
+        except FileNotFoundError:
+            pass
+
+
+def request_stop():
+    d = install_dir()
+    run_dir = os.path.join(d, 'run')
+    os.makedirs(run_dir, exist_ok=True)
+    lock_file = os.path.join(run_dir, 'supervisor.lock')
+    if not os.path.exists(lock_file):
+        print('실행 중이 아닙니다.')
+        return
+    with open(os.path.join(run_dir, 'stop.marker'), 'w', encoding='utf-8') as f:
+        f.write(str(int(time.time())))
+    print('종료 요청을 보냈습니다. 정리될 때까지 기다립니다...')
+    deadline = time.time() + 30
+    while os.path.exists(lock_file) and time.time() < deadline:
+        time.sleep(1)
+    print('InfraSight를 종료했습니다.' if not os.path.exists(lock_file) else '30초 안에 종료되지 않았습니다.')
+
+
+def show_status():
+    d = install_dir()
+    status_file = os.path.join(d, 'run', 'status.json')
+    if not os.path.exists(status_file):
+        print('실행 중이 아닙니다.')
+        return
+    with open(status_file, encoding='utf-8') as f:
+        s = json.load(f)
+    print(f"Backend: {'실행 중' if s['backend']['alive'] else '중지됨'} (PID {s['backend']['pid']})")
+    print(f"Caddy:   {'실행 중' if s['caddy']['alive'] else '중지됨'} (PID {s['caddy']['pid']})")
+    print(f"업데이트: {s['updatedAt']}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description='InfraSight installer/supervisor')
+    ap.add_argument('--serve', action='store_true')
+    ap.add_argument('--supervise', action='store_true')
+    ap.add_argument('--stop', action='store_true')
+    ap.add_argument('--status', action='store_true')
+    args = ap.parse_args()
+
+    if args.serve:
+        run_serve()
+        return
+    if args.stop:
+        request_stop()
+        return
+    if args.status:
+        show_status()
+        return
+    if args.supervise:
+        if relocate_and_relaunch_if_needed():
+            return
+        run_supervise()
+        return
+
+    d = install_dir()
+    if os.path.exists(os.path.join(d, INSTALLED_MARKER)):
+        if relocate_and_relaunch_if_needed():
+            return
+        run_supervise(open_browser=True)
+        return
+
+    if relocate_and_relaunch_if_needed():
+        return
+    run_setup_wizard(d)
+
+
+if __name__ == '__main__':
+    main()

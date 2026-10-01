@@ -25,9 +25,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Build artifacts (rebuildable via PyInstaller from agent.py; see README)
+# Build artifacts (rebuildable via PyInstaller from agent.py / installer.py)
 dist/
 build/
+dist_installer/
+build_installer/
 *.spec
 
 # OS cruft

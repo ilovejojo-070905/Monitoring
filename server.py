@@ -855,7 +855,10 @@ def _handle_unexpected_error(e):
     return jsonify({'error': '서버 오류가 발생했습니다'}), 500
 
 
-if __name__ == '__main__':
+def main():
+    # Pulled out of the `if __name__ == '__main__':` block (one-click
+    # installer pass) so installer.py's --serve mode can call this directly
+    # after its own setup wizard, instead of duplicating backend startup.
     storage.init_db()
     scheduler.start()
     conn = storage.get_db()
@@ -868,3 +871,7 @@ if __name__ == '__main__':
     print(startup_msg)
     app_logger.info(startup_msg)
     serve(app, host='0.0.0.0', port=PORT)
+
+
+if __name__ == '__main__':
+    main()
