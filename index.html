@@ -147,14 +147,14 @@
   .bell-badge{position:absolute;top:-5px;right:-5px;background:linear-gradient(135deg,var(--crit),var(--accent-3));color:#fff;font-size:9.5px;font-weight:700;min-width:16px;height:16px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 3px;font-family:var(--font-mono);box-shadow:var(--glow-crit)}
 
   .main{grid-area:main;padding:22px 26px 24px;overflow-x:hidden}
-  .view{display:none;flex-direction:column;gap:12px;animation:fadein .25s ease}
+  .view{display:none;flex-direction:column;gap:10px;animation:fadein .25s ease}
   .view.active{display:flex}
   @keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
   /* ---------- reusable ---------- */
   .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;transition:border-color .18s,box-shadow .18s;position:relative;box-shadow:0 1px 2px rgba(30,41,59,.04),0 6px 20px rgba(30,41,59,.05)}
   .card:hover{border-color:var(--border-strong);box-shadow:0 10px 28px rgba(124,92,255,.14)}
-  .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}
+  .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:9px}
   .card-head.collapsible{cursor:pointer;user-select:none;align-items:center}
   .card-head.collapsible h3{font-size:17px}
   .card-head.collapsible .sub{font-size:12.5px}
@@ -173,7 +173,7 @@
   .grid-4{grid-template-columns:repeat(4,1fr)}
   .grid-3{grid-template-columns:repeat(3,1fr)}
   .grid-2{grid-template-columns:repeat(2,1fr)}
-  .grid-kpi{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+  .grid-kpi{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
   .grid-span2{grid-column:span 2}
   .grid-span3{grid-column:span 3}
 
@@ -866,6 +866,8 @@ const ICONS = {
   monitor:'<rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/>',
   ups:'<rect x="6" y="3" width="12" height="18" rx="2"/><path d="M13 7l-4 6h3l-1 5 5-7h-3l1-4z" fill="currentColor" stroke="none"/>',
   alert:'<path d="M12 3 2 20h20L12 3Z" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01"/>',
+  check:'<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/>',
+  question:'<circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.5 2.5 0 0 1 4.8 1c0 1.6-2.3 1.8-2.3 3.3"/><path d="M12 17h.01"/>',
 };
 function iconSvg(name){ return `<svg viewBox="0 0 24 24" fill="none" stroke-width="1.7">${ICONS[name]||ICONS.server}</svg>`; }
 
@@ -925,6 +927,17 @@ function barChart(canvas, labels, data, colors){
     }
   });
 }
+function doughnutChart(canvas, labels, data, colors){
+  return new Chart(canvas.getContext('2d'), {
+    type:'doughnut',
+    data:{ labels, datasets:[{data, backgroundColor:colors, borderWidth:0, hoverOffset:3}] },
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false, cutout:'70%',
+      plugins:{ legend:{display:false},
+        tooltip:{backgroundColor:'#ffffff', borderColor:'#e2e6f0', borderWidth:1, titleColor:'#1c2333', bodyColor:'#1c2333'} }
+    }
+  });
+}
 function hexA(hex,a){
   const m={'#7c5cff':'124,92,255','#00e6a8':'0,230,168','#ffb020':'255,176,32','#ff3b5c':'255,59,92','#3ecbff':'62,203,255','#ff3ec9':'255,62,201'};
   return `rgba(${m[hex]||'124,92,255'},${a})`;
@@ -942,6 +955,8 @@ function gaugeHtml(pct, lv, label, valueText){
 function countStatus(list){ return {good:list.filter(x=>x.status==='good').length, warn:list.filter(x=>x.status==='warn').length, crit:list.filter(x=>x.status==='crit').length}; }
 const OV_CAT_LABEL = {server:'서버 (SMS)', db:'데이터베이스 (DBMS)', net:'네트워크 (NMS)', fac:'전산실 설비 (FMS)'};
 const OV_CAT_RANK = {crit:0, warn:1, good:2};
+const OV_NAV_MAP = {server:'servers', db:'database', net:'network', fac:'facility'};
+const OV_CAT_HEX = {server:'#7c5cff', db:'#00b087', net:'#0ea5e9', fac:'#e6960f'};
 // 2nd-dev-pass Dashboard pass (item 6): named failure-cause tiles ("Agent
 // 미접속", "SNMP 수집 실패") called out explicitly in the spec, distinct from
 // the category good/warn/crit bars above -- those answer "어디가 문제인가",
@@ -971,30 +986,45 @@ function renderOverviewSkeleton(){
       </div>
     </div>
     <div class="grid grid-3">
+      <div class="card" style="background:#cdeefb">
+        <div class="card-head"><h3>장비 종류별 현황</h3><span class="sub">카테고리별 비중</span></div>
+        <div style="display:flex;align-items:center;gap:14px">
+          <div style="position:relative;width:92px;height:92px;flex:none">
+            <canvas id="ov-donut"></canvas>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
+              <b class="mono" id="ov-donut-total" style="font-size:18px;color:var(--text)">0</b>
+              <span style="font-size:9px;color:var(--text-faint)">전체 장비</span>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px;flex:1;min-width:0" id="ov-donut-legend"></div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-head"><h3>서버 CPU Top 5</h3><span class="sub">SMS</span></div>
         <div style="height:115px"><canvas id="ov-top5"></canvas></div>
       </div>
       <div class="card">
-        <div class="card-head"><h3>영역별 상태 요약</h3><span class="sub">클릭하여 장비 목록 보기</span></div>
-        <div style="display:flex;flex-direction:column;gap:8px;max-height:150px;overflow-y:auto" id="ov-cat-summary">
+        <div class="card-head"><h3>최근 이벤트</h3><span class="sub" id="ov-inc-sub" style="cursor:pointer" title="전체 이벤트 보기">-</span></div>
+        <div id="ov-recent-inc" style="display:flex;flex-direction:column;gap:7px;max-height:150px;overflow-y:auto"></div>
+      </div>
+    </div>
+    <div class="grid grid-3">
+      <div class="card grid-span3">
+        <div class="card-head"><h3>등록된 장비 목록</h3><span class="sub" id="ov-devlist-sub">-</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px">
           ${['server','db','net','fac'].map(key=>`
           <div>
-            <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:4px"><span style="color:var(--text-dim)">${OV_CAT_LABEL[key]}</span><span class="mono" id="ov-cat-pct-${key}" style="color:var(--text-faint)">-</span></div>
-            <div class="bar" id="ov-cat-bar-${key}"><i style="width:0%"></i></div>
-            <div class="mini-toggle collapsed" data-collapse="ov-cat-list-wrap-${key}">
-              <span id="ov-cat-toggle-${key}">장비 보기 (0대)</span>
-              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+            <div style="display:flex;align-items:baseline;gap:7px;margin-bottom:5px">
+              <span style="color:var(--text);font-size:12.5px;font-weight:700">${OV_CAT_LABEL[key]}</span>
+              <span class="mono" id="ov-devlist-count-${key}" style="font-size:10.5px;color:var(--text-faint)">0대</span>
             </div>
-            <div class="collapse-wrap collapsed" id="ov-cat-list-wrap-${key}"><div class="collapse-inner">
-              <div style="max-height:130px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding-top:6px" id="ov-cat-list-${key}"></div>
-            </div></div>
+            <table class="data" style="font-size:11px;min-width:0">
+              <thead><tr><th style="padding:5px 7px">장비명</th><th style="padding:5px 7px">IP</th><th style="padding:5px 7px">상태</th></tr></thead>
+              <tbody id="ov-devlist-tbody-${key}"></tbody>
+            </table>
+            <div style="text-align:right;margin-top:4px"><span class="mono" style="font-size:10.5px;color:var(--accent);cursor:pointer" data-nav="${key}">더보기 →</span></div>
           </div>`).join('')}
         </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h3>미해결 이벤트 · 장애</h3><span class="sub" id="ov-inc-sub" style="cursor:pointer" title="전체 이벤트 보기">-</span></div>
-        <div id="ov-recent-inc" style="display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto"></div>
       </div>
     </div>
     <div class="grid grid-3">
@@ -1014,8 +1044,15 @@ function renderOverviewSkeleton(){
         </div>
       </div>
     </div>
+    <div class="card" id="ov-status-bar" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:13px 18px">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0">
+        <span id="ov-status-icon" style="flex:none"></span>
+        <span id="ov-status-msg" style="font-size:12.5px;color:var(--text)">-</span>
+      </div>
+      <span class="pill good" id="ov-status-badge"><span class="dot"></span>-</span>
+    </div>
   `;
-  $$('#ov-cat-summary .mini-toggle, #view-overview .grid-span3 .mini-toggle').forEach(head=>{
+  $$('#view-overview .grid-span3 .mini-toggle').forEach(head=>{
     head.addEventListener('click', ()=>{
       const wrap = document.getElementById(head.dataset.collapse);
       const collapsed = !head.classList.contains('collapsed');
@@ -1024,26 +1061,67 @@ function renderOverviewSkeleton(){
     });
   });
   $('#ov-inc-sub').addEventListener('click', ()=> switchView('incidents'));
+  $$('#view-overview [data-nav]').forEach(el=>{
+    el.addEventListener('click', ()=> switchView(OV_NAV_MAP[el.dataset.nav]));
+  });
   charts.ov_traffic = lineChart($('#ov-traffic'), Array(24).fill(''), [
     {label:'합계 (In+Out)', data:Array(24).fill(0), color:'#7c5cff', fill:true},
   ], {showX:false});
   charts.ov_top5 = barChart($('#ov-top5'), [], [], []);
+  charts.ov_donut = doughnutChart($('#ov-donut'), ['서버','DB','네트워크','설비'], [0,0,0,0],
+    [OV_CAT_HEX.server, OV_CAT_HEX.db, OV_CAT_HEX.net, OV_CAT_HEX.fac]);
 }
 function renderOverview(){
-  const kpis = [
-    {key:'server',icon:'server',color:'accent',label:'서버 (SMS)', list:SERVERS},
-    {key:'db',icon:'db',color:'good',label:'데이터베이스 (DBMS)', list:DBS},
-    {key:'net',icon:'switch',color:'info',label:'네트워크 (NMS)', list:NETS},
-    {key:'fac',icon:'ups',color:'warn',label:'전산실 설비 (FMS)', list:FACS},
-  ].map(k=>({...k, n:k.list.length, cs:countStatus(k.list)}));
-  $('#ov-kpis').innerHTML = kpis.map(k=>`
+  const allEntities = [...SERVERS, ...DBS, ...NETS, ...FACS];
+  const total = allEntities.length;
+  // 3rd-dev-pass dashboard refresh (reference mockup): the top row now reads
+  // "how many devices, by collection-health status" (전체/정상/주의/장애/미수집)
+  // instead of "how many devices per category" -- that per-category count
+  // moved down into the 장비 종류별 현황 donut + 등록된 장비 목록 tables below,
+  // reusing the already-existing 5-state collectionState model 1:1 rather
+  // than inventing a second status taxonomy.
+  const csCounts = {good:0, warn:0, crit:0, nodata:0, unknown:0};
+  allEntities.forEach(e=>{ csCounts[e.collectionState||'unknown'] = (csCounts[e.collectionState||'unknown']||0) + 1; });
+  const uncollected = csCounts.nodata + csCounts.unknown;
+  const statusKpis = [
+    {label:'전체 장비', value:total, icon:'server', color:'accent'},
+    {label:'정상', value:csCounts.good, icon:'check', color:'good'},
+    {label:'주의', value:csCounts.warn, icon:'alert', color:'warn'},
+    {label:'장애', value:csCounts.crit, icon:'alert', color:'crit'},
+    {label:'미수집', value:uncollected, icon:'question', color:'neutral'},
+  ];
+  $('#ov-kpis').innerHTML = statusKpis.map(k=>{
+    const isTotal = k.label==='전체 장비';
+    const neutral = k.color==='neutral';
+    const bg = neutral ? 'rgba(140,150,170,.14)' : `var(--${k.color}-soft)`;
+    const fg = neutral ? '#8f99b3' : `var(--${k.color})`;
+    const sub = isTotal
+      ? `<span class="g">정상 ${csCounts.good}</span><span class="w">주의 ${csCounts.warn}</span><span class="c">장애 ${csCounts.crit}</span>`
+      : `<span style="color:${fg}">${total ? fmt0(k.value/total*100) : 0}%</span>`;
+    return `
     <div class="card kpi-card">
-      <div class="kpi-icon" style="background:var(--${k.color}-soft,var(--accent-soft));color:var(--${k.color},var(--accent))">${iconSvg(k.icon)}</div>
+      <div class="kpi-icon" style="background:${bg};color:${fg}">${iconSvg(k.icon)}</div>
       <div class="kpi-body">
         <span class="kpi-label">${k.label}</span>
-        <span class="kpi-value">${k.n}<span style="font-size:11px;color:var(--text-faint)"> 대</span></span>
-        <span class="kpi-sub"><span class="g">정상 ${k.cs.good}</span><span class="w">주의 ${k.cs.warn}</span><span class="c">위험 ${k.cs.crit}</span></span>
+        <span class="kpi-value">${k.value}<span style="font-size:11px;color:var(--text-faint)"> 대</span></span>
+        <span class="kpi-sub">${sub}</span>
       </div>
+    </div>`;
+  }).join('');
+
+  if(charts.ov_donut){
+    charts.ov_donut.data.datasets[0].data = [SERVERS.length, DBS.length, NETS.length, FACS.length];
+    charts.ov_donut.update('none');
+  }
+  $('#ov-donut-total').textContent = total;
+  $('#ov-donut-legend').innerHTML = [
+    {key:'server', n:SERVERS.length}, {key:'db', n:DBS.length}, {key:'net', n:NETS.length}, {key:'fac', n:FACS.length},
+  ].map(c=>`
+    <div style="display:flex;align-items:center;gap:7px">
+      <span style="width:8px;height:8px;border-radius:50%;background:${OV_CAT_HEX[c.key]};flex:none"></span>
+      <span style="color:var(--text-dim);font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${OV_CAT_LABEL[c.key]}</span>
+      <b class="mono" style="font-size:11px;flex:none">${c.n}</b>
+      <span class="mono" style="color:var(--text-faint);font-size:9.5px;width:32px;text-align:right;flex:none">${total?fmt0(c.n/total*100):0}%</span>
     </div>`).join('');
 
   const localEntity = SERVERS.find(s=>s.mode==='local');
@@ -1067,33 +1145,35 @@ function renderOverview(){
     charts.ov_top5.update('none');
   }
 
-  kpis.forEach(k=>{
-    const pctEl = $(`#ov-cat-pct-${k.key}`);
-    const barEl = $(`#ov-cat-bar-${k.key}`);
-    const toggleEl = $(`#ov-cat-toggle-${k.key}`);
-    const listEl = $(`#ov-cat-list-${k.key}`);
-    if(k.n===0){
-      if(pctEl){ pctEl.textContent = '등록 없음'; pctEl.style.color = 'var(--text-faint)'; }
-      if(barEl){ barEl.className = 'bar'; barEl.innerHTML = '<i style="width:0%"></i>'; }
-    }else{
-      const pct = k.cs.good/k.n*100;
-      const lv = k.cs.crit>0?'crit':k.cs.warn>0?'warn':'good';
-      if(pctEl){ pctEl.textContent = `${fmt0(pct)}% 정상`; pctEl.style.color = levelColor(lv); }
-      if(barEl){ barEl.className = `bar ${lv}`; barEl.innerHTML = `<i style="width:${pct}%"></i>`; }
-    }
-    if(toggleEl) toggleEl.textContent = `장비 보기 (${k.n}대)`;
-    if(listEl){
-      const sorted = k.list.slice().sort((a,b)=>(OV_CAT_RANK[a.status]??1)-(OV_CAT_RANK[b.status]??1));
-      listEl.innerHTML = sorted.map(e=>`
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:3px 0">
-          <div style="min-width:0;overflow:hidden">
-            <div style="font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(e.name)}</div>
-            <div style="font-size:10px;color:var(--text-faint)" class="mono">${e.ip||'-'}</div>
-          </div>
-          <span class="pill ${e.status}" style="flex:none;padding:2px 7px;font-size:10px"><span class="dot"></span>${statusLabel(e.status)}</span>
-        </div>`).join('') || `<div class="empty-note" style="padding:8px;font-size:11px">등록 없음</div>`;
-    }
+  $('#ov-devlist-sub').textContent = `전체 ${total}대`;
+  [['server',SERVERS], ['db',DBS], ['net',NETS], ['fac',FACS]].forEach(([key,list])=>{
+    const countEl = $(`#ov-devlist-count-${key}`);
+    if(countEl) countEl.textContent = `${list.length}대`;
+    const tbodyEl = $(`#ov-devlist-tbody-${key}`);
+    if(!tbodyEl) return;
+    const sorted = list.slice().sort((a,b)=>(OV_CAT_RANK[a.status]??1)-(OV_CAT_RANK[b.status]??1)).slice(0,3);
+    tbodyEl.innerHTML = sorted.map(e=>`
+      <tr>
+        <td class="name" style="padding:5px 7px;font-size:11px">${escapeHtml(e.name)}</td>
+        <td class="mono" style="padding:5px 7px;font-size:10px">${e.ip||'-'}</td>
+        <td style="padding:5px 7px"><span class="pill ${e.status}" style="padding:2px 7px;font-size:9.5px"><span class="dot"></span>${statusLabel(e.status)}</span></td>
+      </tr>`).join('') || `<tr><td colspan="3"><div class="empty-note" style="padding:10px;font-size:10.5px">등록 없음</div></td></tr>`;
   });
+
+  const statusIconEl = $('#ov-status-icon');
+  const statusMsgEl = $('#ov-status-msg');
+  const statusBadgeEl = $('#ov-status-badge');
+  if(statusIconEl){
+    let lv, msg, badge;
+    if(csCounts.crit>0){ lv='crit'; msg=`${csCounts.crit}개 장비에서 장애가 발생했습니다. 확인이 필요합니다.`; badge='장애 발생'; }
+    else if(csCounts.warn>0){ lv='warn'; msg=`${csCounts.warn}개 장비가 주의 상태입니다.`; badge='주의 필요'; }
+    else{ lv='good'; msg='모든 시스템이 정상적으로 운영되고 있습니다.'; badge='시스템 정상 동작 중'; }
+    statusIconEl.innerHTML = `<span style="width:28px;height:28px;border-radius:50%;background:var(--${lv}-soft);color:var(--${lv});display:flex;align-items:center;justify-content:center">${iconSvg(lv==='good'?'check':'alert')}</span>`;
+    statusIconEl.querySelector('svg').style.cssText = 'width:15px;height:15px';
+    statusMsgEl.textContent = msg;
+    statusBadgeEl.className = `pill ${lv}`;
+    statusBadgeEl.innerHTML = `<span class="dot"></span>${badge}`;
+  }
 
   const openIncidents = INCIDENTS.filter(i=>i.status==='open');
   const recent = openIncidents.length ? openIncidents.slice(0,15) : INCIDENTS.slice(0,8);
@@ -1101,8 +1181,10 @@ function renderOverview(){
   const incBody = $('#ov-recent-inc');
   const incScroll = incBody ? incBody.scrollTop : 0;
   incBody.innerHTML = recent.map(i=>`
-    <div style="display:flex;gap:9px;align-items:flex-start">
-      <span class="sev-strip" style="background:${sevColor(i.severity)}"></span>
+    <div style="display:flex;gap:9px;align-items:center">
+      <span style="width:24px;height:24px;border-radius:50%;background:${sevColor(i.severity)};display:flex;align-items:center;justify-content:center;flex:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" style="width:12px;height:12px">${i.status==='resolved'?'<path d="M5 13l4 4L19 7"/>':'<path d="M12 8v5M12 16.5h.01"/>'}</svg>
+      </span>
       <div style="min-width:0">
         <div style="font-size:11.5px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(i.message)}</div>
         <div style="font-size:10.5px;color:var(--text-faint)" class="mono">${escapeHtml(i.source)} · ${timeAgo(i.time)}</div>
@@ -1110,7 +1192,6 @@ function renderOverview(){
     </div>`).join('') || `<div class="empty-note">이벤트가 없습니다</div>`;
   incBody.scrollTop = incScroll;
 
-  const allEntities = [...SERVERS, ...DBS, ...NETS, ...FACS];
   const failBuckets = {
     agent: allEntities.filter(e=>e.mode==='agent' && e.online===false),
     snmp: allEntities.filter(e=>e.mode==='snmp' && e.collectionState && e.collectionState!=='good'),
