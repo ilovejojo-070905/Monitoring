@@ -137,6 +137,18 @@ def relocate_and_relaunch_if_needed():
     _stop_other_running_instances()
     try:
         shutil.copy2(current, target)
+        if os.path.exists(os.path.join(d, INSTALLED_MARKER)):
+            # Re-running a newer Setup.exe on an already-installed PC used to
+            # update only the exe itself -- index.html/agent.py/Caddyfile/
+            # caddy.exe/mkcert.exe were extracted once by run_setup_wizard()
+            # on first install and never touched again, so a UI or behavior
+            # fix never reached an existing install unless someone deleted
+            # installed.marker and redid the whole wizard (admin account,
+            # certs, firewall rules and all). Refresh the bundled files here
+            # too, from this (newer) process's own bundle, so just
+            # redistributing a new Setup.exe is a complete, low-friction
+            # patch -- no need to touch anything already configured.
+            extract_bundled_files(d)
         # Only --supervise/--serve/--stop/--status are non-interactive -- the
         # no-flag first run continues into run_setup_wizard(), which prompts
         # on the console for the admin username/password. Relaunching THAT
