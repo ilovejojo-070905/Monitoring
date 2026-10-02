@@ -31,6 +31,13 @@ wizard always launches with --supervise):
                                     shut down cleanly (mirrors ops/stop.ps1)
   --status                      -> prints whether backend/Caddy are alive
 """
+# Bumped by hand right before each build -- date + short commit hash of the
+# commit the build was cut from. Printed in the wizard banner and
+# show_status() so a patch build can be told apart from an older one once
+# it's actually installed (the distributed filename already carries this
+# same string -- see the build command this value is kept in sync with).
+VERSION = '20261002-9a749c9'
+
 import argparse
 import ctypes
 import getpass
@@ -259,6 +266,7 @@ def setup_firewall():
 def run_setup_wizard(d):
     print('=' * 60)
     print(' InfraSight 설치를 시작합니다')
+    print(f' 버전: {VERSION}')
     print(f' 설치 위치: {d}')
     print('=' * 60)
     for sub in ('certs', 'logs', 'run', 'backups'):
@@ -420,6 +428,7 @@ def run_supervise():
     def write_status(backend, caddy):
         status = {
             'supervisorPid': os.getpid(),
+            'version': VERSION,
             'updatedAt': time.strftime('%Y-%m-%dT%H:%M:%S'),
             'backend': {'pid': backend.pid if backend else None, 'alive': alive(backend)},
             'caddy': {'pid': caddy.pid if caddy else None, 'alive': alive(caddy)},
@@ -496,6 +505,7 @@ def show_status():
         return
     with open(status_file, encoding='utf-8') as f:
         s = json.load(f)
+    print(f"버전: {s.get('version', '(알 수 없음 -- 이전 버전)')}")
     print(f"Backend: {'실행 중' if s['backend']['alive'] else '중지됨'} (PID {s['backend']['pid']})")
     print(f"Caddy:   {'실행 중' if s['caddy']['alive'] else '중지됨'} (PID {s['caddy']['pid']})")
     print(f"업데이트: {s['updatedAt']}")
@@ -528,7 +538,7 @@ def main():
     if os.path.exists(os.path.join(d, INSTALLED_MARKER)):
         if relocate_and_relaunch_if_needed():
             return
-        print('InfraSight를 백그라운드에서 시작합니다. 이 창은 닫으셔도 됩니다.')
+        print(f'InfraSight를 백그라운드에서 시작합니다 (버전 {VERSION}). 이 창은 닫으셔도 됩니다.')
         launch_supervisor_in_background(d)
         open_browser_to_lan_ip()
         return
