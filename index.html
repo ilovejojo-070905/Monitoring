@@ -294,14 +294,6 @@
   .form-actions{display:flex;align-items:center;justify-content:flex-end;gap:12px;margin-top:16px}
   @media (max-width:600px){ .form-grid{grid-template-columns:1fr} }
 
-  /* ---------- facility ---------- */
-  .fac-card{display:flex;flex-direction:column;gap:14px}
-  .fac-top{display:flex;justify-content:space-between;align-items:flex-start}
-  .fac-metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
-  .fac-metric{background:var(--surface-2);border-radius:var(--radius-sm);padding:9px 11px;display:flex;flex-direction:column;gap:3px}
-  .fac-metric span{font-size:10px;color:var(--text-faint)}
-  .fac-metric b{font-family:var(--font-mono);font-size:15px}
-
   /* ---------- toast notifications (web alert channel) ---------- */
   .toast-stack{position:fixed;top:76px;right:18px;z-index:80;display:flex;flex-direction:column;gap:10px;width:min(340px,90vw);pointer-events:none}
   .toast{
@@ -1516,12 +1508,18 @@ let facFilter = 'all';
 function renderFacilitySkeleton(){
   const el = $('#view-facility');
   el.innerHTML = `
-    <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px;padding:0 2px">
-      ${statusFilterRow('fac-filters', facFilter)}
-      <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="fac-search" placeholder="설비명 / IP 검색"></div>
+    <div class="card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>전산실 설비</h3><span class="sub">UPS · 항온항습기 · 분전반 등 설비의 도달성과 SNMP 실측값을 확인합니다</span></div>
+        ${statusFilterRow('fac-filters', facFilter)}
+        <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="fac-search" placeholder="설비명 / IP 검색"></div>
+      </div>
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
+        <tbody id="fac-tbody"></tbody>
+      </table></div>
     </div>
-    <div class="grid grid-3" id="fac-cards"></div>
     <div class="card">
       <div class="card-head"><h3>최근 설비 이벤트</h3><span class="sub">FMS</span></div>
       <div id="fac-events" style="display:flex;flex-direction:column;gap:9px"></div>
@@ -1532,19 +1530,16 @@ function renderFacilitySkeleton(){
 function renderFacility(){
   const q = ($('#fac-search')?.value||'').toLowerCase();
   const facRows = applyStatusFilter(FACS, facFilter).filter(f=> f.name.toLowerCase().includes(q) || (f.ip||'').includes(q));
-  $('#fac-cards').innerHTML = facRows.map(f=>`
-    <div class="card fac-card" data-id="${f.id}" style="cursor:pointer">
-      <div class="fac-top">
-        <div><h3 style="font-size:13.5px">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}</h3><span class="sub" style="font-size:11px;color:var(--text-faint)">${escapeHtml(f.type||'-')}${f.role? ' · '+escapeHtml(f.role) : ''}</span></div>
-        <span class="pill ${f.status}"><span class="dot"></span>${statusLabel(f.status)}</span>
-      </div>
-      <div class="fac-metrics">
-        <div class="fac-metric"><span>IP</span><b style="font-size:12px">${f.ip||'-'}</b></div>
-        <div class="fac-metric"><span>응답시간</span><b style="color:${f.reachable?'inherit':'var(--crit)'}">${f.reachable? fmt0(f.latencyMs||0)+'ms' : '응답없음'}</b></div>
-        ${typeof f.battPct==='number' ? `<div class="fac-metric" style="grid-column:span 2"><span>배터리 (SNMP 실측)</span><b style="color:${levelColor(levelOf(100-f.battPct,40,75))}">${fmt0(f.battPct)}%</b></div>` : ''}
-      </div>
-    </div>`).join('') || `<div class="empty-note" style="grid-column:1/-1">${FACS.length? '검색 결과가 없습니다' : '등록된 설비가 없습니다. 네트워크 카드가 있는 UPS · 항온항습기 · 분전반이라면 IP를 등록해 도달성을 확인할 수 있습니다.'}</div>`;
-  $$('#fac-cards [data-id]').forEach(c=> c.addEventListener('click', ()=> openDrawerFor(c.dataset.id)));
+  $('#fac-tbody').innerHTML = facRows.map(f=>`
+    <tr data-id="${f.id}">
+      <td><span class="pill ${f.status}"><span class="dot"></span>${statusLabel(f.status)}</span>${modeTag(f)}</td>
+      <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}</td>
+      <td>${escapeHtml(f.type||'-')}${f.role? ' · '+escapeHtml(f.role) : ''}</td>
+      <td class="mono">${f.ip||'-'}</td>
+      <td class="mono" style="color:${f.reachable?'var(--text-dim)':'var(--crit)'}">${f.reachable? fmt0(f.latencyMs||0)+' ms' : '응답없음'}</td>
+      <td class="mono">${typeof f.battPct==='number' ? `<span style="color:${levelColor(levelOf(100-f.battPct,40,75))}">${fmt0(f.battPct)}%</span>` : '<span style="color:var(--text-faint)">—</span>'}</td>
+    </tr>`).join('') || `<tr><td colspan="6"><div class="empty-note">${FACS.length? '검색 결과가 없습니다' : '등록된 설비가 없습니다. 네트워크 카드가 있는 UPS · 항온항습기 · 분전반이라면 IP를 등록해 도달성을 확인할 수 있습니다.'}</div></td></tr>`;
+  $$('#fac-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
 
   const facInc = INCIDENTS.filter(i=>i.category==='FMS').slice(0,6);
   $('#fac-events').innerHTML = facInc.map(i=>`
