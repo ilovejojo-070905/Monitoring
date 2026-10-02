@@ -36,7 +36,7 @@ wizard always launches with --supervise):
 # show_status() so a patch build can be told apart from an older one once
 # it's actually installed (the distributed filename already carries this
 # same string -- see the build command this value is kept in sync with).
-VERSION = '20261002-74ef834'
+VERSION = '20261002-5563e66'
 
 import argparse
 import ctypes
