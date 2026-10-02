@@ -485,8 +485,7 @@
       <div class="row"><span>서비스 상태</span><b style="color:var(--good)">실행 중</b></div>
       <div class="row"><span>접속 주소</span><b id="foot-addr">-</b></div>
       <div class="row"><span>로그인 계정</span><b id="foot-user">-</b></div>
-      <button id="changePwBtn" style="margin-top:8px;width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font-size:12px;">비밀번호 변경</button>
-      <button id="logoutBtn" style="margin-top:6px;width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font-size:12px;">로그아웃</button>
+      <button id="logoutBtn" style="margin-top:8px;width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text-dim);font-size:12px;">로그아웃</button>
     </div>
   </aside>
   <div class="sidebar-scrim" id="sidebarScrim"></div>
@@ -539,23 +538,6 @@
     <section class="view" data-view="users" id="view-users"></section>
 
   </main>
-</div>
-
-<div id="pwOverlay" style="position:fixed;inset:0;z-index:150;display:none;align-items:center;justify-content:center;background:rgba(4,6,14,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);">
-  <form id="pwForm" style="width:340px;max-width:90vw;background:var(--surface);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--border);border-radius:var(--radius);padding:28px;display:flex;flex-direction:column;gap:14px;box-shadow:0 30px 80px rgba(0,0,0,.5);">
-    <b style="font-size:16px;">비밀번호 변경</b>
-    <label style="font-size:12px;color:var(--text-dim);">현재 비밀번호
-      <input id="pwCurrent" type="password" autocomplete="current-password" required style="margin-top:4px;width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-family:inherit;box-sizing:border-box;">
-    </label>
-    <label style="font-size:12px;color:var(--text-dim);">새 비밀번호 (8자 이상)
-      <input id="pwNew" type="password" autocomplete="new-password" required minlength="8" style="margin-top:4px;width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-family:inherit;box-sizing:border-box;">
-    </label>
-    <div id="pwError" style="color:var(--crit);font-size:12px;min-height:16px;"></div>
-    <div style="display:flex;gap:10px;justify-content:flex-end">
-      <button type="button" id="pwCancel" class="btn">취소</button>
-      <button type="submit" class="btn primary">변경</button>
-    </div>
-  </form>
 </div>
 
 <div class="toast-stack" id="toastStack"></div>
@@ -2410,26 +2392,6 @@ $('#logoutBtn').addEventListener('click', async ()=>{
   await fetch('/api/auth/logout', {method:'POST'});
   location.reload();
 });
-$('#changePwBtn').addEventListener('click', ()=>{
-  $('#pwError').textContent = ''; $('#pwCurrent').value=''; $('#pwNew').value='';
-  $('#pwOverlay').style.display = 'flex';
-});
-$('#pwCancel').addEventListener('click', ()=>{ $('#pwOverlay').style.display = 'none'; });
-$('#pwForm').addEventListener('submit', async (e)=>{
-  e.preventDefault();
-  $('#pwError').textContent = '';
-  try{
-    const r = await apiFetch('/api/auth/change-password', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({currentPassword:$('#pwCurrent').value, newPassword:$('#pwNew').value}),
-    });
-    const j = await r.json();
-    if(!r.ok) throw new Error(j.error||'변경 실패');
-    alert('비밀번호가 변경되었습니다. 다시 로그인해주세요.');
-    location.reload();
-  }catch(err){ $('#pwError').textContent = err.message; }
-});
-
 /* ================= main loop ================= */
 initSkeletons();
 tickClock();
