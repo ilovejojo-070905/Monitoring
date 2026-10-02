@@ -12,10 +12,14 @@ as data files -- see build_installer.ps1 for the exact --add-data list.
 Modes (chosen automatically on first run; the scheduled task set up by the
 wizard always launches with --supervise):
   (no flag, not yet installed) -> elevate via UAC if needed, then first-run
-                                    setup wizard, then --supervise
-  (no flag, already installed) -> straight to --supervise (manual re-run,
-                                    runs as whatever user double-clicked it --
-                                    no elevation, matching the scheduled task)
+                                    setup wizard, then hands off to a hidden
+                                    --supervise child and opens the browser
+  (no flag, already installed) -> manual re-run: hands off to a hidden
+                                    --supervise child and opens the browser.
+                                    Never runs the server inline in whatever
+                                    console Explorer gave this double-click --
+                                    closing that window must not be able to
+                                    take the server down with it.
   --serve                       -> runs the Flask/waitress backend in this
                                     process (what used to be `python server.py`)
   --supervise                   -> keeps --serve and caddy.exe alive,
@@ -276,17 +280,32 @@ def run_setup_wizard(d):
     print(f'   이 PC:        https://localhost:8443')
     print(f'   다른 기기에서: https://{lan_ip}:8443')
     print('=' * 60)
-    print('\n잠시 후 브라우저가 열립니다. 이 창은 자동으로 백그라운드로 전환됩니다.')
-    run_supervise(open_browser=True)
+    print('\n서버를 백그라운드에서 시작하고 브라우저를 엽니다. 이 창은 닫으셔도 됩니다.')
+    launch_supervisor_in_background(d)
+    open_browser_to_lan_ip()
 
 
-def _hide_console():
-    if not IS_WINDOWS:
-        return
+def launch_supervisor_in_background(d):
+    """Spawns a hidden `--supervise` child (CREATE_NO_WINDOW -- no console at
+    all, not merely a hidden one) and returns immediately. The first-run
+    wizard and a plain re-run of InfraSight-Setup.exe both used to call
+    run_supervise() inline, in whatever console Explorer allocated for the
+    double-click; the user closing that window took the whole server down
+    with it. Handing the actual serving off to a separate detached process
+    means the console this function was called from can close -- by the
+    user, or just by this script returning -- without affecting it."""
+    subprocess.Popen(this_executable_command() + ['--supervise'], cwd=d, creationflags=CREATE_NO_WINDOW)
+
+
+def open_browser_to_lan_ip():
+    """Opens this PC's own LAN address, not localhost -- the cert from
+    setup_certs() already covers both, but a URL that only ever works on the
+    machine it was typed on is useless as the thing other people on the LAN
+    copy to reach this dashboard."""
+    import storage
+    time.sleep(3)
     try:
-        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-        if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 0)
+        webbrowser.open(f'https://{storage.get_lan_ip()}:8443')
     except Exception:
         pass
 
@@ -296,7 +315,7 @@ def run_serve():
     server.main()
 
 
-def run_supervise(open_browser=False):
+def run_supervise():
     d = install_dir()
     run_dir = os.path.join(d, 'run')
     log_dir = os.path.join(d, 'logs')
@@ -401,14 +420,6 @@ def run_supervise(open_browser=False):
         caddy = start_caddy()
         write_status(backend, caddy)
 
-        if open_browser:
-            time.sleep(3)
-            try:
-                webbrowser.open('https://localhost:8443')
-            except Exception:
-                pass
-            _hide_console()
-
         while True:
             time.sleep(POLL_SECONDS)
 
@@ -505,7 +516,9 @@ def main():
     if os.path.exists(os.path.join(d, INSTALLED_MARKER)):
         if relocate_and_relaunch_if_needed():
             return
-        run_supervise(open_browser=True)
+        print('InfraSight를 백그라운드에서 시작합니다. 이 창은 닫으셔도 됩니다.')
+        launch_supervisor_in_background(d)
+        open_browser_to_lan_ip()
         return
 
     # Fresh install: elevate once, up front -- mkcert -install doesn't need
