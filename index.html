@@ -1042,13 +1042,6 @@ function renderOverviewSkeleton(){
         </div>
       </div>
     </div>
-    <div class="card" id="ov-status-bar" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;padding:13px 18px">
-      <div style="display:flex;align-items:center;gap:10px;min-width:0">
-        <span id="ov-status-icon" style="flex:none"></span>
-        <span id="ov-status-msg" style="font-size:12.5px;color:var(--text)">-</span>
-      </div>
-      <span class="pill good" id="ov-status-badge"><span class="dot"></span>-</span>
-    </div>
   `;
   $$('#view-overview .grid-span3 .mini-toggle').forEach(head=>{
     head.addEventListener('click', ()=>{
@@ -1157,21 +1150,6 @@ function renderOverview(){
         <td style="padding:5px 7px"><span class="pill ${e.status}" style="padding:2px 7px;font-size:9.5px"><span class="dot"></span>${statusLabel(e.status)}</span></td>
       </tr>`).join('') || `<tr><td colspan="3"><div class="empty-note" style="padding:10px;font-size:10.5px">등록 없음</div></td></tr>`;
   });
-
-  const statusIconEl = $('#ov-status-icon');
-  const statusMsgEl = $('#ov-status-msg');
-  const statusBadgeEl = $('#ov-status-badge');
-  if(statusIconEl){
-    let lv, msg, badge;
-    if(csCounts.crit>0){ lv='crit'; msg=`${csCounts.crit}개 장비에서 장애가 발생했습니다. 확인이 필요합니다.`; badge='장애 발생'; }
-    else if(csCounts.warn>0){ lv='warn'; msg=`${csCounts.warn}개 장비가 주의 상태입니다.`; badge='주의 필요'; }
-    else{ lv='good'; msg='모든 시스템이 정상적으로 운영되고 있습니다.'; badge='시스템 정상 동작 중'; }
-    statusIconEl.innerHTML = `<span style="width:28px;height:28px;border-radius:50%;background:var(--${lv}-soft);color:var(--${lv});display:flex;align-items:center;justify-content:center">${iconSvg(lv==='good'?'check':'alert')}</span>`;
-    statusIconEl.querySelector('svg').style.cssText = 'width:15px;height:15px';
-    statusMsgEl.textContent = msg;
-    statusBadgeEl.className = `pill ${lv}`;
-    statusBadgeEl.innerHTML = `<span class="dot"></span>${badge}`;
-  }
 
   const openIncidents = INCIDENTS.filter(i=>i.status==='open');
   const recent = openIncidents.length ? openIncidents.slice(0,15) : INCIDENTS.slice(0,8);
