@@ -1237,10 +1237,10 @@ function renderTopologySkeleton(){
   const canvasW = Math.max(1180, ...TOPO_NODES.map(n=>n.x+90));
   const canvasH = Math.max(660, ...TOPO_NODES.map(n=>n.y+60));
   el.innerHTML = `
-    <div class="card">
+    <div class="card" style="background:var(--bg)">
       <div class="card-head">
-        <h3>인프라 토폴로지</h3>
-        <span class="sub">노드에 마우스를 올리면 실시간 트래픽/상태가 표시됩니다</span>
+        <h3 style="color:var(--chrome-text)">인프라 토폴로지</h3>
+        <span class="sub" style="color:var(--chrome-text-faint)">노드에 마우스를 올리면 실시간 트래픽/상태가 표시됩니다</span>
       </div>
       <div class="topo-wrap">
         <div class="topo-canvas" style="width:${canvasW}px;height:${canvasH}px">
