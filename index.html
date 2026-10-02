@@ -1556,7 +1556,7 @@ function renderIncidentsSkeleton(){
   const el = $('#view-incidents');
   el.innerHTML = `
     <div class="card">
-      <div class="card-head" style="align-items:center">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>이벤트 / 장애 관리</h3><span class="sub">전체 영역 통합 이벤트 로그</span></div>
         <div class="chip-row" id="inc-filters">
           <button class="chip-btn active" data-f="all">전체</button>
@@ -1565,6 +1565,8 @@ function renderIncidentsSkeleton(){
           <button class="chip-btn" data-f="info">정보</button>
           <button class="chip-btn" data-f="open">미해결</button>
         </div>
+        <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="inc-search" placeholder="장비명 / 영역 / 내용 검색"></div>
       </div>
       <div class="table-wrap"><table class="data">
         <thead><tr><th>심각도</th><th>시각</th><th>영역</th><th>대상</th><th>내용</th><th>상태</th><th></th></tr></thead>
@@ -1576,6 +1578,7 @@ function renderIncidentsSkeleton(){
     $$('#inc-filters .chip-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active');
     incFilter = b.dataset.f; renderIncidents();
   }));
+  $('#inc-search').addEventListener('input', renderIncidents);
 }
 function renderIncidents(){
   let rows = INCIDENTS;
@@ -1583,6 +1586,8 @@ function renderIncidents(){
   if(incFilter==='warn') rows = rows.filter(i=>i.severity==='warn');
   if(incFilter==='info') rows = rows.filter(i=>i.severity==='info');
   if(incFilter==='open') rows = rows.filter(i=>i.status==='open');
+  const q = ($('#inc-search')?.value||'').toLowerCase();
+  if(q) rows = rows.filter(i=> i.message.toLowerCase().includes(q) || i.source.toLowerCase().includes(q) || (i.category||'').toLowerCase().includes(q));
   $('#inc-tbody').innerHTML = rows.slice(0,80).map(i=>`
     <tr>
       <td><span class="pill ${i.severity==='crit'?'crit':i.severity==='warn'?'warn':'info'}"><span class="dot"></span>${i.severity==='crit'?'위험':i.severity==='warn'?'주의':'정보'}</span></td>
