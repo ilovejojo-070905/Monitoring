@@ -794,7 +794,14 @@ def api_trigger_backup():
 
 @app.get('/')
 def index():
-    return send_from_directory(BASE_DIR, 'index.html')
+    # No-cache: this file changes often during active development, and a
+    # browser serving a stale cached copy after an edit looks identical to a
+    # fix "not working" -- indistinguishable without opening devtools.
+    resp = send_from_directory(BASE_DIR, 'index.html')
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
 
 
 def _agent_exe_path():

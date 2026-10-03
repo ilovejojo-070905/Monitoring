@@ -53,6 +53,12 @@
     color-scheme:light;
   }
   *,*::before,*::after{box-sizing:border-box}
+  /* Always reserve the scrollbar's own width, whether or not it's actually
+     showing. Without this, toggling html/body to overflow:hidden while a
+     topology node is being dragged (see startTopoDrag) removes the
+     scrollbar and the page content visibly widens to fill that space, then
+     narrows back the moment the drag ends and the scrollbar returns. */
+  html{scrollbar-gutter:stable}
   html,body{height:100%}
   body{
     margin:0;color:var(--text);font-family:var(--font-ui);
@@ -171,7 +177,7 @@
   .card-head h3{font-size:13.5px;font-weight:600}
   .card-head .sub{font-size:11px;color:var(--text-faint)}
   /* 서버/DB/네트워크/설비/이벤트/등록/계정 목록 화면의 카드 제목만 확대.
-     전체 현황·토폴로지 맵은 카드가 촘촘히 배치되는 요약 화면이라 제외. */
+     전체 현황·토플로지 맵은 카드가 촘촘히 배치되는 요약 화면이라 제외. */
   #view-servers .card-head h3, #view-database .card-head h3, #view-network .card-head h3,
   #view-facility .card-head h3, #view-incidents .card-head h3, #view-register .card-head h3,
   #view-users .card-head h3{font-size:16px}
@@ -450,7 +456,7 @@
     </button>
     <button class="nav-item" data-view="topology">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="6" cy="6" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="12" cy="18" r="2.4"/><path d="M7.8 7.4 10.4 16.2M16.2 7.4 13.6 16.2M8.4 6h7.2"/></svg>
-      토폴로지 맵
+      토플로지 맵
     </button>
     <button class="nav-item" data-view="servers">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg>
@@ -1246,7 +1252,12 @@ function renderTopologySkeleton(){
       <span class="node-name">${escapeHtml(n.label)}</span>
     </div>`).join('');
   const canvasW = Math.max(1180, ...TOPO_NODES.map(n=>n.x+90));
-  const canvasH = Math.max(660, ...TOPO_NODES.map(n=>n.y+60));
+  // Not 660 anymore: that was tall enough to reserve room for up to 7 devices
+  // per category whether or not they exist yet, which routinely pushed the
+  // legend below the fold with only a couple of real devices registered. The
+  // hub node alone (fixed at y:280) already guarantees at least ~340px, so a
+  // small floor here only matters as a sane lower bound, not a reservation.
+  const canvasH = Math.max(320, ...TOPO_NODES.map(n=>n.y+60));
   el.innerHTML = `
     <div class="card" style="background:var(--bg)">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
@@ -1448,23 +1459,15 @@ function startTopoDrag(e, node){
     ev.preventDefault();
     lockScroll();
     const dx = ev.clientX - startX, dy = ev.clientY - startY;
-    if(!moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)){
-      moved = true;
-      // .topo-wrap scrolls internally once a node is dragged past its current
-      // bounds (it needs overflow-x:auto for the horizontal scrollbar, and
-      // CSS forces overflow-y to the same non-visible behavior as soon as
-      // overflow-x isn't 'visible' -- there's no way to keep y visible while
-      // x is auto). Give the canvas a generous amount of head-room ONCE, right
-      // as the drag starts, so the node never gets clipped while dragging.
-      if(canvas){
-        canvas.style.width = (canvasStartW + 1600)+'px';
-        canvas.style.height = (canvasStartH + 1600)+'px';
-      }
-    }
+    if(!moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) moved = true;
     if(!moved) return;
     topoDragging = true;
-    curX = Math.max(45, origX + dx);
-    curY = Math.max(30, origY + dy);
+    // Clamped to the canvas's own (fixed, unchanging) bounds -- a node can be
+    // moved anywhere inside the topology card, but never past its edge, so
+    // dragging can never grow the card itself or push the legend below it
+    // down the page. The card's size is set once at render and stays put.
+    curX = Math.max(45, Math.min(canvasStartW - 45, origX + dx));
+    curY = Math.max(30, Math.min(canvasStartH - 30, origY + dy));
     node.style.left = curX+'px';
     node.style.top = curY+'px';
     // Re-resolve the node by id (not the object captured at drag-start): a
@@ -1478,11 +1481,6 @@ function startTopoDrag(e, node){
     // it gets replaced underneath the drag.
     const liveN = TOPO_NODES.find(x=>x.id===nodeId);
     if(liveN){ liveN.x = curX; liveN.y = curY; }
-    // No resizing of .topo-canvas here on every move -- the one-time
-    // head-room grab above already covers it, and resizing an ancestor box on
-    // every single pixel of movement was what made the page scroll along
-    // with the icon in the first place. The canvas is shrunk back to its
-    // exact fitted size once, after the drag ends.
     TOPO_LINKS.forEach((l,i)=>{
       if(l.a!==nodeId && l.b!==nodeId) return;
       const na = l.a===nodeId ? {x:curX,y:curY} : TOPO_NODES.find(x=>x.id===l.a);
@@ -1505,10 +1503,6 @@ function startTopoDrag(e, node){
       node.dataset.dragged = '1';
       const liveN = TOPO_NODES.find(x=>x.id===nodeId);
       if(liveN){ liveN.x = curX; liveN.y = curY; }
-      if(canvas){
-        canvas.style.width = Math.max(1180, ...TOPO_NODES.map(x=>x.x+90))+'px';
-        canvas.style.height = Math.max(660, ...TOPO_NODES.map(x=>x.y+60))+'px';
-      }
       const layout = loadTopoLayout();
       layout[nodeId] = {x:curX, y:curY};
       saveTopoLayout(layout);
@@ -2611,7 +2605,7 @@ function refreshBadges(){
 /* ================= view routing ================= */
 const VIEWS = {
   overview: {skeleton:renderOverviewSkeleton, render:renderOverview, title:'전체 현황', sub:'서버 · DB · 네트워크 · 설비 통합 모니터링 개요'},
-  topology: {skeleton:renderTopologySkeleton, render:refreshTopologyView, title:'토폴로지 맵', sub:'인프라 연결 구조 및 실시간 트래픽'},
+  topology: {skeleton:renderTopologySkeleton, render:refreshTopologyView, title:'토플로지 맵', sub:'인프라 연결 구조 및 실시간 트래픽'},
   servers: {skeleton:renderServersSkeleton, render:renderServers, title:'서버 관리 (SMS)', sub:'CPU · 메모리 · 디스크 · 프로세스 모니터링'},
   database: {skeleton:renderDatabaseSkeleton, render:renderDatabase, title:'데이터베이스 관리 (DBMS)', sub:'RDBMS / NoSQL 성능 및 세션 모니터링'},
   network: {skeleton:renderNetworkSkeleton, render:renderNetwork, title:'네트워크 관리 (NMS)', sub:'스위치 · 라우터 트래픽 및 포트 상태'},
