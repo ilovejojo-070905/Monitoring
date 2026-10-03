@@ -733,6 +733,7 @@ function applyRoleUI(){
 
 /* ================= backend-driven live state ================= */
 let SERVERS = [], DBS = [], NETS = [], FACS = [], INCIDENTS = [];
+let DEVICE_LLDP_LINKS = [];
 let SERVER_INFO = { lanIp: location.hostname || 'localhost', port: location.port || '5057' };
 
 /* ================= alert design: web notification channel =================
@@ -823,6 +824,7 @@ async function syncState(){
       status:i.status, deviceId:i.device_id, eventType:i.event_type, occurrenceCount:i.occurrence_count,
     }));
     if(j.serverInfo) SERVER_INFO = j.serverInfo;
+    DEVICE_LLDP_LINKS = j.deviceLinks || [];
     rebuildTopology();
     notifyNewIncidents(INCIDENTS);
     return true;
@@ -883,7 +885,7 @@ function iconSvg(name){ return `<svg viewBox="0 0 24 24" fill="none" stroke-widt
 /* ================= topology: hub + every registered device, fully dynamic ================= */
 let TOPO_NODES = [];
 let TOPO_LINKS = [];
-let lastTopoNodeIds = null;
+let lastTopoSignature = null;
 let topoDefaultContentW = 0;
 let topoDefaultContentH = 0;
 let topoDragging = false;
@@ -932,6 +934,20 @@ function rebuildTopology(){
   const hidden = new Set(loadTopoHiddenLinks());
   let allLinks = links.filter(l => !hidden.has(topoLinkKey(l.a,l.b)));
   const nodeIds = new Set(nodes.map(n=>n.id));
+  // LLDP-discovered links (collector/lldp.py; SNMP 'net' devices only, every
+  // ~5 min) -- only ever between two devices InfraSight already has
+  // registered, so this never invents a node. Skipped if a link between the
+  // same two already exists (hub spoke or a hand-drawn one) or was
+  // explicitly hidden, and -- like a hand-drawn link -- hiding one through
+  // the usual "연결선 그리기" click-to-delete just adds it to hiddenLinks,
+  // no separate UI needed for that.
+  DEVICE_LLDP_LINKS.forEach(dl=>{
+    const a = dl.from_device_id, b = dl.to_device_id;
+    if(!nodeIds.has(a) || !nodeIds.has(b)) return;
+    if(hidden.has(topoLinkKey(a,b))) return;
+    if(allLinks.some(l => (l.a===a&&l.b===b)||(l.a===b&&l.b===a))) return;
+    allLinks.push({a, b, custom:false, lldp:true});
+  });
   loadTopoCustomLinks().forEach(([a,b])=>{
     if(nodeIds.has(a) && nodeIds.has(b)) allLinks.push({a, b, custom:true});
   });
@@ -1268,7 +1284,8 @@ function renderTopologySkeleton(){
   const linksSvg = TOPO_LINKS.map((l,i)=>{
     const na=TOPO_NODES.find(n=>n.id===l.a), nb=TOPO_NODES.find(n=>n.id===l.b);
     if(!na||!nb) return '';
-    return `<line data-link="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="#c7cede" stroke-width="2"/>`
+    const dash = l.lldp ? ' stroke-dasharray="5,4"' : '';
+    return `<line data-link="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="${l.lldp?'#22d3ee':'#c7cede'}" stroke-width="2"${dash}/>`
       + `<line data-link-hit="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="transparent" stroke-width="16" style="cursor:${topoLinkMode?'pointer':'default'}"/>`;
   }).join('');
   const nodesHtml = TOPO_NODES.map(n=>`
@@ -1321,6 +1338,7 @@ function renderTopologySkeleton(){
         <div class="l"><span class="sw" style="background:var(--good)"></span>정상 회선</div>
         <div class="l"><span class="sw" style="background:var(--warn)"></span>혼잡 (70%+)</div>
         <div class="l"><span class="sw" style="background:var(--crit)"></span>과부하 / 장애</div>
+        <div class="l"><span class="sw" style="background:#22d3ee"></span>LLDP 자동 발견 연결 (점선)</div>
       </div>
     </div>
     <div class="grid grid-3" id="topo-detail-cards"></div>
@@ -1628,16 +1646,23 @@ function refreshTopology(){
     const entA = na && na.ref ? findEntity(na.ref) : null;
     const line = document.querySelector(`line[data-link="${i}"]`);
     if(!line) return;
-    let color = '#c7cede', width=2;
-    if(entA && entA.status){ color = entA.status==='crit'?'#ef3b5c':entA.status==='warn'?'#e6960f':'#9fb0d8'; width = entA.status==='good'?2:2.6; }
+    let color = l.lldp ? '#22d3ee' : '#c7cede', width=2;
+    if(entA && entA.status){ color = entA.status==='crit'?'#ef3b5c':entA.status==='warn'?'#e6960f':(l.lldp?'#22d3ee':'#9fb0d8'); width = entA.status==='good'?2:2.6; }
     line.setAttribute('stroke', color); line.setAttribute('stroke-width', width);
   });
 }
 function refreshTopologyView(){
-  const currentIds = TOPO_NODES.map(n=>n.id).join(',');
-  if(currentIds !== lastTopoNodeIds){
+  // Node set alone used to gate the full re-render, on the assumption that
+  // links only ever change when nodes do -- not true once links can also
+  // come from LLDP discovery running in the background: a newly-found link
+  // between two already-rendered devices changed TOPO_LINKS without adding
+  // or removing a node, so it silently never made it into the DOM.
+  const nodeSig = TOPO_NODES.map(n=>n.id).join(',');
+  const linkSig = TOPO_LINKS.map(l=>`${l.a}>${l.b}${l.lldp?'~lldp':''}`).join(',');
+  const sig = nodeSig + '|' + linkSig;
+  if(sig !== lastTopoSignature){
     renderTopologySkeleton();
-    lastTopoNodeIds = currentIds;
+    lastTopoSignature = sig;
   }
   refreshTopology();
 }

@@ -383,6 +383,11 @@ def api_state():
     conn.close()
     out['incidents'] = [dict(r) for r in incidents]
     out['serverInfo'] = {'lanIp': storage.get_lan_ip(), 'port': PORT}
+    # Phase 7 LLDP groundwork (collector/lldp.py) has been populating this
+    # table every 300s for any registered 'net' device all along; this is the
+    # first thing that actually reads it back out, for the topology map to
+    # draw those auto-discovered links alongside the manually-drawn ones.
+    out['deviceLinks'] = storage.load_device_links()
     return jsonify(out)
 
 
