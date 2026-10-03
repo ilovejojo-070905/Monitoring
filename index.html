@@ -653,6 +653,7 @@ function levelColorHex(lv){ return lv==='crit'?'#ef3b5c': lv==='warn'?'#e6960f':
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function regTag(entity){ return entity.origin==='user' ? `<span class="pill info" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle">등록</span>` : ''; }
 function maintTag(entity){ return entity.maintenance && entity.maintenance.enabled ? `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--warn-soft);color:var(--warn)">점검중</span>` : ''; }
+function groupTag(entity){ return entity.group ? `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--accent-soft);color:var(--accent)">${escapeHtml(entity.group)}</span>` : ''; }
 
 Chart.defaults.font.family = "'IBM Plex Mono', monospace";
 Chart.defaults.color = '#6b7488';
@@ -1758,7 +1759,7 @@ function renderServersSkeleton(){
         <div><h3>서버 목록</h3><span class="sub">클릭 시 상세 성능 정보를 확인할 수 있습니다</span></div>
         ${statusFilterRow('srv-filters', srvFilter)}
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="srv-search" placeholder="서버명 / IP 검색"></div>
+          <input id="srv-search" placeholder="서버명 / IP / 그룹 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th></tr></thead>
@@ -1771,11 +1772,11 @@ function renderServersSkeleton(){
 }
 function renderServers(){
   const q = ($('#srv-search')?.value||'').toLowerCase();
-  const rows = applyStatusFilter(SERVERS, srvFilter).filter(s=> s.name.toLowerCase().includes(q) || (s.ip||'').includes(q));
+  const rows = applyStatusFilter(SERVERS, srvFilter).filter(s=> s.name.toLowerCase().includes(q) || (s.ip||'').includes(q) || (s.group||'').toLowerCase().includes(q));
   $('#srv-tbody').innerHTML = rows.map(s=>`
     <tr data-id="${s.id}">
       <td><span class="pill ${s.status}"><span class="dot"></span>${statusLabel(s.status)}</span>${modeTag(s)}</td>
-      <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}</td>
+      <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}${groupTag(s)}</td>
       <td class="mono">${s.ip||'-'}</td>
       <td>${escapeHtml(s.role||'-')}</td>
       <td class="mono">${metricCell(s.cpu,75,90)}</td>
@@ -1827,7 +1828,7 @@ function renderDatabaseSkeleton(){
         <div><h3>데이터베이스 인스턴스</h3><span class="sub">등록된 DB 호스트의 접속 포트 도달성을 실시간 확인합니다</span></div>
         ${statusFilterRow('db-filters', dbFilter)}
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="db-search" placeholder="인스턴스명 / IP 검색"></div>
+          <input id="db-search" placeholder="인스턴스명 / IP / 그룹 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
@@ -1840,11 +1841,11 @@ function renderDatabaseSkeleton(){
 }
 function renderDatabase(){
   const q = ($('#db-search')?.value||'').toLowerCase();
-  const rows = applyStatusFilter(DBS, dbFilter).filter(d=> d.name.toLowerCase().includes(q) || (d.ip||'').includes(q));
+  const rows = applyStatusFilter(DBS, dbFilter).filter(d=> d.name.toLowerCase().includes(q) || (d.ip||'').includes(q) || (d.group||'').toLowerCase().includes(q));
   $('#db-tbody').innerHTML = rows.map(d=>`
     <tr data-id="${d.id}">
       <td><span class="pill ${d.status}"><span class="dot"></span>${statusLabel(d.status)}</span></td>
-      <td class="name">${escapeHtml(d.name)}${regTag(d)}${maintTag(d)}</td>
+      <td class="name">${escapeHtml(d.name)}${regTag(d)}${maintTag(d)}${groupTag(d)}</td>
       <td>${escapeHtml(d.engine||'-')}</td>
       <td>${escapeHtml(d.role||'-')}</td>
       <td class="mono">${d.ip||'-'}</td>
@@ -1865,7 +1866,7 @@ function renderNetworkSkeleton(){
         <div><h3>네트워크 장비</h3><span class="sub">Ping은 도달성만, SNMP는 CPU·메모리·트래픽·Uptime까지 실측합니다</span></div>
         ${statusFilterRow('net-filters', netFilter)}
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="net-search" placeholder="장비명 / IP 검색"></div>
+          <input id="net-search" placeholder="장비명 / IP / 그룹 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
@@ -1895,11 +1896,11 @@ function renderNetworkSkeleton(){
 }
 function renderNetwork(){
   const q = ($('#net-search')?.value||'').toLowerCase();
-  const netRows = applyStatusFilter(NETS, netFilter).filter(n=> n.name.toLowerCase().includes(q) || (n.ip||'').includes(q));
+  const netRows = applyStatusFilter(NETS, netFilter).filter(n=> n.name.toLowerCase().includes(q) || (n.ip||'').includes(q) || (n.group||'').toLowerCase().includes(q));
   $('#net-tbody').innerHTML = netRows.map(n=>`
     <tr data-id="${n.id}" class="${n.id===selectedNetId?'sel-row':''}">
       <td><span class="pill ${n.status}"><span class="dot"></span>${statusLabel(n.status)}</span>${modeTag(n)}</td>
-      <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}</td>
+      <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}${groupTag(n)}</td>
       <td>${escapeHtml(n.type||'-')}</td>
       <td class="mono">${n.ip||'-'}</td>
       <td class="mono">${metricCell(n.cpu,75,90)}</td>
@@ -1942,7 +1943,7 @@ function renderFacilitySkeleton(){
         <div><h3>전산실 설비</h3><span class="sub">UPS · 항온항습기 · 분전반 등 설비의 도달성과 SNMP 실측값을 확인합니다</span></div>
         ${statusFilterRow('fac-filters', facFilter)}
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="fac-search" placeholder="설비명 / IP 검색"></div>
+          <input id="fac-search" placeholder="설비명 / IP / 그룹 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
@@ -1958,11 +1959,11 @@ function renderFacilitySkeleton(){
 }
 function renderFacility(){
   const q = ($('#fac-search')?.value||'').toLowerCase();
-  const facRows = applyStatusFilter(FACS, facFilter).filter(f=> f.name.toLowerCase().includes(q) || (f.ip||'').includes(q));
+  const facRows = applyStatusFilter(FACS, facFilter).filter(f=> f.name.toLowerCase().includes(q) || (f.ip||'').includes(q) || (f.group||'').toLowerCase().includes(q));
   $('#fac-tbody').innerHTML = facRows.map(f=>`
     <tr data-id="${f.id}">
       <td><span class="pill ${f.status}"><span class="dot"></span>${statusLabel(f.status)}</span>${modeTag(f)}</td>
-      <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}</td>
+      <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}${groupTag(f)}</td>
       <td>${escapeHtml(f.type||'-')}${f.role? ' · '+escapeHtml(f.role) : ''}</td>
       <td class="mono">${f.ip||'-'}</td>
       <td class="mono" style="color:${f.reachable?'var(--text-dim)':'var(--crit)'}">${f.reachable? fmt0(f.latencyMs||0)+' ms' : '응답없음'}</td>
@@ -2041,6 +2042,18 @@ function renderRegisterSkeleton(){
   const el = $('#view-register');
   el.innerHTML = `
     <div id="reg-edit-overlay"></div>
+    <div class="card">
+      <div class="card-head"><div><h3>네트워크 자동 스캔</h3><span class="sub">IP 대역을 지정하면 살아있는 장비를 찾아 등록 후보로 보여줍니다</span></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div class="field" style="flex:1;min-width:220px">
+          <label>IP 대역</label>
+          <input type="text" id="scan-range" placeholder="예: 192.168.0.0/24 또는 192.168.0.1-254">
+        </div>
+        <button type="button" class="btn primary" id="scan-start-btn">스캔 시작</button>
+      </div>
+      <div id="scan-error" style="color:var(--crit);font-size:11.5px;margin-top:8px"></div>
+      <div id="scan-results" style="margin-top:12px"></div>
+    </div>
     <div class="grid grid-3">
       <div class="card grid-span2" id="reg-form-card">
         <div class="card-head"><div><h3 id="reg-form-title">새 장비 등록</h3><span class="sub" id="reg-form-sub">Agent는 실측 전체 지표, Ping은 도달성, SNMP는 장치 정보와 인터페이스 트래픽까지 실측합니다</span></div></div>
@@ -2063,6 +2076,9 @@ function renderRegisterSkeleton(){
           <div class="form-grid">
             <div class="field"><label>장비명 *</label><input type="text" id="f-name" placeholder="예: 거실 PC, 홈 NAS"></div>
             <div class="field"><label id="f-ip-label">IP 주소</label><input type="text" id="f-ip" placeholder="예: 192.168.0.13"></div>
+          </div>
+          <div class="form-grid" style="margin-top:14px">
+            <div class="field"><label>그룹 (선택)</label><input type="text" id="f-group" list="f-group-list" placeholder="예: 3층 서버실, 개발팀 PC"><datalist id="f-group-list"></datalist></div>
           </div>
 
           <div class="form-grid" data-group="server" style="margin-top:14px">
@@ -2187,6 +2203,61 @@ function renderRegisterSkeleton(){
   });
   updateFormVisibility();
 
+  $('#scan-start-btn').addEventListener('click', async ()=>{
+    const range = $('#scan-range').value.trim();
+    const errEl = $('#scan-error');
+    const resultsEl = $('#scan-results');
+    errEl.textContent = '';
+    if(!range){ errEl.textContent = '스캔할 IP 대역을 입력해주세요'; return; }
+    const btn = $('#scan-start-btn');
+    btn.disabled = true; btn.textContent = '스캔 중...';
+    resultsEl.innerHTML = `<div class="empty-note">스캔 중입니다 (대역이 넓으면 몇 초 걸릴 수 있어요)...</div>`;
+    try{
+      const r = await apiFetch('/api/discovery/scan', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({range}),
+      });
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error || '스캔에 실패했습니다');
+      if(!j.results.length){
+        resultsEl.innerHTML = `<div class="empty-note">응답하는 장비를 찾지 못했습니다.</div>`;
+        return;
+      }
+      resultsEl.innerHTML = `
+        <div class="table-wrap"><table class="data reg-device-table">
+          <thead><tr><th>IP</th><th>호스트명</th><th>응답시간</th><th></th></tr></thead>
+          <tbody>
+            ${j.results.map(d=>`
+              <tr>
+                <td class="mono">${escapeHtml(d.ip)}</td>
+                <td>${escapeHtml(d.hostname||'-')}</td>
+                <td class="mono">${typeof d.latencyMs==='number' ? d.latencyMs+' ms' : '-'}</td>
+                <td>${d.alreadyRegistered
+                  ? `<span class="pill" style="font-size:11px">이미 등록됨</span>`
+                  : `<button type="button" class="btn" data-fill-ip="${escapeHtml(d.ip)}" data-fill-name="${escapeHtml(d.hostname||d.ip)}">등록 폼에 채우기</button>`}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table></div>
+        <div style="font-size:11px;color:var(--text-faint);margin-top:6px">${j.results.length}대 발견</div>
+      `;
+      $$('#scan-results [data-fill-ip]').forEach(b=> b.addEventListener('click', ()=>{
+        exitEditMode();
+        $('#f-name').value = b.dataset.fillName;
+        $('#f-ip').value = b.dataset.fillIp;
+        regMode = 'ping';
+        $$('#reg-mode-chips .chip-btn').forEach(x=> x.classList.toggle('active', x.dataset.mode==='ping'));
+        updateFormVisibility();
+        $('#reg-form-card').scrollIntoView({behavior:'smooth', block:'start'});
+        $('#f-name').focus();
+      }));
+    }catch(err){
+      errEl.textContent = err.message;
+      resultsEl.innerHTML = '';
+    }finally{
+      btn.disabled = false; btn.textContent = '스캔 시작';
+    }
+  });
+
   $$('.card-head.collapsible').forEach(head=>{
     head.addEventListener('click', ()=>{
       const wrap = document.getElementById(head.dataset.collapse);
@@ -2234,6 +2305,7 @@ function renderRegisterSkeleton(){
     $('#reg-submit-btn').textContent = '수정 완료';
     $('#f-name').value = entity.name || '';
     $('#f-ip').value = entity.ip || '';
+    $('#f-group').value = entity.group || '';
     if(cat==='server'){ $('#f-os').value = entity.os||'linux'; $('#f-role-server').value = entity.role||''; }
     else if(cat==='db'){ $('#f-engine').value = entity.engine||'Oracle'; $('#f-role-db').value = entity.role||''; }
     else if(cat==='net'){ $('#f-nettype').value = entity.type||'공유기'; $('#f-role-net').value = entity.role||''; }
@@ -2259,6 +2331,8 @@ function renderRegisterSkeleton(){
     if(!name){ errEl.textContent='장비명을 입력하세요'; return; }
     if((effMode==='ping'||effMode==='snmp') && !ip){ errEl.textContent=(effMode==='snmp'?'SNMP':'Ping')+' 모니터링은 IP 주소가 필요합니다'; return; }
     let fields = {};
+    const groupVal = $('#f-group').value.trim();
+    if(groupVal) fields.group = groupVal;
     if(regCategory==='server'){ fields.os=$('#f-os').value; fields.role=$('#f-role-server').value.trim(); }
     else if(regCategory==='db'){ fields.engine=$('#f-engine').value; fields.role=$('#f-role-db').value.trim(); }
     else if(regCategory==='net'){ fields.type=$('#f-nettype').value; fields.role=$('#f-role-net').value.trim(); }
@@ -2327,12 +2401,17 @@ function renderRegister(){
   const all = groups.flatMap(g=>g.list);
   const userCount = all.filter(e=>e.origin==='user').length;
   sub.textContent = `총 ${all.length}대 (사용자 등록 ${userCount}건)`;
+  const groupList = $('#f-group-list');
+  if(groupList){
+    const distinctGroups = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
+    groupList.innerHTML = distinctGroups.map(g=>`<option value="${escapeHtml(g)}">`).join('');
+  }
   groups.forEach(g=>{
     const groupUserCount = g.list.filter(e=>e.origin==='user').length;
     $(g.countEl).textContent = `${g.list.length}대 (사용자 등록 ${groupUserCount}건)`;
     $(g.tbody).innerHTML = g.list.map(e=>`
       <tr>
-        <td class="name">${escapeHtml(e.name)}${regTag(e)}</td>
+        <td class="name">${escapeHtml(e.name)}${regTag(e)}${groupTag(e)}</td>
         <td class="mono">${modeLabel(e)}</td>
         <td class="mono">${e.ip||'-'}</td>
         <td><span class="pill ${e.status}"><span class="dot"></span>${statusLabel(e.status)}</span></td>

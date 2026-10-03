@@ -28,6 +28,7 @@ from collector import state, scheduler, health, metrics
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
 from collector import snmp_collector
+from collector import discovery
 
 BASE_DIR = storage.BASE_DIR
 PORT = storage.PORT
@@ -397,6 +398,25 @@ def api_state():
 @require_role('VIEWER')
 def api_system_health():
     return jsonify(health.get_health())
+
+
+@app.post('/api/discovery/scan')
+@require_role('ADMIN')
+def api_discovery_scan():
+    body = request.get_json(force=True)
+    range_text = (body.get('range') or '').strip()
+    try:
+        results = discovery.scan(range_text)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app_logger.exception('network scan failed')
+        return jsonify({'error': f'스캔 중 오류가 발생했습니다: {e}'}), 500
+    existing_ips = {d['ip'] for d in storage.load_devices() if d.get('ip')}
+    for r in results:
+        r['alreadyRegistered'] = r['ip'] in existing_ips
+    audit('NETWORK_SCAN', target=range_text, details=f'{len(results)}대 발견')
+    return jsonify({'results': results})
 
 
 @app.post('/api/devices')
