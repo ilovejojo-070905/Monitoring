@@ -620,8 +620,12 @@
 <div class="drawer" id="drawer">
   <div class="drawer-head">
     <div><h2 id="drawerTitle">-</h2><div class="role" id="drawerRole">-</div></div>
-    <button class="btn" id="drawerMaintBtn" style="margin-left:auto;margin-right:8px;white-space:nowrap"></button>
-    <button class="drawer-close" id="drawerClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+      <button class="btn" id="drawerEditBtn" style="white-space:nowrap;display:none">수정</button>
+      <button class="btn" id="drawerDelBtn" style="white-space:nowrap;display:none">삭제</button>
+      <button class="btn" id="drawerMaintBtn" style="white-space:nowrap"></button>
+      <button class="drawer-close" id="drawerClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
   </div>
   <div class="drawer-body" id="drawerBody"></div>
 </div>
@@ -2186,45 +2190,6 @@ function renderRegisterSkeleton(){
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-head" style="font-size:17px"><h3 style="font-size:1em">등록된 장비 목록</h3><span class="sub" id="reg-count-sub" style="font-size:.75em">-</span></div>
-    </div>
-    <div class="card">
-      <div class="card-head collapsible collapsed" data-collapse="reg-collapse-server"><div><h3>서버 (SMS)</h3><span class="sub" id="reg-count-server">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
-      <div class="collapse-wrap collapsed" id="reg-collapse-server"><div class="collapse-inner">
-      <div class="table-wrap" style="margin-top:12px"><table class="data reg-device-table">
-        <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
-        <tbody id="reg-tbody-server"></tbody>
-      </table></div>
-      </div></div>
-    </div>
-    <div class="card">
-      <div class="card-head collapsible collapsed" data-collapse="reg-collapse-db"><div><h3>데이터베이스 (DBMS)</h3><span class="sub" id="reg-count-db">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
-      <div class="collapse-wrap collapsed" id="reg-collapse-db"><div class="collapse-inner">
-      <div class="table-wrap" style="margin-top:12px"><table class="data reg-device-table">
-        <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
-        <tbody id="reg-tbody-db"></tbody>
-      </table></div>
-      </div></div>
-    </div>
-    <div class="card">
-      <div class="card-head collapsible collapsed" data-collapse="reg-collapse-net"><div><h3>네트워크 (NMS)</h3><span class="sub" id="reg-count-net">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
-      <div class="collapse-wrap collapsed" id="reg-collapse-net"><div class="collapse-inner">
-      <div class="table-wrap" style="margin-top:12px"><table class="data reg-device-table">
-        <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
-        <tbody id="reg-tbody-net"></tbody>
-      </table></div>
-      </div></div>
-    </div>
-    <div class="card">
-      <div class="card-head collapsible collapsed" data-collapse="reg-collapse-fac"><div><h3>전산실 설비 (FMS)</h3><span class="sub" id="reg-count-fac">-</span></div><svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div>
-      <div class="collapse-wrap collapsed" id="reg-collapse-fac"><div class="collapse-inner">
-      <div class="table-wrap" style="margin-top:12px"><table class="data reg-device-table">
-        <thead><tr><th>장비명</th><th>수집방식</th><th>IP</th><th>상태</th><th>등록일</th><th></th></tr></thead>
-        <tbody id="reg-tbody-fac"></tbody>
-      </table></div>
-      </div></div>
-    </div>
   `;
 
   function updateFormVisibility(){
@@ -2428,56 +2393,17 @@ function renderRegisterSkeleton(){
     }
   });
 }
-function modeLabel(e){
-  if(e.mode==='local') return '로컬 (실측)';
-  if(e.mode==='agent') return e.online ? 'Agent (실측)' : 'Agent (대기중)';
-  if(e.mode==='snmp') return e.reachable ? 'SNMP (실측)' : 'SNMP (응답없음)';
-  return 'Ping (도달성)';
-}
 function renderRegister(){
-  const sub = $('#reg-count-sub');
-  if(!sub) return;
-  const groups = [
-    {cat:'server', list:SERVERS, tbody:'#reg-tbody-server', countEl:'#reg-count-server'},
-    {cat:'db', list:DBS, tbody:'#reg-tbody-db', countEl:'#reg-count-db'},
-    {cat:'net', list:NETS, tbody:'#reg-tbody-net', countEl:'#reg-count-net'},
-    {cat:'fac', list:FACS, tbody:'#reg-tbody-fac', countEl:'#reg-count-fac'},
-  ];
-  const all = groups.flatMap(g=>g.list);
-  const userCount = all.filter(e=>e.origin==='user').length;
-  sub.textContent = `총 ${all.length}대 (사용자 등록 ${userCount}건)`;
+  // The old "등록된 장비 목록" tables (서버/DB/네트워크/설비, with 수정/삭제
+  // buttons) were removed from this page -- edit/delete now lives in the
+  // device detail drawer instead (see openDrawerFor). This function now only
+  // keeps the group-name autocomplete (#f-group-list) on the registration
+  // form up to date with whatever groups already exist across all devices.
   const groupList = $('#f-group-list');
-  if(groupList){
-    const distinctGroups = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
-    groupList.innerHTML = distinctGroups.map(g=>`<option value="${escapeHtml(g)}">`).join('');
-  }
-  groups.forEach(g=>{
-    const groupUserCount = g.list.filter(e=>e.origin==='user').length;
-    $(g.countEl).textContent = `${g.list.length}대 (사용자 등록 ${groupUserCount}건)`;
-    $(g.tbody).innerHTML = g.list.map(e=>`
-      <tr>
-        <td class="name">${escapeHtml(e.name)}${regTag(e)}${groupTag(e)}</td>
-        <td class="mono">${modeLabel(e)}</td>
-        <td class="mono">${e.ip||'-'}</td>
-        <td><span class="pill ${e.status}"><span class="dot"></span>${statusLabel(e.status)}</span></td>
-        <td class="mono">${e.createdAt ? new Date(e.createdAt).toLocaleDateString('ko-KR') : '-'}</td>
-        <td>${e.origin==='user' ? `<div style="display:flex;gap:6px"><button type="button" class="btn" data-edit="${e.id}" data-cat="${g.cat}">수정</button><button type="button" class="btn" data-del="${e.id}">삭제</button></div>` : ''}</td>
-      </tr>`).join('') || `<tr><td colspan="6"><div class="empty-note">등록된 장비가 없습니다.</div></td></tr>`;
-  });
-  const selDel = groups.map(g=> `${g.tbody} [data-del]`).join(', ');
-  const selEdit = groups.map(g=> `${g.tbody} [data-edit]`).join(', ');
-  $$(selDel).forEach(b=> b.addEventListener('click', async ()=>{
-    const entity = findEntity(b.dataset.del);
-    const label = entity ? `"${entity.name}"` : '이 장비를';
-    const ok = await showConfirm(`${label} 삭제할까요?\n등록된 설정과 이력이 함께 삭제됩니다.`, {title:'장비 삭제', okText:'삭제'});
-    if(!ok) return;
-    await unregisterDevice(b.dataset.del);
-    afterDeviceChange();
-  }));
-  $$(selEdit).forEach(b=> b.addEventListener('click', ()=>{
-    const entity = findEntity(b.dataset.edit);
-    if(entity) window.startEditDevice(entity, b.dataset.cat);
-  }));
+  if(!groupList) return;
+  const all = [...SERVERS, ...DBS, ...NETS, ...FACS];
+  const distinctGroups = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
+  groupList.innerHTML = distinctGroups.map(g=>`<option value="${escapeHtml(g)}">`).join('');
 }
 
 /* ================= USERS (ADMIN only -- server enforces this regardless) ================= */
@@ -2652,6 +2578,7 @@ function openDrawerFor(id){
   if(id !== openDrawerId && ifaceModalState && ifaceModalState.deviceId !== id) closeIfaceModal();
   openDrawerId = id;
   const catLabel = s?'서버 (SMS)':d?'데이터베이스 (DBMS)':n?'네트워크 (NMS)':'전산실 설비 (FMS)';
+  const cat = s?'server':d?'db':n?'net':'fac';
   const maint = entity.maintenance || {enabled:false};
   const maintBtn = $('#drawerMaintBtn');
   maintBtn.textContent = maint.enabled ? '유지보수 해제' : '유지보수 시작';
@@ -2665,6 +2592,32 @@ function openDrawerFor(id){
     });
     await afterDeviceChange();
   };
+  // 수정/삭제는 "장비 등록" 화면의 등록된 장비 목록 표가 삭제되면서 이쪽
+  // (상세 드로어)으로 옮겨왔다 -- 사용자가 직접 등록한 장비(origin==='user')
+  // 에만 의미가 있는 동작이라 그 외에는 버튼 자체를 숨긴다.
+  const editBtn = $('#drawerEditBtn');
+  const delBtn = $('#drawerDelBtn');
+  const isUserOrigin = entity.origin === 'user';
+  editBtn.style.display = isUserOrigin ? '' : 'none';
+  delBtn.style.display = isUserOrigin ? '' : 'none';
+  if(isUserOrigin){
+    editBtn.onclick = ()=>{
+      // 수정 폼은 "장비 등록" 화면(#view-register) 안에 모달로 떠 있는 구조라,
+      // 그 화면이 비활성 상태(display:none)인 동안에는 열어봐야 화면에 전혀
+      // 보이지 않는다 -- 드로어는 어느 화면에서든 열릴 수 있으므로, 먼저 그
+      // 화면으로 전환한 뒤에 수정 모달을 띄운다.
+      closeDrawer();
+      switchView('register');
+      window.startEditDevice(entity, cat);
+    };
+    delBtn.onclick = async ()=>{
+      const ok = await showConfirm(`"${entity.name}" 삭제할까요?\n등록된 설정과 이력이 함께 삭제됩니다.`, {title:'장비 삭제', okText:'삭제'});
+      if(!ok) return;
+      await unregisterDevice(id);
+      closeDrawer();
+      afterDeviceChange();
+    };
+  }
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
   if(entity.mode==='ping' || entity.mode==='snmp') drawPingDevice(entity, catLabel);
   else if(entity.mode==='agent' && !entity.online) drawAgentPending(entity, catLabel);
