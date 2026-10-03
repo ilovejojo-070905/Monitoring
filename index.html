@@ -656,7 +656,15 @@ function levelOf(pct, warnAt, critAt){ return pct>=critAt?'crit': pct>=warnAt?'w
 function levelColor(lv){ return lv==='crit'?'var(--crit)': lv==='warn'?'var(--warn)':'var(--good)'; }
 function levelColorHex(lv){ return lv==='crit'?'#ef3b5c': lv==='warn'?'#e6960f':'#00b087'; }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function regTag(entity){ return entity.origin==='user' ? `<span class="pill info" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle">등록</span>` : ''; }
+function regTag(entity){
+  // "신규등록" 배지는 영구 표시가 아니라 등록 직후 약 1분간만 보이는 알림이다
+  // -- 상태 폴링(수 초 주기)으로 화면이 계속 다시 그려지므로, 1분이 지나면
+  // 이 조건이 false가 되면서 다음 리렌더에 자연스럽게 사라진다. 별도 타이머가
+  // 필요 없는 이유.
+  if(entity.origin !== 'user' || !entity.createdAt) return '';
+  if(Date.now() - entity.createdAt >= 60000) return '';
+  return `<span class="pill info" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle">신규등록</span>`;
+}
 function maintTag(entity){ return entity.maintenance && entity.maintenance.enabled ? `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--warn-soft);color:var(--warn)">점검중</span>` : ''; }
 function groupTag(entity){ return entity.group ? `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--accent-soft);color:var(--accent)">${escapeHtml(entity.group)}</span>` : ''; }
 
