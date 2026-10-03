@@ -74,8 +74,17 @@ Install-IfMissing 'mkcert' 'FiloSottile.mkcert' 'mkcert'
 # the scheduled task at next logon) sees the registry PATH update on its own
 # and needs none of this.
 function Resolve-ExeAndAddToPath([string]$cmd, [string[]]$searchGlobs) {
+    # Get-Command alone is NOT trustworthy for 'python': Windows ships a
+    # WindowsApps\python.exe "app execution alias" stub on PATH by default on
+    # most PCs (to upsell the Store listing) that LOOKS like a valid command
+    # but does nothing real -- Get-Command happily returns it, and every
+    # python call after that silently no-ops or errors. Confirmed by actually
+    # running this function end-to-end: it picked the stub over the real,
+    # just-installed interpreter and broke every step after it. Rejecting any
+    # match under WindowsApps forces the search-glob fallback (the actual
+    # known winget install location) instead.
     $existing = Get-Command $cmd -ErrorAction SilentlyContinue
-    if ($existing) { return $existing.Source }
+    if ($existing -and $existing.Source -notmatch '\\WindowsApps\\') { return $existing.Source }
     foreach ($glob in $searchGlobs) {
         # No -Recurse: it doesn't combine with a wildcard in the middle of
         # the path on PowerShell 5.1 (silently matches nothing) -- the glob
