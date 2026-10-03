@@ -1824,7 +1824,7 @@ function renderServers(){
   const rows = applyStatusFilter(SERVERS, srvFilter).filter(s=> s.name.toLowerCase().includes(q) || (s.ip||'').includes(q) || (s.group||'').toLowerCase().includes(q));
   $('#srv-tbody').innerHTML = rows.map(s=>`
     <tr data-id="${s.id}">
-      <td><span class="pill ${s.status}"><span class="dot"></span>${statusLabel(s.status)}</span>${modeTag(s)}</td>
+      <td><span class="pill ${s.status}"><span class="dot"></span>${statusLabel(s.status)}</span></td>
       <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}${groupTag(s)}</td>
       <td class="mono">${s.ip||'-'}</td>
       <td>${escapeHtml(s.role||'-')}</td>
@@ -1860,13 +1860,6 @@ function wireStatusFilter(id, setter, rerender){
 function applyStatusFilter(list, filterVal){
   return filterVal==='all' ? list : list.filter(x=>x.status===filterVal);
 }
-function modeTag(e){
-  if(e.mode==='ping') return `<span class="mono" style="font-size:9.5px;color:${e.reachable?'var(--text-faint)':'var(--crit)'};margin-left:6px">${e.reachable? 'Ping '+fmt0(e.latencyMs||0)+'ms' : '응답없음'}</span>`;
-  if(e.mode==='snmp') return `<span class="mono" style="font-size:9.5px;color:${e.reachable?'var(--text-faint)':'var(--crit)'};margin-left:6px">${e.reachable? 'SNMP '+fmt0(e.latencyMs||0)+'ms' : 'SNMP 응답없음'}</span>`;
-  if(e.mode==='agent' && !e.online) return `<span class="mono" style="font-size:9.5px;color:var(--warn);margin-left:6px">Agent 대기중</span>`;
-  return '';
-}
-
 /* ================= DATABASE ================= */
 let dbFilter = 'all';
 function renderDatabaseSkeleton(){
@@ -1948,7 +1941,7 @@ function renderNetwork(){
   const netRows = applyStatusFilter(NETS, netFilter).filter(n=> n.name.toLowerCase().includes(q) || (n.ip||'').includes(q) || (n.group||'').toLowerCase().includes(q));
   $('#net-tbody').innerHTML = netRows.map(n=>`
     <tr data-id="${n.id}" class="${n.id===selectedNetId?'sel-row':''}">
-      <td><span class="pill ${n.status}"><span class="dot"></span>${statusLabel(n.status)}</span>${modeTag(n)}</td>
+      <td><span class="pill ${n.status}"><span class="dot"></span>${statusLabel(n.status)}</span></td>
       <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}${groupTag(n)}</td>
       <td>${escapeHtml(n.type||'-')}</td>
       <td class="mono">${n.ip||'-'}</td>
@@ -2011,7 +2004,7 @@ function renderFacility(){
   const facRows = applyStatusFilter(FACS, facFilter).filter(f=> f.name.toLowerCase().includes(q) || (f.ip||'').includes(q) || (f.group||'').toLowerCase().includes(q));
   $('#fac-tbody').innerHTML = facRows.map(f=>`
     <tr data-id="${f.id}">
-      <td><span class="pill ${f.status}"><span class="dot"></span>${statusLabel(f.status)}</span>${modeTag(f)}</td>
+      <td><span class="pill ${f.status}"><span class="dot"></span>${statusLabel(f.status)}</span></td>
       <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}${groupTag(f)}</td>
       <td>${escapeHtml(f.type||'-')}${f.role? ' · '+escapeHtml(f.role) : ''}</td>
       <td class="mono">${f.ip||'-'}</td>
