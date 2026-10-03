@@ -1505,9 +1505,18 @@ function renderTopologySkeleton(){
     if(topoLinkMode && node.dataset.node === topoLinkFrom) node.classList.add('sel');
   });
   $$('.node-del', el).forEach(btn=>{
-    btn.addEventListener('mousedown', ev=> ev.stopPropagation());
+    // mousedown is deliberately NOT stopped here (used to be): the button
+    // sits right on the icon's corner, which is exactly where a drag
+    // naturally starts for anyone grabbing near the edge -- stopping it
+    // there made a drag that happened to begin on the button silently do
+    // nothing. Letting it bubble lets the parent .topo-node's own mousedown
+    // (startTopoDrag) run as normal; a real drag still completes normally,
+    // and the click guard below is what keeps a plain click from both
+    // deleting AND registering as a drag-click.
     btn.addEventListener('click', ev=>{
       ev.stopPropagation();
+      const node = btn.closest('.topo-node');
+      if(node && node.dataset.dragged === '1'){ node.dataset.dragged = ''; return; }
       const id = btn.dataset.delNode;
       const n = TOPO_NODES.find(x=>x.id===id);
       if(n && n.custom){
