@@ -884,6 +884,8 @@ function iconSvg(name){ return `<svg viewBox="0 0 24 24" fill="none" stroke-widt
 let TOPO_NODES = [];
 let TOPO_LINKS = [];
 let lastTopoNodeIds = null;
+let topoDefaultContentW = 0;
+let topoDefaultContentH = 0;
 let topoDragging = false;
 let topoLinkMode = false;
 let topoLinkFrom = null;
@@ -933,6 +935,16 @@ function rebuildTopology(){
   loadTopoCustomLinks().forEach(([a,b])=>{
     if(nodeIds.has(a) && nodeIds.has(b)) allLinks.push({a, b, custom:true});
   });
+  // Captured from the DEFAULT (grid) positions, before any saved drag
+  // override is applied -- this is what legitimately drives the canvas
+  // bigger when there's actually more devices to show. A saved override is
+  // just someone's past drag and is clamped to fit afterwards (see
+  // renderTopologySkeleton) rather than allowed to grow the canvas itself --
+  // otherwise one stale saved position from an old layout change (this used
+  // to let nodes be dragged further than it does now) permanently breaks the
+  // "fits on one screen" sizing on every future load.
+  topoDefaultContentW = Math.max(0, ...nodes.map(n=>n.x+90));
+  topoDefaultContentH = Math.max(0, ...nodes.map(n=>n.y+60));
   const layout = loadTopoLayout();
   const sizes = loadTopoNodeSizes();
   nodes.forEach(n=>{
@@ -1264,20 +1276,15 @@ function renderTopologySkeleton(){
       <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span>${n.custom?`<button type="button" class="node-del" data-del-node="${n.id}" title="삭제">×</button>`:''}</div>
       <span class="node-name">${escapeHtml(n.label)}</span>
     </div>`).join('');
-  // Content width is resolved after insertion (below), against whatever
-  // width the view actually has available -- a hardcoded floor here (the
-  // canvas used to always be at least 1180px) made the canvas wider than the
-  // screen and forced a horizontal scrollbar even with only a couple of
-  // devices on the map.
-  const contentW = Math.max(0, ...TOPO_NODES.map(n=>n.x+90));
-  // Not 660 anymore: that was tall enough to reserve room for up to 7 devices
-  // per category whether or not they exist yet, which routinely pushed the
-  // legend below the fold with only a couple of real devices registered. The
-  // hub node alone (fixed at y:280) already guarantees at least ~340px, so a
-  // small floor here only matters as a sane lower bound, not a reservation.
-  // Like contentW, resolved against the space actually available (below)
-  // rather than forced to some fixed number.
-  const contentH = Math.max(320, ...TOPO_NODES.map(n=>n.y+60));
+  // Sized off the DEFAULT grid positions (topoDefaultContentW/H, from
+  // rebuildTopology), not off TOPO_NODES' current x/y -- those can include a
+  // saved drag override, and basing the canvas's own size on that let one
+  // stale saved position (from a drag made before positions were clamped to
+  // the canvas) permanently force a bigger-than-one-screen canvas on every
+  // later load. Resolved further (below) against whatever width/height the
+  // view actually has available, rather than forced to some fixed number.
+  const contentW = topoDefaultContentW;
+  const contentH = Math.max(320, topoDefaultContentH);
   el.innerHTML = `
     <div class="card" style="background:var(--bg);display:flex;flex-direction:column;flex:1;min-height:0">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
@@ -1330,8 +1337,31 @@ function renderTopologySkeleton(){
     // .topo-wrap's flex-grown height, so its wrapper's actual rendered
     // height is measured directly and set in px instead of trusted to
     // resolve on its own.
-    canvasEl.style.width = Math.max(contentW, wrapEl.clientWidth)+'px';
-    canvasEl.style.height = Math.max(contentH, wrapEl.clientHeight)+'px';
+    const finalW = Math.max(contentW, wrapEl.clientWidth);
+    const finalH = Math.max(contentH, wrapEl.clientHeight);
+    canvasEl.style.width = finalW+'px';
+    canvasEl.style.height = finalH+'px';
+    // Self-heal: a saved drag position from before positions were clamped to
+    // the canvas (or from a since-shrunk canvas) can still sit outside these
+    // final bounds even though the canvas itself no longer grows to chase
+    // it. Pull any such node back inside once here and persist the
+    // correction, instead of leaving it to float off the visible card until
+    // someone happens to hit "배치 초기화".
+    const layoutNow = loadTopoLayout();
+    let corrected = false;
+    TOPO_NODES.forEach(n=>{
+      const nodeEl = el.querySelector(`.topo-node[data-node="${n.id}"]`);
+      if(!nodeEl) return;
+      const nodeW = nodeEl.offsetWidth, nodeH = nodeEl.offsetHeight;
+      const iconHalf = (n.size || TOPO_DEFAULT_ICON_SIZE) / 2;
+      const cx = Math.max(nodeW/2, Math.min(finalW - nodeW/2, n.x));
+      const cy = Math.max(iconHalf, Math.min(finalH - (nodeH - iconHalf), n.y));
+      if(cx !== n.x || cy !== n.y){
+        n.x = cx; n.y = cy;
+        if(layoutNow[n.id]){ layoutNow[n.id] = {x:cx, y:cy}; corrected = true; }
+      }
+    });
+    if(corrected){ saveTopoLayout(layoutNow); renderTopologySkeleton(); return; }
   }
   $$('.topo-node', el).forEach(node=>{
     node.addEventListener('mouseenter', e=>{ if(!topoDragging) showTopoTip(node); });
@@ -1464,6 +1494,16 @@ function startTopoDrag(e, node){
   const canvas = node.closest('.topo-canvas');
   const canvasStartW = canvas ? canvas.getBoundingClientRect().width : 0;
   const canvasStartH = canvas ? canvas.getBoundingClientRect().height : 0;
+  // node's top/left is the ICON's center (see .topo-node's transform), but
+  // the node's own box also includes the label underneath it, which is
+  // taller than the icon alone. Clamping only to the icon's half-size let
+  // the label spill past the canvas's bottom edge once a node was dragged
+  // all the way down -- invisible-but-real overflow that was nudging the
+  // card's scrollable area (and so the page) by a few pixels.
+  const nodeW = node.offsetWidth, nodeH = node.offsetHeight;
+  const iconHalf = (n0.size || TOPO_DEFAULT_ICON_SIZE) / 2;
+  const minX = nodeW/2, maxX = canvasStartW - nodeW/2;
+  const minY = iconHalf, maxY = canvasStartH - (nodeH - iconHalf);
   const startX = e.clientX, startY = e.clientY;
   const origX = n0.x, origY = n0.y;
   let moved = false;
@@ -1498,8 +1538,8 @@ function startTopoDrag(e, node){
     // moved anywhere inside the topology card, but never past its edge, so
     // dragging can never grow the card itself or push the legend below it
     // down the page. The card's size is set once at render and stays put.
-    curX = Math.max(45, Math.min(canvasStartW - 45, origX + dx));
-    curY = Math.max(30, Math.min(canvasStartH - 30, origY + dy));
+    curX = Math.max(minX, Math.min(maxX, origX + dx));
+    curY = Math.max(minY, Math.min(maxY, origY + dy));
     node.style.left = curX+'px';
     node.style.top = curY+'px';
     // Re-resolve the node by id (not the object captured at drag-start): a
