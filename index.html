@@ -146,7 +146,7 @@
   .bell-btn svg{width:16px;height:16px}
   .bell-badge{position:absolute;top:-5px;right:-5px;background:linear-gradient(135deg,var(--crit),var(--accent-3));color:#fff;font-size:9.5px;font-weight:700;min-width:16px;height:16px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 3px;font-family:var(--font-mono);box-shadow:var(--glow-crit)}
 
-  .main{grid-area:main;padding:22px 26px 24px;overflow-x:hidden;background:#e6f6fc}
+  .main{grid-area:main;padding:22px 26px 24px;overflow-x:hidden;background:#e6f6fc;min-height:calc(100vh - var(--topbar-h));box-sizing:border-box}
   .view{display:none;flex-direction:column;gap:10px;animation:fadein .25s ease}
   .view.active{display:flex}
   #view-topology.active{background:var(--bg);border-radius:var(--radius);padding:16px;min-height:100%}
@@ -251,18 +251,28 @@
     radial-gradient(circle at 20% 20%,rgba(124,92,255,.10),transparent 40%),
     radial-gradient(circle at 80% 70%,rgba(0,230,168,.08),transparent 45%),
     radial-gradient(circle at 50% 100%,rgba(255,62,201,.07),transparent 50%),var(--bg-elevated);}
-  .topo-canvas{position:relative;min-width:1180px;min-height:660px}
-  .topo-canvas svg.links{position:absolute;inset:0;width:100%;height:100%}
+  .topo-canvas{position:relative;min-width:1180px;min-height:660px;--topo-icon-size:52px}
+  .topo-canvas svg.links{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+  .topo-canvas.link-mode .topo-node{cursor:crosshair}
   .topo-node{
-    position:absolute;transform:translate(-50%,-50%);width:104px;display:flex;flex-direction:column;align-items:center;gap:6px;
-    cursor:pointer;
+    /* x/y (left/top) must land on the ICON's center, not the whole node's
+       (icon + label) center -- those only coincide when every icon is the
+       same height. Shifting up by half the icon's own height (not -50% of
+       the whole box) keeps the connected line anchored on the icon as its
+       size changes per-node. */
+    position:absolute;transform:translate(-50%, calc(-1 * var(--topo-icon-size, 52px) / 2));width:104px;display:flex;flex-direction:column;align-items:center;gap:6px;
+    cursor:grab;user-select:none;-webkit-user-drag:none;touch-action:none;
   }
+  .topo-node *{-webkit-user-drag:none}
+  .topo-node:active{cursor:grabbing}
   .topo-node .node-box{
-    width:52px;height:52px;border-radius:12px;background:var(--surface);border:1.5px solid var(--border-strong);
+    width:var(--topo-icon-size,52px);height:var(--topo-icon-size,52px);border-radius:12px;background:var(--surface);border:1.5px solid var(--border-strong);
     display:flex;align-items:center;justify-content:center;position:relative;transition:border-color .15s,box-shadow .15s;
   }
-  .topo-node .node-box svg{width:24px;height:24px;stroke:var(--text-dim)}
+  .topo-node .node-box svg{width:calc(var(--topo-icon-size,52px) * .46);height:calc(var(--topo-icon-size,52px) * .46);stroke:var(--text-dim)}
   .topo-node .node-status{position:absolute;bottom:-3px;right:-3px;width:13px;height:13px;border-radius:50%;border:2.5px solid var(--bg-elevated)}
+  .topo-node .node-del{position:absolute;top:-7px;right:-7px;width:18px;height:18px;border-radius:50%;background:var(--crit);color:#fff;border:2px solid var(--bg-elevated);font-size:12px;line-height:1;display:none;align-items:center;justify-content:center;cursor:pointer;padding:0}
+  .topo-node.custom:hover .node-del{display:flex}
   .topo-node .node-name{font-size:10.5px;font-weight:600;text-align:center;color:var(--chrome-text-dim);font-family:var(--font-mono);white-space:nowrap}
   .topo-node:hover .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
   .topo-node.sel .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
@@ -855,6 +865,33 @@ function iconSvg(name){ return `<svg viewBox="0 0 24 24" fill="none" stroke-widt
 let TOPO_NODES = [];
 let TOPO_LINKS = [];
 let lastTopoNodeIds = null;
+let topoDragging = false;
+let topoLinkMode = false;
+let topoLinkFrom = null;
+let topoAddPanelOpen = false;
+const ICON_LABELS = {router:'라우터', switch:'스위치', server:'서버', db:'데이터베이스', firewall:'방화벽', cloud:'클라우드', monitor:'모니터', ups:'UPS', alert:'경고', question:'기타'};
+const TOPO_DEFAULT_ICON_SIZE = 52;
+const TOPO_LAYOUT_KEY = 'infrasight_topo_layout';
+const TOPO_NODE_SIZES_KEY = 'infrasight_topo_node_sizes';
+const TOPO_CUSTOM_NODES_KEY = 'infrasight_topo_custom_nodes';
+const TOPO_CUSTOM_LINKS_KEY = 'infrasight_topo_custom_links';
+const TOPO_HIDDEN_LINKS_KEY = 'infrasight_topo_hidden_links';
+function loadTopoLayout(){
+  try{ return JSON.parse(localStorage.getItem(TOPO_LAYOUT_KEY) || '{}'); }catch(e){ return {}; }
+}
+function saveTopoLayout(layout){
+  try{ localStorage.setItem(TOPO_LAYOUT_KEY, JSON.stringify(layout)); }catch(e){}
+}
+function loadTopoNodeSizes(){ try{ return JSON.parse(localStorage.getItem(TOPO_NODE_SIZES_KEY)||'{}'); }catch(e){ return {}; } }
+function saveTopoNodeSizes(sizes){ try{ localStorage.setItem(TOPO_NODE_SIZES_KEY, JSON.stringify(sizes)); }catch(e){} }
+function clampTopoNodeSize(v){ return Math.min(96, Math.max(28, v)); }
+function loadTopoCustomNodes(){ try{ return JSON.parse(localStorage.getItem(TOPO_CUSTOM_NODES_KEY)||'[]'); }catch(e){ return []; } }
+function saveTopoCustomNodes(list){ try{ localStorage.setItem(TOPO_CUSTOM_NODES_KEY, JSON.stringify(list)); }catch(e){} }
+function loadTopoCustomLinks(){ try{ return JSON.parse(localStorage.getItem(TOPO_CUSTOM_LINKS_KEY)||'[]'); }catch(e){ return []; } }
+function saveTopoCustomLinks(list){ try{ localStorage.setItem(TOPO_CUSTOM_LINKS_KEY, JSON.stringify(list)); }catch(e){} }
+function loadTopoHiddenLinks(){ try{ return JSON.parse(localStorage.getItem(TOPO_HIDDEN_LINKS_KEY)||'[]'); }catch(e){ return []; } }
+function saveTopoHiddenLinks(list){ try{ localStorage.setItem(TOPO_HIDDEN_LINKS_KEY, JSON.stringify(list)); }catch(e){} }
+function topoLinkKey(a,b){ return [a,b].sort().join('|'); }
 function rebuildTopology(){
   const nodes = [{id:'hub', label:'InfraSight', icon:'monitor', x:70, y:280, ref:null}];
   const links = [];
@@ -864,11 +901,26 @@ function rebuildTopology(){
     list.forEach(e=>{
       const col = Math.floor(i/7), row = i%7;
       nodes.push({id:e.id, label:e.name, icon:iconFor(cat), x:290+col*160, y:40+row*90, ref:e.id});
-      links.push(['hub', e.id]);
+      links.push({a:'hub', b:e.id, custom:false});
       i++;
     });
   });
-  TOPO_NODES = nodes; TOPO_LINKS = links;
+  loadTopoCustomNodes().forEach(c=>{
+    nodes.push({id:c.id, label:c.label, icon:c.icon, x:c.x, y:c.y, ref:null, custom:true});
+  });
+  const hidden = new Set(loadTopoHiddenLinks());
+  let allLinks = links.filter(l => !hidden.has(topoLinkKey(l.a,l.b)));
+  const nodeIds = new Set(nodes.map(n=>n.id));
+  loadTopoCustomLinks().forEach(([a,b])=>{
+    if(nodeIds.has(a) && nodeIds.has(b)) allLinks.push({a, b, custom:true});
+  });
+  const layout = loadTopoLayout();
+  const sizes = loadTopoNodeSizes();
+  nodes.forEach(n=>{
+    const p = layout[n.id]; if(p){ n.x = p.x; n.y = p.y; }
+    n.size = sizes[n.id] || TOPO_DEFAULT_ICON_SIZE;
+  });
+  TOPO_NODES = nodes; TOPO_LINKS = allLinks;
 }
 function findEntity(ref){
   return SERVERS.find(s=>s.id===ref) || DBS.find(s=>s.id===ref) || NETS.find(s=>s.id===ref) || FACS.find(s=>s.id===ref);
@@ -1182,26 +1234,47 @@ function timeAgo(d){
 /* ================= TOPOLOGY ================= */
 function renderTopologySkeleton(){
   const el = $('#view-topology');
-  const linksSvg = TOPO_LINKS.map(([a,b],i)=>{
-    const na=TOPO_NODES.find(n=>n.id===a), nb=TOPO_NODES.find(n=>n.id===b);
+  const linksSvg = TOPO_LINKS.map((l,i)=>{
+    const na=TOPO_NODES.find(n=>n.id===l.a), nb=TOPO_NODES.find(n=>n.id===l.b);
     if(!na||!nb) return '';
-    return `<line data-link="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="#c7cede" stroke-width="2"/>`;
+    return `<line data-link="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="#c7cede" stroke-width="2"/>`
+      + `<line data-link-hit="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="transparent" stroke-width="16" style="cursor:${topoLinkMode?'pointer':'default'}"/>`;
   }).join('');
   const nodesHtml = TOPO_NODES.map(n=>`
-    <div class="topo-node" data-node="${n.id}" style="left:${n.x}px;top:${n.y}px">
-      <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span></div>
+    <div class="topo-node${n.custom?' custom':''}" data-node="${n.id}" draggable="false" style="left:${n.x}px;top:${n.y}px;--topo-icon-size:${n.size||TOPO_DEFAULT_ICON_SIZE}px">
+      <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span>${n.custom?`<button type="button" class="node-del" data-del-node="${n.id}" title="삭제">×</button>`:''}</div>
       <span class="node-name">${escapeHtml(n.label)}</span>
     </div>`).join('');
   const canvasW = Math.max(1180, ...TOPO_NODES.map(n=>n.x+90));
   const canvasH = Math.max(660, ...TOPO_NODES.map(n=>n.y+60));
   el.innerHTML = `
     <div class="card" style="background:var(--bg)">
-      <div class="card-head">
-        <h3 style="color:var(--chrome-text);font-size:20px;position:relative;top:-9px">인프라 토플로지</h3>
-        <span class="sub" style="color:var(--chrome-text-faint)">노드에 마우스를 올리면 실시간 트래픽/상태가 표시됩니다</span>
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div>
+          <h3 style="color:var(--chrome-text);font-size:20px;position:relative;top:-9px">인프라 토플로지</h3>
+          <span class="sub" style="color:var(--chrome-text-faint)">${topoLinkMode ? '연결선 그리기 모드: 노드 두 개를 순서대로 클릭해 연결하고, 선을 클릭하면 삭제됩니다' : '노드를 드래그해 배치를 바꾸고, 노드 위에서 마우스 휠로 그 아이콘만 크기를 조절할 수 있습니다'}</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex:none">
+          <button type="button" class="btn${topoLinkMode?' primary':''}" id="topoLinkModeBtn" style="white-space:nowrap">${topoLinkMode?'연결선 그리기 종료':'연결선 그리기'}</button>
+          <button type="button" class="btn" id="topoAddIconBtn" style="white-space:nowrap">아이콘 추가</button>
+          <button type="button" class="btn" id="topoResetLayoutBtn" style="white-space:nowrap">배치 초기화</button>
+        </div>
       </div>
+      ${topoAddPanelOpen ? `
+      <div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;padding:12px 14px">
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-faint)">아이콘 종류
+          <select id="topoAddIconType" style="padding:6px 8px;border-radius:8px;border:1px solid var(--border);font-size:12.5px">
+            ${Object.keys(ICON_LABELS).map(k=>`<option value="${k}">${ICON_LABELS[k]}</option>`).join('')}
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--text-faint)">이름
+          <input id="topoAddIconLabel" placeholder="예: 공유기" style="padding:6px 8px;border-radius:8px;border:1px solid var(--border);font-size:12.5px">
+        </label>
+        <button type="button" class="btn primary" id="topoAddIconConfirm">추가</button>
+        <button type="button" class="btn" id="topoAddIconCancel">취소</button>
+      </div>` : ''}
       <div class="topo-wrap">
-        <div class="topo-canvas" style="width:${canvasW}px;height:${canvasH}px">
+        <div class="topo-canvas${topoLinkMode?' link-mode':''}" style="width:${canvasW}px;height:${canvasH}px;--topo-icon-size:${TOPO_DEFAULT_ICON_SIZE}px">
           <svg class="links">${linksSvg}</svg>
           ${nodesHtml}
         </div>
@@ -1215,14 +1288,235 @@ function renderTopologySkeleton(){
     <div class="grid grid-3" id="topo-detail-cards"></div>
   `;
   $$('.topo-node', el).forEach(node=>{
-    node.addEventListener('mouseenter', e=>showTopoTip(node));
-    node.addEventListener('mousemove', e=>positionTip(e));
+    node.addEventListener('mouseenter', e=>{ if(!topoDragging) showTopoTip(node); });
+    node.addEventListener('mousemove', e=>{ if(!topoDragging) positionTip(e); });
     node.addEventListener('mouseleave', ()=> $('#topoTip').classList.remove('show'));
+    node.addEventListener('dragstart', e=> e.preventDefault());
+    node.addEventListener('mousedown', e=> startTopoDrag(e, node));
+    node.addEventListener('wheel', e=>{
+      e.preventDefault();
+      const id = node.dataset.node;
+      const sizes = loadTopoNodeSizes();
+      const current = sizes[id] || TOPO_NODES.find(x=>x.id===id)?.size || TOPO_DEFAULT_ICON_SIZE;
+      const next = clampTopoNodeSize(current + (e.deltaY < 0 ? 4 : -4));
+      sizes[id] = next;
+      saveTopoNodeSizes(sizes);
+      const liveN = TOPO_NODES.find(x=>x.id===id);
+      if(liveN) liveN.size = next;
+      node.style.setProperty('--topo-icon-size', next+'px');
+      $('#topoTip').classList.remove('show');
+    }, {passive:false});
     node.addEventListener('click', ()=>{
+      if(node.dataset.dragged === '1'){ node.dataset.dragged = ''; return; }
+      if(topoLinkMode){ handleTopoLinkClick(node.dataset.node); return; }
       const n = TOPO_NODES.find(x=>x.id===node.dataset.node);
       if(n.ref) openDrawerFor(n.ref);
     });
+    if(topoLinkMode && node.dataset.node === topoLinkFrom) node.classList.add('sel');
   });
+  $$('.node-del', el).forEach(btn=>{
+    btn.addEventListener('mousedown', ev=> ev.stopPropagation());
+    btn.addEventListener('click', ev=>{
+      ev.stopPropagation();
+      const id = btn.dataset.delNode;
+      saveTopoCustomNodes(loadTopoCustomNodes().filter(c=>c.id!==id));
+      saveTopoCustomLinks(loadTopoCustomLinks().filter(([a,b])=>a!==id&&b!==id));
+      const layout = loadTopoLayout(); delete layout[id]; saveTopoLayout(layout);
+      rebuildTopology(); renderTopologySkeleton(); refreshTopology();
+    });
+  });
+  $$('[data-link-hit]', el).forEach(hit=>{
+    hit.addEventListener('click', ev=>{
+      if(!topoLinkMode) return;
+      ev.stopPropagation();
+      const idx = parseInt(hit.dataset.linkHit, 10);
+      const link = TOPO_LINKS[idx];
+      if(!link) return;
+      if(link.custom){
+        saveTopoCustomLinks(loadTopoCustomLinks().filter(([a,b]) => !((a===link.a&&b===link.b)||(a===link.b&&b===link.a))));
+      } else {
+        const hidden = loadTopoHiddenLinks();
+        const key = topoLinkKey(link.a, link.b);
+        if(!hidden.includes(key)) hidden.push(key);
+        saveTopoHiddenLinks(hidden);
+      }
+      rebuildTopology(); renderTopologySkeleton(); refreshTopology();
+    });
+  });
+  const resetBtn = $('#topoResetLayoutBtn');
+  if(resetBtn) resetBtn.addEventListener('click', ()=>{
+    saveTopoLayout({});
+    rebuildTopology();
+    renderTopologySkeleton();
+    refreshTopology();
+  });
+  const linkModeBtn = $('#topoLinkModeBtn');
+  if(linkModeBtn) linkModeBtn.addEventListener('click', ()=>{
+    topoLinkMode = !topoLinkMode;
+    topoLinkFrom = null;
+    renderTopologySkeleton();
+    refreshTopology();
+  });
+  const addBtn = $('#topoAddIconBtn');
+  if(addBtn) addBtn.addEventListener('click', ()=>{
+    topoAddPanelOpen = !topoAddPanelOpen;
+    renderTopologySkeleton();
+    refreshTopology();
+  });
+  const addCancel = $('#topoAddIconCancel');
+  if(addCancel) addCancel.addEventListener('click', ()=>{
+    topoAddPanelOpen = false;
+    renderTopologySkeleton();
+    refreshTopology();
+  });
+  const addConfirm = $('#topoAddIconConfirm');
+  if(addConfirm) addConfirm.addEventListener('click', ()=>{
+    const icon = $('#topoAddIconType').value;
+    const label = ($('#topoAddIconLabel').value||'').trim() || ICON_LABELS[icon] || '아이콘';
+    const list = loadTopoCustomNodes();
+    list.push({id:'custom-'+Date.now(), label, icon, x:150+Math.round(Math.random()*60), y:560+Math.round(Math.random()*40)});
+    saveTopoCustomNodes(list);
+    topoAddPanelOpen = false;
+    rebuildTopology();
+    renderTopologySkeleton();
+    refreshTopology();
+  });
+}
+function handleTopoLinkClick(nodeId){
+  if(!topoLinkFrom){
+    topoLinkFrom = nodeId;
+    const nodeEl = document.querySelector(`.topo-node[data-node="${nodeId}"]`);
+    if(nodeEl) nodeEl.classList.add('sel');
+    return;
+  }
+  if(topoLinkFrom === nodeId){
+    const nodeEl = document.querySelector(`.topo-node[data-node="${nodeId}"]`);
+    if(nodeEl) nodeEl.classList.remove('sel');
+    topoLinkFrom = null;
+    return;
+  }
+  const a = topoLinkFrom, b = nodeId;
+  const prevEl = document.querySelector(`.topo-node[data-node="${a}"]`);
+  if(prevEl) prevEl.classList.remove('sel');
+  topoLinkFrom = null;
+  const exists = TOPO_LINKS.some(l => (l.a===a&&l.b===b)||(l.a===b&&l.b===a));
+  if(exists) return;
+  const custom = loadTopoCustomLinks();
+  custom.push([a,b]);
+  saveTopoCustomLinks(custom);
+  rebuildTopology();
+  renderTopologySkeleton();
+  refreshTopology();
+}
+function startTopoDrag(e, node){
+  if(e.button !== 0) return;
+  if(topoLinkMode) return;
+  e.preventDefault();
+  const nodeId = node.dataset.node;
+  const n0 = TOPO_NODES.find(x=>x.id===nodeId);
+  if(!n0) return;
+  const canvas = node.closest('.topo-canvas');
+  const canvasStartW = canvas ? canvas.getBoundingClientRect().width : 0;
+  const canvasStartH = canvas ? canvas.getBoundingClientRect().height : 0;
+  const startX = e.clientX, startY = e.clientY;
+  const origX = n0.x, origY = n0.y;
+  let moved = false;
+  $('#topoTip').classList.remove('show');
+  // Dragging a node down kept scrolling the whole page with it, through
+  // several narrower attempts (preventDefault, no-select, pinning the scroll
+  // position back after the fact, not resizing the canvas mid-drag). None of
+  // those fully stopped it, so this goes for the one guarantee that doesn't
+  // depend on guessing the exact trigger: while a drag is in progress, the
+  // page physically cannot scroll at all, because there's no overflow to
+  // scroll. Nothing -- native autoscroll, scroll anchoring, anything else --
+  // can move a page that has no scrollable overflow.
+  const prevHtmlOverflow = document.documentElement.style.overflow;
+  const prevBodyOverflow = document.body.style.overflow;
+  const prevUserSelect = document.body.style.userSelect;
+  document.documentElement.style.overflow = 'hidden';
+  document.body.style.overflow = 'hidden';
+  document.body.style.userSelect = 'none';
+  const lockedScrollX = window.scrollX, lockedScrollY = window.scrollY;
+  function lockScroll(){
+    if(window.scrollX !== lockedScrollX || window.scrollY !== lockedScrollY){
+      window.scrollTo(lockedScrollX, lockedScrollY);
+    }
+  }
+  window.addEventListener('scroll', lockScroll, {passive:true});
+  let curX = origX, curY = origY;
+  function onMove(ev){
+    ev.preventDefault();
+    lockScroll();
+    const dx = ev.clientX - startX, dy = ev.clientY - startY;
+    if(!moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)){
+      moved = true;
+      // .topo-wrap scrolls internally once a node is dragged past its current
+      // bounds (it needs overflow-x:auto for the horizontal scrollbar, and
+      // CSS forces overflow-y to the same non-visible behavior as soon as
+      // overflow-x isn't 'visible' -- there's no way to keep y visible while
+      // x is auto). Give the canvas a generous amount of head-room ONCE, right
+      // as the drag starts, so the node never gets clipped while dragging.
+      if(canvas){
+        canvas.style.width = (canvasStartW + 1600)+'px';
+        canvas.style.height = (canvasStartH + 1600)+'px';
+      }
+    }
+    if(!moved) return;
+    topoDragging = true;
+    curX = Math.max(45, origX + dx);
+    curY = Math.max(30, origY + dy);
+    node.style.left = curX+'px';
+    node.style.top = curY+'px';
+    // Re-resolve the node by id (not the object captured at drag-start): a
+    // background poll can swap TOPO_NODES for fresh objects mid-drag
+    // (rebuildTopology runs on every state sync), which used to leave the
+    // old, now-detached node object still being dragged while every line
+    // endpoint looked the node back up in the NEW array and found it still
+    // sitting at its pre-drag position -- the icon moved but its lines
+    // didn't follow. Writing curX/curY into whatever object currently lives
+    // in TOPO_NODES keeps that array authoritative no matter how many times
+    // it gets replaced underneath the drag.
+    const liveN = TOPO_NODES.find(x=>x.id===nodeId);
+    if(liveN){ liveN.x = curX; liveN.y = curY; }
+    // No resizing of .topo-canvas here on every move -- the one-time
+    // head-room grab above already covers it, and resizing an ancestor box on
+    // every single pixel of movement was what made the page scroll along
+    // with the icon in the first place. The canvas is shrunk back to its
+    // exact fitted size once, after the drag ends.
+    TOPO_LINKS.forEach((l,i)=>{
+      if(l.a!==nodeId && l.b!==nodeId) return;
+      const na = l.a===nodeId ? {x:curX,y:curY} : TOPO_NODES.find(x=>x.id===l.a);
+      const nb = l.b===nodeId ? {x:curX,y:curY} : TOPO_NODES.find(x=>x.id===l.b);
+      if(!na||!nb) return;
+      [`line[data-link="${i}"]`, `line[data-link-hit="${i}"]`].forEach(sel=>{
+        const line = document.querySelector(sel);
+        if(line){ line.setAttribute('x1', na.x); line.setAttribute('y1', na.y); line.setAttribute('x2', nb.x); line.setAttribute('y2', nb.y); }
+      });
+    });
+  }
+  function onUp(){
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    window.removeEventListener('scroll', lockScroll);
+    document.documentElement.style.overflow = prevHtmlOverflow;
+    document.body.style.overflow = prevBodyOverflow;
+    document.body.style.userSelect = prevUserSelect;
+    if(moved){
+      node.dataset.dragged = '1';
+      const liveN = TOPO_NODES.find(x=>x.id===nodeId);
+      if(liveN){ liveN.x = curX; liveN.y = curY; }
+      if(canvas){
+        canvas.style.width = Math.max(1180, ...TOPO_NODES.map(x=>x.x+90))+'px';
+        canvas.style.height = Math.max(660, ...TOPO_NODES.map(x=>x.y+60))+'px';
+      }
+      const layout = loadTopoLayout();
+      layout[nodeId] = {x:curX, y:curY};
+      saveTopoLayout(layout);
+    }
+    topoDragging = false;
+  }
+  document.addEventListener('mousemove', onMove, {passive:false});
+  document.addEventListener('mouseup', onUp);
 }
 function showTopoTip(node){
   const n = TOPO_NODES.find(x=>x.id===node.dataset.node);
@@ -1265,8 +1559,8 @@ function refreshTopology(){
     const box = document.querySelector(`.topo-node[data-node="${n.id}"] .node-status`);
     if(box) box.style.background = levelColor(ent.status);
   });
-  TOPO_LINKS.forEach(([a,b],i)=>{
-    const na = TOPO_NODES.find(n=>n.id===a);
+  TOPO_LINKS.forEach((l,i)=>{
+    const na = TOPO_NODES.find(n=>n.id===l.a);
     const entA = na && na.ref ? findEntity(na.ref) : null;
     const line = document.querySelector(`line[data-link="${i}"]`);
     if(!line) return;
