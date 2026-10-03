@@ -154,31 +154,13 @@ $hasAdmin = (& $pythonExe -c "import storage; c=storage.get_db(); r=c.execute('S
 if ($hasAdmin -eq '1') {
     Write-Ok '이미 계정이 있어 건너뜁니다 (기존 계정 유지)'
 } else {
-    $username = Read-Host '  로그인에 사용할 아이디'
-    while (-not $username) { $username = Read-Host '  아이디를 입력해주세요' }
-    do {
-        $securePw  = Read-Host '  비밀번호 (8자 이상)' -AsSecureString
-        $securePw2 = Read-Host '  비밀번호 확인' -AsSecureString
-        $pw  = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($securePw))
-        $pw2 = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($securePw2))
-        $ok = $true
-        if ($pw.Length -lt 8) { Write-Warn2 '8자 이상 입력해주세요.'; $ok = $false }
-        elseif ($pw -ne $pw2) { Write-Warn2 '비밀번호가 일치하지 않습니다.'; $ok = $false }
-    } while (-not $ok)
-    # Piped via stdin rather than a command-line argument so the password
-    # never shows up in the process list. No double quotes anywhere in this
-    # Python snippet: PowerShell mangles embedded " characters when building
-    # the argument list for a native (non-PowerShell) executable, which
-    # silently corrupts a -c script passed this way (confirmed -- it turned
-    # rstrip("\n") into rstrip(\n), a Python SyntaxError). Single quotes for
-    # every Python string literal sidesteps that entirely.
-    "$username`n$pw" | & $pythonExe -c @'
-import sys, storage
-username = sys.stdin.readline().strip()
-pw = sys.stdin.readline().rstrip(chr(10))
-storage.create_admin_if_missing(username, pw)
-'@
-    Write-Ok "관리자 계정 '$username' 생성 완료"
+    # No prompts: always admin/admin, flagged must_change_password so the
+    # web UI refuses to let anyone past login with it still set (see
+    # index.html's promptForcedPasswordChange / server.py's mustChangePassword)
+    # -- the security boundary is "can't use the app with the default
+    # password", not "was asked to pick one during install".
+    & $pythonExe -c "import storage; storage.create_admin_if_missing('admin', 'admin', must_change_password=True)"
+    Write-Ok "관리자 계정 'admin' / 'admin' 생성 완료 (최초 웹 로그인 시 비밀번호 변경 필수)"
 }
 Pop-Location
 
@@ -216,6 +198,7 @@ Write-Host ' 설치가 완료되었습니다!' -ForegroundColor Green
 Write-Host "   이 PC:        https://localhost:8443"
 Write-Host "   같은 네트워크의 다른 기기: https://${lanIp}:8443"
 Write-Host '============================================================' -ForegroundColor Green
+Write-Host "`n로그인 계정: admin / admin (처음 로그인하면 비밀번호 변경 화면이 바로 뜹니다)" -ForegroundColor Yellow
 Write-Host "`n참고: 접속하는 다른 기기의 브라우저에는 인증서 경고가 뜰 수 있습니다"
 Write-Host "(이 PC에서 발급한 '로컬 CA' 방식 인증서라서 그렇습니다 -- 무시하고 진행하거나,"
 Write-Host "%LOCALAPPDATA%\mkcert\rootCA.pem 을 그 기기에 설치하면 경고 없이 접속할 수 있습니다)."

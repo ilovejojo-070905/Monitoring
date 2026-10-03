@@ -101,6 +101,7 @@ _NEW_USER_COLUMNS = [
     ('locked_until', 'INTEGER DEFAULT NULL'),
     ('session_version', 'INTEGER DEFAULT 0'),
     ('last_login_at', 'INTEGER DEFAULT NULL'),
+    ('must_change_password', 'INTEGER DEFAULT 0'),
 ]
 
 ROLES = ('ADMIN', 'OPERATOR', 'VIEWER')
@@ -486,18 +487,25 @@ def category_label(cat):
 # audit trail for every authenticated action, and moving SNMP community
 # strings out of devices.fields (a plain JSON blob) into a dedicated table.
 
-def create_admin_if_missing(username, password):
+def create_admin_if_missing(username, password, must_change_password=False):
     """Only ever creates the very first account. Never overwrites an existing
     password on restart -- if an admin already exists, this is a no-op, so a
-    password the user has since changed is never silently reset back."""
+    password the user has since changed is never silently reset back.
+
+    must_change_password=True is what install.ps1 uses for the installer's
+    admin/admin default: the account works immediately, but every login
+    (and every restored session -- see server.py's /api/auth/me) is routed
+    through a forced password-change screen until it's cleared, which
+    change_password() does as soon as a new password is actually set."""
     conn = get_db()
     row = conn.execute('SELECT id FROM users LIMIT 1').fetchone()
     if row:
         conn.close()
         return False
     conn.execute(
-        'INSERT INTO users(username,password_hash,role,created_at) VALUES (?,?,?,?)',
-        (username, generate_password_hash(password, method='scrypt'), 'ADMIN', int(time.time() * 1000)))
+        'INSERT INTO users(username,password_hash,role,created_at,must_change_password) VALUES (?,?,?,?,?)',
+        (username, generate_password_hash(password, method='scrypt'), 'ADMIN', int(time.time() * 1000),
+         1 if must_change_password else 0))
     conn.commit()
     conn.close()
     return True
@@ -537,7 +545,8 @@ def verify_login(username, password):
     conn.commit()
     session_version = row['session_version'] or 0
     conn.close()
-    return {'status': 'ok', 'username': row['username'], 'role': row['role'], 'session_version': session_version}
+    return {'status': 'ok', 'username': row['username'], 'role': row['role'], 'session_version': session_version,
+            'must_change_password': bool(row['must_change_password'])}
 
 
 def get_session_version(username):
@@ -564,11 +573,20 @@ def change_password(username, current_password, new_password):
         conn.close()
         return False
     conn.execute(
-        'UPDATE users SET password_hash=?, session_version=session_version+1 WHERE username=?',
+        'UPDATE users SET password_hash=?, session_version=session_version+1, must_change_password=0 WHERE username=?',
         (generate_password_hash(new_password, method='scrypt'), username))
     conn.commit()
     conn.close()
     return True
+
+
+def get_must_change_password(username):
+    if not username:
+        return False
+    conn = get_db()
+    row = conn.execute('SELECT must_change_password FROM users WHERE username=?', (username,)).fetchone()
+    conn.close()
+    return bool(row['must_change_password']) if row else False
 
 
 def create_user(username, password, role):

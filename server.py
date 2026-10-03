@@ -213,7 +213,8 @@ def api_login():
     session['csrf'] = csrf_token
     session.permanent = True
     storage.write_audit(result['username'], 'LOGIN', source_ip=ip)
-    return jsonify({'ok': True, 'username': result['username'], 'role': result['role'], 'csrfToken': csrf_token})
+    return jsonify({'ok': True, 'username': result['username'], 'role': result['role'], 'csrfToken': csrf_token,
+                     'mustChangePassword': result.get('must_change_password', False)})
 
 
 @app.post('/api/auth/logout')
@@ -233,7 +234,8 @@ def api_me():
     # now rather than forcing a re-login just to get a token.
     if not session.get('csrf'):
         session['csrf'] = secrets.token_hex(16)
-    return jsonify({'username': session.get('user'), 'role': session.get('role'), 'csrfToken': session['csrf']})
+    return jsonify({'username': session.get('user'), 'role': session.get('role'), 'csrfToken': session['csrf'],
+                     'mustChangePassword': storage.get_must_change_password(session.get('user'))})
 
 
 @app.post('/api/auth/change-password')
