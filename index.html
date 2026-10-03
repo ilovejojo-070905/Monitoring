@@ -53,12 +53,6 @@
     color-scheme:light;
   }
   *,*::before,*::after{box-sizing:border-box}
-  /* Always reserve the scrollbar's own width, whether or not it's actually
-     showing. Without this, toggling html/body to overflow:hidden while a
-     topology node is being dragged (see startTopoDrag) removes the
-     scrollbar and the page content visibly widens to fill that space, then
-     narrows back the moment the drag ends and the scrollbar returns. */
-  html{scrollbar-gutter:stable}
   html,body{height:100%}
   body{
     margin:0;color:var(--text);font-family:var(--font-ui);
@@ -1433,19 +1427,16 @@ function startTopoDrag(e, node){
   const origX = n0.x, origY = n0.y;
   let moved = false;
   $('#topoTip').classList.remove('show');
-  // Dragging a node down kept scrolling the whole page with it, through
-  // several narrower attempts (preventDefault, no-select, pinning the scroll
-  // position back after the fact, not resizing the canvas mid-drag). None of
-  // those fully stopped it, so this goes for the one guarantee that doesn't
-  // depend on guessing the exact trigger: while a drag is in progress, the
-  // page physically cannot scroll at all, because there's no overflow to
-  // scroll. Nothing -- native autoscroll, scroll anchoring, anything else --
-  // can move a page that has no scrollable overflow.
-  const prevHtmlOverflow = document.documentElement.style.overflow;
-  const prevBodyOverflow = document.body.style.overflow;
+  // Dragging a node down used to scroll the whole page along with it. The
+  // actual cause was the canvas resizing on every single mousemove (fixed
+  // below -- the canvas is now a fixed size for the whole drag, and the node
+  // is clamped to stay inside it), which was real layout thrashing on an
+  // ancestor box. Forcing overflow:hidden on html/body was tried as a blunter
+  // backstop on top of that, but it has its own side effect: removing the
+  // scrollbar mid-drag shifts the page width, which read as the canvas's
+  // right edge growing/shrinking as you click and release. With the resize
+  // itself gone, pinning the scroll position below is enough on its own.
   const prevUserSelect = document.body.style.userSelect;
-  document.documentElement.style.overflow = 'hidden';
-  document.body.style.overflow = 'hidden';
   document.body.style.userSelect = 'none';
   const lockedScrollX = window.scrollX, lockedScrollY = window.scrollY;
   function lockScroll(){
@@ -1496,8 +1487,6 @@ function startTopoDrag(e, node){
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
     window.removeEventListener('scroll', lockScroll);
-    document.documentElement.style.overflow = prevHtmlOverflow;
-    document.body.style.overflow = prevBodyOverflow;
     document.body.style.userSelect = prevUserSelect;
     if(moved){
       node.dataset.dragged = '1';
