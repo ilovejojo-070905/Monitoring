@@ -212,3 +212,10 @@ Write-Host "(이 PC에서 발급한 '로컬 CA' 방식 인증서라서 그렇습
 Write-Host "%LOCALAPPDATA%\mkcert\rootCA.pem 을 그 기기에 설치하면 경고 없이 접속할 수 있습니다)."
 
 Start-Process "https://localhost:8443"
+
+# This window is the elevated one (Start-Process -Verb RunAs) where every
+# message above actually printed -- without a pause here it closes the
+# instant this script ends, so the success message (and the LAN URL to give
+# out) flashes by and is gone before anyone can read it.
+Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
+[void][System.Console]::ReadKey($true)
