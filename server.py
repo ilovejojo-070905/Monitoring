@@ -204,6 +204,9 @@ def api_login():
     if result['status'] == 'locked':
         storage.write_audit(username or None, 'ACCOUNT_LOCKED', source_ip=ip)
         return jsonify({'error': '로그인 실패 횟수를 초과해 계정이 잠겼습니다. 10분 후 다시 시도해주세요'}), 423
+    if result['status'] == 'disabled':
+        storage.write_audit(username or None, 'LOGIN_DISABLED_ACCOUNT', source_ip=ip)
+        return jsonify({'error': '비활성화된 계정입니다. 관리자에게 문의해주세요'}), 403
     if result['status'] != 'ok':
         storage.write_audit(username or None, 'LOGIN_FAILED', source_ip=ip)
         return jsonify({'error': '아이디 또는 비밀번호가 올바르지 않습니다'}), 401
@@ -255,14 +258,23 @@ def api_change_password():
     return jsonify({'ok': True})
 
 
+def _operator_blocked_on_admin_target(target_role):
+    """1-4 policy: OPERATOR gets user management, but scoped to OPERATOR/
+    VIEWER accounts only -- an ADMIN account (existing or being created) can
+    only be touched by an ADMIN. Without this, "operators can manage users"
+    would let a non-admin delete/demote the admin or promote themselves,
+    which is a straight privilege-escalation path, not a convenience."""
+    return session.get('role') != 'ADMIN' and target_role == 'ADMIN'
+
+
 @app.get('/api/users')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_list_users():
     return jsonify({'users': storage.list_users()})
 
 
 @app.post('/api/users')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_create_user():
     body = request.get_json(force=True)
     username = (body.get('username') or '').strip()
@@ -272,6 +284,8 @@ def api_create_user():
         return jsonify({'error': '아이디와 8자 이상의 비밀번호가 필요합니다'}), 400
     if role not in storage.ROLES:
         return jsonify({'error': 'role은 ADMIN, OPERATOR, VIEWER 중 하나여야 합니다'}), 400
+    if _operator_blocked_on_admin_target(role):
+        return jsonify({'error': '운영자는 관리자(ADMIN) 계정을 만들 수 없습니다'}), 403
     try:
         storage.create_user(username, password, role)
     except ValueError as e:
@@ -281,13 +295,15 @@ def api_create_user():
 
 
 @app.delete('/api/users/<int:user_id>')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_delete_user(user_id):
     target = storage.get_user_by_id(user_id)
     if not target:
         return jsonify({'error': 'not found'}), 404
     if target['username'] == session.get('user'):
         return jsonify({'error': '자기 자신은 삭제할 수 없습니다'}), 400
+    if _operator_blocked_on_admin_target(target['role']):
+        return jsonify({'error': '운영자는 관리자(ADMIN) 계정을 변경할 수 없습니다'}), 403
     if target['role'] == 'ADMIN' and storage.count_admins() <= 1:
         return jsonify({'error': '마지막 관리자 계정은 삭제할 수 없습니다'}), 400
     storage.delete_user(user_id)
@@ -296,38 +312,59 @@ def api_delete_user(user_id):
 
 
 @app.put('/api/users/<int:user_id>')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_update_user(user_id):
     target = storage.get_user_by_id(user_id)
     if not target:
         return jsonify({'error': 'not found'}), 404
+    if _operator_blocked_on_admin_target(target['role']):
+        return jsonify({'error': '운영자는 관리자(ADMIN) 계정을 변경할 수 없습니다'}), 403
     body = request.get_json(force=True)
     role = (body.get('role') or '').upper() or None
     new_password = body.get('password') or ''
+    # 1-4: account activation -- None means "not included in this request"
+    # (left unchanged), as opposed to False (explicitly turn off).
+    active = body.get('active')
+    if active is not None:
+        active = bool(active)
     if role and role not in storage.ROLES:
         return jsonify({'error': 'role은 ADMIN, OPERATOR, VIEWER 중 하나여야 합니다'}), 400
+    if role and _operator_blocked_on_admin_target(role):
+        return jsonify({'error': '운영자는 계정을 관리자(ADMIN)로 지정할 수 없습니다'}), 403
     if role and target['role'] == 'ADMIN' and role != 'ADMIN' and storage.count_admins() <= 1:
         return jsonify({'error': '마지막 관리자 계정의 권한은 변경할 수 없습니다'}), 400
     if new_password and len(new_password) < 8:
         return jsonify({'error': '새 비밀번호는 8자 이상이어야 합니다'}), 400
-    if not role and not new_password:
+    if active is False:
+        if target['username'] == session.get('user'):
+            return jsonify({'error': '자기 자신은 비활성화할 수 없습니다'}), 400
+        if target['role'] == 'ADMIN' and storage.count_active_admins() <= 1:
+            return jsonify({'error': '마지막 활성 관리자 계정은 비활성화할 수 없습니다'}), 400
+    if role is None and not new_password and active is None:
         return jsonify({'error': '변경할 내용이 없습니다'}), 400
-    storage.update_user(user_id, role=role, new_password=new_password or None)
+    if role is not None or new_password:
+        storage.update_user(user_id, role=role, new_password=new_password or None)
+    if active is not None:
+        storage.set_user_active(user_id, active)
     detail_parts = []
     if role and role != target['role']:
         detail_parts.append(f"role: {target['role']}->{role}")
     if new_password:
         detail_parts.append('password_reset')
+    if active is not None:
+        detail_parts.append('activated' if active else 'deactivated')
     audit('UPDATE_USER', target=target['username'], details=', '.join(detail_parts) or None)
     return jsonify({'ok': True})
 
 
 @app.post('/api/users/<int:user_id>/unlock')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_unlock_user(user_id):
     target = storage.get_user_by_id(user_id)
     if not target:
         return jsonify({'error': 'not found'}), 404
+    if _operator_blocked_on_admin_target(target['role']):
+        return jsonify({'error': '운영자는 관리자(ADMIN) 계정을 변경할 수 없습니다'}), 403
     storage.unlock_user(target['username'])
     audit('ACCOUNT_UNLOCKED', target=target['username'])
     return jsonify({'ok': True})
@@ -402,7 +439,7 @@ def api_system_health():
 
 
 @app.post('/api/discovery/scan')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_discovery_scan():
     body = request.get_json(force=True)
     range_text = (body.get('range') or '').strip()
@@ -421,7 +458,7 @@ def api_discovery_scan():
 
 
 @app.post('/api/devices/test-snmp')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_test_snmp():
     """Standalone SNMP connectivity test for the registration form's "연결
     테스트" button -- lets the user confirm credentials/reachability before
@@ -464,7 +501,7 @@ def api_test_snmp():
 
 
 @app.post('/api/devices')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_register_device():
     body = request.get_json(force=True)
     category = body.get('category')
@@ -599,7 +636,7 @@ def api_register_device():
 
 
 @app.put('/api/devices/<device_id>')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_update_device(device_id):
     device_row = storage.load_device(device_id)
     if not device_row or device_id == LOCAL_ID:
@@ -669,7 +706,7 @@ def api_update_device(device_id):
 
 
 @app.delete('/api/devices/<device_id>')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_delete_device(device_id):
     if device_id == LOCAL_ID:
         return jsonify({'error': 'cannot delete local device'}), 400
@@ -765,7 +802,7 @@ def api_set_vendor_profile(device_id):
 
 
 @app.post('/api/devices/<device_id>/token/reissue')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_reissue_token(device_id):
     device_row = storage.load_device(device_id)
     if not device_row or device_row['mode'] != 'agent':
@@ -787,7 +824,7 @@ def api_reissue_token(device_id):
 
 
 @app.post('/api/devices/<device_id>/token/revoke')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_revoke_token(device_id):
     device_row = storage.load_device(device_id)
     if not device_row or device_row['mode'] != 'agent':
@@ -865,13 +902,13 @@ def api_flow_top_talkers():
 
 
 @app.get('/api/settings/smtp')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_get_smtp_settings():
     return jsonify(storage.get_smtp_config_public())
 
 
 @app.put('/api/settings/smtp')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_set_smtp_settings():
     body = request.get_json(force=True)
     host = (body.get('host') or '').strip()
@@ -898,7 +935,7 @@ def api_set_smtp_settings():
 
 
 @app.post('/api/settings/smtp/test')
-@require_role('ADMIN')
+@require_role('OPERATOR')
 def api_test_smtp():
     cfg = storage.get_smtp_config()
     if not cfg:

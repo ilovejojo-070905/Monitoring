@@ -108,6 +108,12 @@ _NEW_USER_COLUMNS = [
     ('session_version', 'INTEGER DEFAULT 0'),
     ('last_login_at', 'INTEGER DEFAULT NULL'),
     ('must_change_password', 'INTEGER DEFAULT 0'),
+    # 1-4: account activation/deactivation -- distinct from the lockout
+    # columns above (those are *automatic*, temporary, and self-clearing on
+    # a correct password; this is a deliberate admin/operator action with no
+    # time limit, for an account that shouldn't be able to log in at all
+    # right now, e.g. someone who's left the team).
+    ('is_active', 'INTEGER DEFAULT 1'),
 ]
 
 ROLES = ('ADMIN', 'OPERATOR', 'VIEWER')
@@ -579,6 +585,9 @@ def verify_login(username, password):
         check_password_hash(_DUMMY_HASH, password)
         conn.close()
         return {'status': 'invalid'}
+    if not row['is_active']:
+        conn.close()
+        return {'status': 'disabled'}
     if row['locked_until'] and row['locked_until'] > now:
         conn.close()
         return {'status': 'locked', 'locked_until': row['locked_until']}
@@ -659,10 +668,28 @@ def create_user(username, password, role):
 def list_users():
     conn = get_db()
     rows = conn.execute(
-        'SELECT id,username,role,created_at,last_login_at,locked_until FROM users ORDER BY id'
+        'SELECT id,username,role,created_at,last_login_at,locked_until,is_active FROM users ORDER BY id'
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def count_active_admins():
+    conn = get_db()
+    n = conn.execute("SELECT COUNT(*) c FROM users WHERE role='ADMIN' AND is_active=1").fetchone()['c']
+    conn.close()
+    return n
+
+
+def set_user_active(user_id, active):
+    """Deactivating bumps session_version, same reasoning as a role
+    downgrade or forced password reset above -- an already-open session
+    shouldn't be able to outlive the account being turned off."""
+    conn = get_db()
+    conn.execute('UPDATE users SET is_active=?, session_version=session_version+1 WHERE id=?',
+                 (1 if active else 0, user_id))
+    conn.commit()
+    conn.close()
 
 
 def get_user_by_id(user_id):

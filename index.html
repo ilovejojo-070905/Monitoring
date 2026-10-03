@@ -523,7 +523,7 @@
 
     <button class="nav-group-label" data-group="navgrp-admin">관리<svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
     <div class="nav-group-wrap" id="navgrp-admin"><div class="nav-group-inner">
-    <button class="nav-item" data-view="register">
+    <button class="nav-item" data-view="register" id="nav-register">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
       장비 등록
     </button>
@@ -823,14 +823,37 @@ async function apiFetch(url, opts){
 }
 
 /* Hiding controls per role is convenience only -- server.py enforces the
-   real access control on every route regardless of what the UI shows. */
+   real access control on every route regardless of what the UI shows (see
+   require_role() and _operator_blocked_on_admin_target() there). The one
+   exception is topology editing (drag/draw-link/add-icon/delete-icon),
+   which has no backend of its own -- it's entirely localStorage, so hiding
+   these controls IS the only boundary that exists for it, not just a
+   convenience layer on top of a server-side one. */
+let CURRENT_ROLE_RANK = 0;
+const ROLE_RANK_CLIENT = {VIEWER:0, OPERATOR:1, ADMIN:2};
 function applyRoleUI(){
   const isAdmin = CURRENT_ROLE === 'ADMIN';
   const isOperatorPlus = CURRENT_ROLE === 'ADMIN' || CURRENT_ROLE === 'OPERATOR';
+  CURRENT_ROLE_RANK = ROLE_RANK_CLIENT[CURRENT_ROLE] ?? 0;
   document.body.classList.toggle('role-admin', isAdmin);
   document.body.classList.toggle('role-operator-plus', isOperatorPlus);
   const usersNav = $('#nav-users');
-  if(usersNav) usersNav.style.display = isAdmin ? '' : 'none';
+  if(usersNav) usersNav.style.display = isOperatorPlus ? '' : 'none';
+  const registerNav = $('#nav-register');
+  if(registerNav) registerNav.style.display = isOperatorPlus ? '' : 'none';
+  // 1-4 완료 기준: 조회자는 "관리" 그룹에 들어갈 항목이 하나도 없으므로
+  // 빈 분류 라벨만 남지 않도록 그룹 전체를 숨긴다.
+  const adminGroupLabel = document.querySelector('.nav-group-label[data-group="navgrp-admin"]');
+  if(adminGroupLabel) adminGroupLabel.style.display = isOperatorPlus ? '' : 'none';
+  const adminGroupWrap = $('#navgrp-admin');
+  if(adminGroupWrap) adminGroupWrap.style.display = isOperatorPlus ? '' : 'none';
+  // #view-users' skeleton is built once at startup, before login (so before
+  // CURRENT_ROLE is known) -- the ADMIN option in its "새 계정 추가" select
+  // has to be toggled here (post-login) rather than baked into that
+  // skeleton's template, or it would always evaluate as "not admin" and
+  // permanently hide the option even for a real admin.
+  const adminOpt = $('#u-role-admin-opt');
+  if(adminOpt) adminOpt.style.display = isAdmin ? '' : 'none';
 }
 
 /* ================= backend-driven live state ================= */
@@ -1405,7 +1428,7 @@ function renderTopologySkeleton(){
   }).join('');
   const nodesHtml = TOPO_NODES.map(n=>`
     <div class="topo-node${n.custom?' custom':''}" data-node="${n.id}" draggable="false" style="left:${n.x}px;top:${n.y}px;--topo-icon-size:${n.size||TOPO_DEFAULT_ICON_SIZE}px">
-      <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span>${n.id!=='hub'?`<button type="button" class="node-del" data-del-node="${n.id}" title="${n.custom?'삭제':'지도에서 숨기기 (장비 등록은 그대로 유지)'}">×</button>`:''}</div>
+      <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span>${n.id!=='hub'&&CURRENT_ROLE_RANK>=1?`<button type="button" class="node-del" data-del-node="${n.id}" title="${n.custom?'삭제':'지도에서 숨기기 (장비 등록은 그대로 유지)'}">×</button>`:''}</div>
       <span class="node-name">${escapeHtml(n.label)}</span>
     </div>`).join('');
   // Sized off the DEFAULT grid positions (topoDefaultContentW/H, from
@@ -1422,14 +1445,15 @@ function renderTopologySkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div>
           <h3 style="color:var(--chrome-text);font-size:20px;position:relative;top:-9px">인프라 토플로지</h3>
-          <span class="sub" style="color:var(--chrome-text-faint)">${topoLinkMode ? '연결선 그리기 모드: 노드 두 개를 순서대로 클릭해 연결하고, 선을 클릭하면 삭제됩니다' : '노드를 드래그해 배치를 바꾸고, 노드 위에서 마우스 휠로 그 아이콘만 크기를 조절할 수 있습니다'}</span>
+          <span class="sub" style="color:var(--chrome-text-faint)">${CURRENT_ROLE_RANK < 1 ? '조회 전용 — 배치 편집은 운영자 이상 권한이 필요합니다' : topoLinkMode ? '연결선 그리기 모드: 노드 두 개를 순서대로 클릭해 연결하고, 선을 클릭하면 삭제됩니다' : '노드를 드래그해 배치를 바꾸고, 노드 위에서 마우스 휠로 그 아이콘만 크기를 조절할 수 있습니다'}</span>
         </div>
+        ${CURRENT_ROLE_RANK >= 1 ? `
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex:none">
           <button type="button" class="btn${topoLinkMode?' primary':''}" id="topoLinkModeBtn" style="white-space:nowrap">${topoLinkMode?'연결선 그리기 종료':'연결선 그리기'}</button>
           <button type="button" class="btn" id="topoAddIconBtn" style="white-space:nowrap">아이콘 추가</button>
           <button type="button" class="btn" id="topoResetLayoutBtn" style="white-space:nowrap">배치 초기화</button>
           ${loadTopoHiddenNodes().length ? `<button type="button" class="btn" id="topoShowHiddenBtn" style="white-space:nowrap">숨긴 장비 ${loadTopoHiddenNodes().length}개 표시</button>` : ''}
-        </div>
+        </div>` : ''}
       </div>
       ${topoAddPanelOpen ? `
       <div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;padding:12px 14px">
@@ -1651,6 +1675,7 @@ function handleTopoLinkClick(nodeId){
 function startTopoDrag(e, node){
   if(e.button !== 0) return;
   if(topoLinkMode) return;
+  if(CURRENT_ROLE_RANK < 1) return;  // 1-4: 조회자는 배치를 바꿀 수 없음 (보기 전용)
   e.preventDefault();
   const nodeId = node.dataset.node;
   const n0 = TOPO_NODES.find(x=>x.id===nodeId);
@@ -2746,8 +2771,8 @@ function renderUsersSkeleton(){
         <div class="field"><label>역할</label>
           <select id="u-role">
             <option value="VIEWER">조회자 (VIEWER) - 읽기 전용</option>
-            <option value="OPERATOR">운영자 (OPERATOR) - 이벤트 확인·유지보수</option>
-            <option value="ADMIN">관리자 (ADMIN) - 전체 권한</option>
+            <option value="OPERATOR">운영자 (OPERATOR) - 장비·알림·사용자 관리</option>
+            <option value="ADMIN" id="u-role-admin-opt">관리자 (ADMIN) - 전체 권한</option>
           </select>
         </div>
         <div class="field"><label>비밀번호</label><input id="u-password" type="password" required minlength="8"></div>
@@ -2792,16 +2817,26 @@ async function renderUsers(){
   const now = Date.now();
   $('#user-tbody').innerHTML = users.map(u=>{
     const locked = u.locked_until && u.locked_until > now;
+    const inactive = !u.is_active;
+    // 1-4: 운영자는 ADMIN 계정을 건드릴 수 없다 (서버도 동일하게 막음 --
+    // _operator_blocked_on_admin_target) -- 그 계정 행에서는 제어 버튼을
+    // 아예 숨겨서 눌러봐야 403이 나는 상황 자체를 만들지 않는다.
+    const canManage = CURRENT_ROLE==='ADMIN' || u.role!=='ADMIN';
+    let statusHtml;
+    if(inactive) statusHtml = `<span class="pill neutral">비활성화</span>`;
+    else if(locked) statusHtml = `<span class="pill crit">잠김</span>`;
+    else statusHtml = `<span class="pill good">정상</span>`;
     return `<tr>
       <td class="name">${escapeHtml(u.username)}${u.username===CURRENT_USER?' <span class="pill info" style="font-size:9px">나</span>':''}</td>
       <td><span class="pill neutral">${ROLE_LABEL[u.role]||u.role}</span></td>
       <td class="mono">${u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
       <td class="mono">${u.last_login_at ? new Date(u.last_login_at).toLocaleString('ko-KR') : '-'}</td>
-      <td>${locked ? `<span class="pill crit">잠김</span>` : `<span class="pill good">정상</span>`}</td>
-      <td style="display:flex;gap:6px">
-        <button type="button" class="btn" data-edituser="${u.id}" data-role="${u.role}" data-username="${escapeHtml(u.username)}">수정</button>
-        ${locked ? `<button type="button" class="btn" data-unlock="${u.id}">잠금 해제</button>` : ''}
-        ${u.username!==CURRENT_USER ? `<button type="button" class="btn" data-deluser="${u.id}">삭제</button>` : ''}
+      <td>${statusHtml}</td>
+      <td style="display:flex;gap:6px;flex-wrap:wrap">
+        ${canManage ? `<button type="button" class="btn" data-edituser="${u.id}" data-role="${u.role}" data-username="${escapeHtml(u.username)}">수정</button>` : ''}
+        ${canManage && locked ? `<button type="button" class="btn" data-unlock="${u.id}">잠금 해제</button>` : ''}
+        ${canManage && u.username!==CURRENT_USER ? `<button type="button" class="btn" data-toggleactive="${u.id}" data-active="${u.is_active?1:0}">${inactive?'활성화':'비활성화'}</button>` : ''}
+        ${canManage && u.username!==CURRENT_USER ? `<button type="button" class="btn" data-deluser="${u.id}">삭제</button>` : ''}
       </td>
     </tr>`;
   }).join('') || `<tr><td colspan="6"><div class="empty-note">계정이 없습니다</div></td></tr>`;
@@ -2816,6 +2851,16 @@ async function renderUsers(){
     await apiFetch('/api/users/'+b.dataset.unlock+'/unlock', {method:'POST'});
     renderUsers();
   }));
+  $$('#user-tbody [data-toggleactive]').forEach(b=> b.addEventListener('click', async ()=>{
+    const nextActive = b.dataset.active !== '1';
+    const r = await apiFetch('/api/users/'+b.dataset.toggleactive, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({active: nextActive}),
+    });
+    const j = await r.json();
+    if(!r.ok){ alert(j.error||'변경 실패'); return; }
+    renderUsers();
+  }));
   $$('#user-tbody [data-edituser]').forEach(b=> b.addEventListener('click', ()=>{
     openUserEditModal(b.dataset.edituser, b.dataset.username, b.dataset.role);
   }));
@@ -2824,6 +2869,9 @@ async function renderUsers(){
 /* ================= user edit modal ================= */
 function openUserEditModal(userId, username, role){
   $('#userEditTitle').textContent = `"${username}" 수정`;
+  // 1-4: 운영자는 누구도 ADMIN으로 올릴 수 없다 (서버도 동일하게 막음) --
+  // 애초에 선택지에서 빼서 시도했다가 막히는 일이 없게 한다.
+  $('#ue-role [value="ADMIN"]').style.display = CURRENT_ROLE==='ADMIN' ? '' : 'none';
   $('#ue-role').value = role;
   $('#ue-password').value = '';
   $('#userEditError').textContent = '';
@@ -2909,6 +2957,9 @@ function openDrawerFor(id){
   const cat = s?'server':d?'db':n?'net':'fac';
   const maint = entity.maintenance || {enabled:false};
   const maintBtn = $('#drawerMaintBtn');
+  // 1-4: /api/devices/<id>/maintenance is OPERATOR+ on the server -- a
+  // VIEWER would just get a 403, so don't even show the button.
+  maintBtn.style.display = CURRENT_ROLE_RANK >= 1 ? '' : 'none';
   maintBtn.textContent = maint.enabled ? '유지보수 해제' : '유지보수 시작';
   maintBtn.style.color = maint.enabled ? 'var(--warn)' : '';
   maintBtn.style.borderColor = maint.enabled ? 'rgba(255,176,32,.4)' : '';
@@ -2922,10 +2973,11 @@ function openDrawerFor(id){
   };
   // 수정/삭제는 "장비 등록" 화면의 등록된 장비 목록 표가 삭제되면서 이쪽
   // (상세 드로어)으로 옮겨왔다 -- 사용자가 직접 등록한 장비(origin==='user')
-  // 에만 의미가 있는 동작이라 그 외에는 버튼 자체를 숨긴다.
+  // 에만 의미가 있는 동작인 데다, 1-4부터는 OPERATOR+ 권한도 필요하다
+  // (/api/devices/<id> PUT·DELETE가 서버에서 OPERATOR 이상을 요구함).
   const editBtn = $('#drawerEditBtn');
   const delBtn = $('#drawerDelBtn');
-  const isUserOrigin = entity.origin === 'user';
+  const isUserOrigin = entity.origin === 'user' && CURRENT_ROLE_RANK >= 1;
   editBtn.style.display = isUserOrigin ? '' : 'none';
   delBtn.style.display = isUserOrigin ? '' : 'none';
   if(isUserOrigin){
