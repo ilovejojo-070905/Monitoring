@@ -291,7 +291,7 @@
   .topo-node .node-box svg{width:calc(var(--topo-icon-size,52px) * .46);height:calc(var(--topo-icon-size,52px) * .46);stroke:var(--text-dim)}
   .topo-node .node-status{position:absolute;bottom:-3px;right:-3px;width:13px;height:13px;border-radius:50%;border:2.5px solid var(--bg-elevated)}
   .topo-node .node-del{position:absolute;top:-7px;right:-7px;width:18px;height:18px;border-radius:50%;background:var(--crit);color:#fff;border:2px solid var(--bg-elevated);font-size:12px;line-height:1;display:none;align-items:center;justify-content:center;cursor:pointer;padding:0}
-  .topo-node.custom:hover .node-del{display:flex}
+  .topo-node:not([data-node="hub"]):hover .node-del{display:flex}
   .topo-node .node-name{font-size:10.5px;font-weight:600;text-align:center;color:var(--chrome-text-dim);font-family:var(--font-mono);white-space:nowrap}
   .topo-node:hover .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
   .topo-node.sel .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
@@ -981,6 +981,7 @@ const TOPO_NODE_SIZES_KEY = 'infrasight_topo_node_sizes';
 const TOPO_CUSTOM_NODES_KEY = 'infrasight_topo_custom_nodes';
 const TOPO_CUSTOM_LINKS_KEY = 'infrasight_topo_custom_links';
 const TOPO_HIDDEN_LINKS_KEY = 'infrasight_topo_hidden_links';
+const TOPO_HIDDEN_NODES_KEY = 'infrasight_topo_hidden_nodes';
 function loadTopoLayout(){
   try{ return JSON.parse(localStorage.getItem(TOPO_LAYOUT_KEY) || '{}'); }catch(e){ return {}; }
 }
@@ -996,6 +997,8 @@ function loadTopoCustomLinks(){ try{ return JSON.parse(localStorage.getItem(TOPO
 function saveTopoCustomLinks(list){ try{ localStorage.setItem(TOPO_CUSTOM_LINKS_KEY, JSON.stringify(list)); }catch(e){} }
 function loadTopoHiddenLinks(){ try{ return JSON.parse(localStorage.getItem(TOPO_HIDDEN_LINKS_KEY)||'[]'); }catch(e){ return []; } }
 function saveTopoHiddenLinks(list){ try{ localStorage.setItem(TOPO_HIDDEN_LINKS_KEY, JSON.stringify(list)); }catch(e){} }
+function loadTopoHiddenNodes(){ try{ return JSON.parse(localStorage.getItem(TOPO_HIDDEN_NODES_KEY)||'[]'); }catch(e){ return []; } }
+function saveTopoHiddenNodes(list){ try{ localStorage.setItem(TOPO_HIDDEN_NODES_KEY, JSON.stringify(list)); }catch(e){} }
 function topoLinkKey(a,b){ return [a,b].sort().join('|'); }
 function rebuildTopology(){
   const nodes = [{id:'hub', label:'InfraSight', icon:'monitor', x:70, y:280, ref:null}];
@@ -1013,9 +1016,19 @@ function rebuildTopology(){
   loadTopoCustomNodes().forEach(c=>{
     nodes.push({id:c.id, label:c.label, icon:c.icon, x:c.x, y:c.y, ref:null, custom:true});
   });
+  // A registered device's icon can be hidden from just the map (its own ×
+  // button, see renderTopologySkeleton) without touching the device itself
+  // -- it stays fully registered/monitored, this only drops it from `nodes`
+  // here so nothing below ever builds a link to/from it. The hub is exempt:
+  // hiding the one node everything else radiates from would orphan the
+  // whole diagram. A custom (hand-added) icon's × instead deletes it
+  // outright via loadTopoCustomNodes/saveTopoCustomNodes -- it was never
+  // added to this hidden set in the first place.
+  const hiddenNodes = new Set(loadTopoHiddenNodes());
+  const visibleNodes = nodes.filter(n => n.id === 'hub' || !hiddenNodes.has(n.id));
   const hidden = new Set(loadTopoHiddenLinks());
   let allLinks = links.filter(l => !hidden.has(topoLinkKey(l.a,l.b)));
-  const nodeIds = new Set(nodes.map(n=>n.id));
+  const nodeIds = new Set(visibleNodes.map(n=>n.id));
   // LLDP-discovered links (collector/lldp.py; SNMP 'net' devices only, every
   // ~5 min) -- only ever between two devices InfraSight already has
   // registered, so this never invents a node. Skipped if a link between the
@@ -1041,15 +1054,15 @@ function rebuildTopology(){
   // otherwise one stale saved position from an old layout change (this used
   // to let nodes be dragged further than it does now) permanently breaks the
   // "fits on one screen" sizing on every future load.
-  topoDefaultContentW = Math.max(0, ...nodes.map(n=>n.x+90));
-  topoDefaultContentH = Math.max(0, ...nodes.map(n=>n.y+60));
+  topoDefaultContentW = Math.max(0, ...visibleNodes.map(n=>n.x+90));
+  topoDefaultContentH = Math.max(0, ...visibleNodes.map(n=>n.y+60));
   const layout = loadTopoLayout();
   const sizes = loadTopoNodeSizes();
-  nodes.forEach(n=>{
+  visibleNodes.forEach(n=>{
     const p = layout[n.id]; if(p){ n.x = p.x; n.y = p.y; }
     n.size = sizes[n.id] || TOPO_DEFAULT_ICON_SIZE;
   });
-  TOPO_NODES = nodes; TOPO_LINKS = allLinks;
+  TOPO_NODES = visibleNodes; TOPO_LINKS = allLinks;
 }
 function findEntity(ref){
   return SERVERS.find(s=>s.id===ref) || DBS.find(s=>s.id===ref) || NETS.find(s=>s.id===ref) || FACS.find(s=>s.id===ref);
@@ -1372,7 +1385,7 @@ function renderTopologySkeleton(){
   }).join('');
   const nodesHtml = TOPO_NODES.map(n=>`
     <div class="topo-node${n.custom?' custom':''}" data-node="${n.id}" draggable="false" style="left:${n.x}px;top:${n.y}px;--topo-icon-size:${n.size||TOPO_DEFAULT_ICON_SIZE}px">
-      <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span>${n.custom?`<button type="button" class="node-del" data-del-node="${n.id}" title="삭제">×</button>`:''}</div>
+      <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span>${n.id!=='hub'?`<button type="button" class="node-del" data-del-node="${n.id}" title="${n.custom?'삭제':'지도에서 숨기기 (장비 등록은 그대로 유지)'}">×</button>`:''}</div>
       <span class="node-name">${escapeHtml(n.label)}</span>
     </div>`).join('');
   // Sized off the DEFAULT grid positions (topoDefaultContentW/H, from
@@ -1395,6 +1408,7 @@ function renderTopologySkeleton(){
           <button type="button" class="btn${topoLinkMode?' primary':''}" id="topoLinkModeBtn" style="white-space:nowrap">${topoLinkMode?'연결선 그리기 종료':'연결선 그리기'}</button>
           <button type="button" class="btn" id="topoAddIconBtn" style="white-space:nowrap">아이콘 추가</button>
           <button type="button" class="btn" id="topoResetLayoutBtn" style="white-space:nowrap">배치 초기화</button>
+          ${loadTopoHiddenNodes().length ? `<button type="button" class="btn" id="topoShowHiddenBtn" style="white-space:nowrap">숨긴 장비 ${loadTopoHiddenNodes().length}개 표시</button>` : ''}
         </div>
       </div>
       ${topoAddPanelOpen ? `
@@ -1495,9 +1509,23 @@ function renderTopologySkeleton(){
     btn.addEventListener('click', ev=>{
       ev.stopPropagation();
       const id = btn.dataset.delNode;
-      saveTopoCustomNodes(loadTopoCustomNodes().filter(c=>c.id!==id));
-      saveTopoCustomLinks(loadTopoCustomLinks().filter(([a,b])=>a!==id&&b!==id));
+      const n = TOPO_NODES.find(x=>x.id===id);
+      if(n && n.custom){
+        // Hand-added icon: it only ever existed on the map, so × removes it
+        // outright (and anything that referenced it).
+        saveTopoCustomNodes(loadTopoCustomNodes().filter(c=>c.id!==id));
+        saveTopoCustomLinks(loadTopoCustomLinks().filter(([a,b])=>a!==id&&b!==id));
+      } else {
+        // Registered device: × only hides its icon from this map. The
+        // device itself, and its monitoring, are untouched -- unregistering
+        // it is still a separate, deliberate action on the 장비 등록 screen.
+        const hiddenNodes = loadTopoHiddenNodes();
+        if(!hiddenNodes.includes(id)) hiddenNodes.push(id);
+        saveTopoHiddenNodes(hiddenNodes);
+        saveTopoCustomLinks(loadTopoCustomLinks().filter(([a,b])=>a!==id&&b!==id));
+      }
       const layout = loadTopoLayout(); delete layout[id]; saveTopoLayout(layout);
+      const sizes = loadTopoNodeSizes(); delete sizes[id]; saveTopoNodeSizes(sizes);
       rebuildTopology(); renderTopologySkeleton(); refreshTopology();
     });
   });
@@ -1522,6 +1550,13 @@ function renderTopologySkeleton(){
   const resetBtn = $('#topoResetLayoutBtn');
   if(resetBtn) resetBtn.addEventListener('click', ()=>{
     saveTopoLayout({});
+    rebuildTopology();
+    renderTopologySkeleton();
+    refreshTopology();
+  });
+  const showHiddenBtn = $('#topoShowHiddenBtn');
+  if(showHiddenBtn) showHiddenBtn.addEventListener('click', ()=>{
+    saveTopoHiddenNodes([]);
     rebuildTopology();
     renderTopologySkeleton();
     refreshTopology();
