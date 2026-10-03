@@ -162,6 +162,7 @@
   /* ---------- reusable ---------- */
   .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;transition:border-color .18s,box-shadow .18s;position:relative;box-shadow:0 1px 2px rgba(30,41,59,.04),0 6px 20px rgba(30,41,59,.05)}
   .card:hover{border-color:var(--border-strong);box-shadow:0 10px 28px rgba(124,92,255,.14)}
+  #view-overview .card{border-color:#7dd3fc}
   .card-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:9px}
   .card-head.collapsible{cursor:pointer;user-select:none;align-items:center}
   .card-head.collapsible h3{font-size:17px}
@@ -1151,7 +1152,7 @@ function renderOverviewSkeleton(){
         <div class="card-head"><h3>네트워크 트래픽 (이 PC)</h3><span class="sub">최근 60초 · Mbps · 실측</span></div>
         <div style="height:115px"><canvas id="ov-traffic"></canvas></div>
       </div>
-      <div class="card" style="background:#eaf6ff;border-color:#7dd3fc">
+      <div class="card">
         <div class="card-head"><h3>평균 리소스 사용률</h3><span class="sub">서버 전체 평균</span></div>
         <div class="gauge-row" style="justify-content:space-around">
           <div class="g-item" id="ov-g-cpu"></div>
@@ -1177,7 +1178,7 @@ function renderOverviewSkeleton(){
         <div class="card-head"><h3>서버 CPU Top 5</h3><span class="sub">SMS</span></div>
         <div style="height:115px"><canvas id="ov-top5"></canvas></div>
       </div>
-      <div class="card" style="background:#eaf6ff;border-color:#7dd3fc">
+      <div class="card">
         <div class="card-head"><h3>최근 이벤트</h3><span class="sub" id="ov-inc-sub" style="cursor:pointer" title="전체 이벤트 보기">-</span></div>
         <div id="ov-recent-inc" style="display:flex;flex-direction:column;gap:7px;max-height:150px;overflow-y:auto"></div>
       </div>
