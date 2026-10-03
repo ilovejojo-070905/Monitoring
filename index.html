@@ -53,6 +53,13 @@
     color-scheme:light;
   }
   *,*::before,*::after{box-sizing:border-box}
+  /* Always reserve the scrollbar's own width (stops .main's content from
+     visibly widening/narrowing as the drag handlers toggle the page's
+     ability to scroll -- see startTopoDrag). Matching html's own background
+     to .main's is what keeps that reserved strip from reading as a stray
+     empty gap: without it, the strip shows through in whatever html's
+     default background is, which doesn't match the light content beside it. */
+  html{scrollbar-gutter:stable;background:#e6f6fc}
   html,body{height:100%}
   body{
     margin:0;color:var(--text);font-family:var(--font-ui);
@@ -247,12 +254,24 @@
   .empty-note{padding:26px;text-align:center;color:var(--text-faint);font-size:12.5px}
 
   /* ---------- topology ---------- */
-  .topo-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);background:
+  /* No backdrop-filter here anymore: blurring whatever sits behind this
+     element forces Chromium into an extra compositing pass, and the
+     connection lines (painted inside it) would render visibly softer/dimmer
+     until something elsewhere -- hovering a node -- triggered a repaint and
+     the blur recomposited, at which point they'd suddenly look sharp and
+     bright. The radial-gradient background alone gives the same look
+     without that render path. */
+  .topo-wrap{flex:1;min-height:0;overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);background:
     radial-gradient(circle at 20% 20%,rgba(124,92,255,.10),transparent 40%),
     radial-gradient(circle at 80% 70%,rgba(0,230,168,.08),transparent 45%),
     radial-gradient(circle at 50% 100%,rgba(255,62,201,.07),transparent 50%),var(--bg-elevated);}
-  .topo-canvas{position:relative;min-width:1180px;min-height:660px;--topo-icon-size:52px}
-  .topo-canvas svg.links{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+  /* transform:translateZ(0) forces this onto its own compositor layer
+     permanently, instead of only getting promoted (and only then rasterized
+     at full sharpness) the moment something inside it -- a node's hover
+     box-shadow -- first triggers compositing. Without it the connection
+     lines render visibly softer until the mouse touches an icon. */
+  .topo-canvas{position:relative;width:100%;height:100%;min-height:320px;--topo-icon-size:52px;transform:translateZ(0)}
+  .topo-canvas svg.links{position:absolute;inset:0;width:100%;height:100%;overflow:visible;shape-rendering:geometricPrecision}
   .topo-canvas.link-mode .topo-node{cursor:crosshair}
   .topo-node{
     /* x/y (left/top) must land on the ICON's center, not the whole node's
@@ -1245,15 +1264,22 @@ function renderTopologySkeleton(){
       <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span>${n.custom?`<button type="button" class="node-del" data-del-node="${n.id}" title="삭제">×</button>`:''}</div>
       <span class="node-name">${escapeHtml(n.label)}</span>
     </div>`).join('');
-  const canvasW = Math.max(1180, ...TOPO_NODES.map(n=>n.x+90));
+  // Content width is resolved after insertion (below), against whatever
+  // width the view actually has available -- a hardcoded floor here (the
+  // canvas used to always be at least 1180px) made the canvas wider than the
+  // screen and forced a horizontal scrollbar even with only a couple of
+  // devices on the map.
+  const contentW = Math.max(0, ...TOPO_NODES.map(n=>n.x+90));
   // Not 660 anymore: that was tall enough to reserve room for up to 7 devices
   // per category whether or not they exist yet, which routinely pushed the
   // legend below the fold with only a couple of real devices registered. The
   // hub node alone (fixed at y:280) already guarantees at least ~340px, so a
   // small floor here only matters as a sane lower bound, not a reservation.
-  const canvasH = Math.max(320, ...TOPO_NODES.map(n=>n.y+60));
+  // Like contentW, resolved against the space actually available (below)
+  // rather than forced to some fixed number.
+  const contentH = Math.max(320, ...TOPO_NODES.map(n=>n.y+60));
   el.innerHTML = `
-    <div class="card" style="background:var(--bg)">
+    <div class="card" style="background:var(--bg);display:flex;flex-direction:column;flex:1;min-height:0">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div>
           <h3 style="color:var(--chrome-text);font-size:20px;position:relative;top:-9px">인프라 토플로지</h3>
@@ -1279,7 +1305,7 @@ function renderTopologySkeleton(){
         <button type="button" class="btn" id="topoAddIconCancel">취소</button>
       </div>` : ''}
       <div class="topo-wrap">
-        <div class="topo-canvas${topoLinkMode?' link-mode':''}" style="width:${canvasW}px;height:${canvasH}px;--topo-icon-size:${TOPO_DEFAULT_ICON_SIZE}px">
+        <div class="topo-canvas${topoLinkMode?' link-mode':''}" style="--topo-icon-size:${TOPO_DEFAULT_ICON_SIZE}px">
           <svg class="links">${linksSvg}</svg>
           ${nodesHtml}
         </div>
@@ -1292,6 +1318,21 @@ function renderTopologySkeleton(){
     </div>
     <div class="grid grid-3" id="topo-detail-cards"></div>
   `;
+  // Only widen the canvas past the screen (forcing the horizontal scrollbar)
+  // when the devices actually laid out on it need more room than the view
+  // has -- otherwise it just fills the available width, so the topology
+  // fits on one screen instead of always reserving space for 1180px' worth
+  // of devices whether or not that many exist yet.
+  const canvasEl = $('.topo-canvas', el);
+  const wrapEl = $('.topo-wrap', el);
+  if(canvasEl && wrapEl){
+    // CSS height:100% on the canvas doesn't reliably resolve against
+    // .topo-wrap's flex-grown height, so its wrapper's actual rendered
+    // height is measured directly and set in px instead of trusted to
+    // resolve on its own.
+    canvasEl.style.width = Math.max(contentW, wrapEl.clientWidth)+'px';
+    canvasEl.style.height = Math.max(contentH, wrapEl.clientHeight)+'px';
+  }
   $$('.topo-node', el).forEach(node=>{
     node.addEventListener('mouseenter', e=>{ if(!topoDragging) showTopoTip(node); });
     node.addEventListener('mousemove', e=>{ if(!topoDragging) positionTip(e); });
