@@ -347,13 +347,13 @@
     width:min(820px,94vw);max-height:90vh;overflow-y:auto;box-shadow:0 30px 70px rgba(0,0,0,.35);
   }
   .drawer{
-    position:fixed;top:50%;left:50%;height:min(860px,92vh);width:min(820px,94vw);background:var(--bg-elevated);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--border);
+    position:fixed;top:50%;left:50%;height:min(780px,92vh);width:min(620px,94vw);background:var(--bg-elevated);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--border);
     z-index:51;transform:translate(-50%,-50%) scale(.96);opacity:0;transition:transform .2s ease,opacity .18s ease;display:flex;flex-direction:column;box-shadow:0 30px 70px rgba(0,0,0,.35);
     border-radius:var(--radius);pointer-events:none;overflow:hidden;
   }
   .drawer.show{transform:translate(-50%,-50%) scale(1);opacity:1;pointer-events:auto}
   .drawer-head{display:flex;align-items:flex-start;justify-content:space-between;padding:20px 20px 14px;border-bottom:1px solid var(--border)}
-  .drawer-head h2{font-size:16px;font-weight:700;font-family:var(--font-mono);color:var(--chrome-text)}
+  .drawer-head h2{font-size:21px;font-weight:700;font-family:var(--font-mono);color:var(--chrome-text)}
   .drawer-head .role{font-size:11.5px;color:var(--chrome-text-faint);margin-top:3px}
   .drawer-close{background:var(--surface);border:1px solid var(--border);width:30px;height:30px;border-radius:8px;color:var(--text-dim);display:flex;align-items:center;justify-content:center;flex:none}
   .drawer-close svg{width:15px;height:15px}
@@ -368,11 +368,11 @@
   }
   .iface-modal.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
   .iface-modal-body{padding:18px 20px 26px;display:flex;flex-direction:column;gap:16px}
-  .drawer-body{padding:18px 20px 40px;overflow-y:auto;display:flex;flex-direction:column;gap:16px}
+  .drawer-body{padding:18px 20px 40px;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
   .kv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  .kv{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;display:flex;flex-direction:column;gap:3px}
-  .kv span{font-size:10px;color:var(--text-faint)}
-  .kv b{font-family:var(--font-mono);font-size:14px}
+  .kv{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px}
+  .kv span{font-size:12.5px;color:var(--text-faint)}
+  .kv b{font-family:var(--font-mono);font-size:17px}
 
   /* ---------- incidents ---------- */
   .sev-strip{width:3px;border-radius:3px;display:inline-block;height:16px;vertical-align:middle;margin-right:8px;box-shadow:0 0 6px currentColor}
@@ -1197,7 +1197,7 @@ function renderTopologySkeleton(){
   el.innerHTML = `
     <div class="card" style="background:var(--bg)">
       <div class="card-head">
-        <h3 style="color:var(--chrome-text)">인프라 토폴로지</h3>
+        <h3 style="color:var(--chrome-text);font-size:20px;position:relative;top:-9px">인프라 토플로지</h3>
         <span class="sub" style="color:var(--chrome-text-faint)">노드에 마우스를 올리면 실시간 트래픽/상태가 표시됩니다</span>
       </div>
       <div class="topo-wrap">
