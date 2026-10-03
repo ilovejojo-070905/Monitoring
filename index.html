@@ -1194,7 +1194,7 @@ function renderOverviewSkeleton(){
               <span class="mono" id="ov-devlist-count-${key}" style="font-size:10.5px;color:var(--text-faint)">0대</span>
             </div>
             <table class="data" style="font-size:11px;min-width:0">
-              <thead><tr><th style="padding:5px 7px">장비명</th><th style="padding:5px 7px">IP</th><th style="padding:5px 7px">상태</th></tr></thead>
+              <thead><tr><th style="padding:5px 7px;text-align:center">장비명</th><th style="padding:5px 7px;text-align:center">IP</th><th style="padding:5px 7px;text-align:center">상태</th></tr></thead>
               <tbody id="ov-devlist-tbody-${key}"></tbody>
             </table>
             <div style="text-align:right;margin-top:4px"><span class="mono" style="font-size:10.5px;color:var(--accent);cursor:pointer" data-nav="${key}">더보기 →</span></div>
@@ -1322,9 +1322,9 @@ function renderOverview(){
     const sorted = list.slice().sort((a,b)=>(OV_CAT_RANK[a.status]??1)-(OV_CAT_RANK[b.status]??1)).slice(0,3);
     tbodyEl.innerHTML = sorted.map(e=>`
       <tr>
-        <td class="name" style="padding:5px 7px;font-size:11px">${escapeHtml(e.name)}</td>
-        <td class="mono" style="padding:5px 7px;font-size:10px">${e.ip||'-'}</td>
-        <td style="padding:5px 7px"><span class="pill ${e.status}" style="padding:2px 7px;font-size:9.5px"><span class="dot"></span>${statusLabel(e.status)}</span></td>
+        <td class="name" style="padding:5px 7px;font-size:11px;text-align:center">${escapeHtml(e.name)}</td>
+        <td class="mono" style="padding:5px 7px;font-size:10px;text-align:center">${e.ip||'-'}</td>
+        <td style="padding:5px 7px;text-align:center"><span class="pill ${e.status}" style="padding:2px 7px;font-size:9.5px"><span class="dot"></span>${statusLabel(e.status)}</span></td>
       </tr>`).join('') || `<tr><td colspan="3"><div class="empty-note" style="padding:10px;font-size:10.5px">등록 없음</div></td></tr>`;
   });
 
