@@ -419,6 +419,49 @@ def api_discovery_scan():
     return jsonify({'results': results})
 
 
+@app.post('/api/devices/test-snmp')
+@require_role('ADMIN')
+def api_test_snmp():
+    """Standalone SNMP connectivity test for the registration form's "연결
+    테스트" button -- lets the user confirm credentials/reachability before
+    committing to registration, using the exact same majority-vote probe
+    (and the exact same SNMPv3 validation) that registration itself gates
+    on below, so a passing test reliably predicts a passing registration.
+    Nothing is persisted here -- this never touches the devices table.
+    """
+    if not SNMP_AVAILABLE:
+        return jsonify({'error': 'SNMP 라이브러리(pysnmp)가 서버에 설치되어 있지 않습니다'}), 400
+    body = request.get_json(force=True)
+    ip = (body.get('ip') or '').strip()
+    if not ip or not validation.is_valid_host(ip):
+        return jsonify({'error': 'IP 주소 또는 호스트명 형식이 올바르지 않습니다'}), 400
+    version = body.get('snmpVersion') or 'v2c'
+    port = body.get('snmpPort') or 161
+    if not validation.is_valid_port(port):
+        return jsonify({'error': 'port는 1~65535 사이의 숫자여야 합니다'}), 400
+    community = (body.get('community') or '').strip() or 'public'
+    v3_username = body.get('snmpv3Username')
+    v3_auth_protocol = body.get('snmpv3AuthProtocol')
+    v3_auth_password = body.get('snmpv3AuthPassword')
+    v3_priv_protocol = body.get('snmpv3PrivProtocol')
+    v3_priv_password = body.get('snmpv3PrivPassword')
+    if version == 'v3':
+        v3_err = validation.validate_snmpv3_params(
+            v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password,
+            require_username=True)
+        if v3_err:
+            return jsonify({'error': v3_err}), 400
+    ok, successes, attempts = snmp_collector.test_connection(
+        ip, version, community, port, v3_username,
+        v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password)
+    # Logged, but deliberately without any secret -- ip and pass/fail only.
+    audit('TEST_SNMP', target=ip, details=f'{"성공" if ok else "실패"} ({successes}/{attempts})')
+    if not ok:
+        cred_hint = '사용자명/인증·개인정보 보호 정보' if version == 'v3' else 'Community 문자열'
+        return jsonify({'ok': False, 'error': f'"{ip}"에서 SNMP 응답을 받지 못했습니다 ({attempts}회 중 {successes}회만 응답). {cred_hint}/버전/포트를 확인해주세요.'})
+    return jsonify({'ok': True, 'message': f'"{ip}"에서 SNMP 응답을 확인했습니다 ({successes}/{attempts}회 성공).'})
+
+
 @app.post('/api/devices')
 @require_role('ADMIN')
 def api_register_device():
@@ -487,18 +530,22 @@ def api_register_device():
     v3_priv_password = fields.pop('snmpv3PrivPassword', None)
     vendor_profile = fields.pop('vendorProfile', None)
     if mode == 'snmp':
-        # Same reasoning as the ping check above: one lucky reply out of a
-        # flaky device isn't good enough evidence to register on.
         snmp_version = fields.get('snmpVersion') or 'v2c'
         snmp_port_val = fields.get('snmpPort') or 161
-        auth_data = snmp_collector.build_auth_data_raw(
-            snmp_version, community or 'public', v3_username,
+        if snmp_version == 'v3':
+            v3_err = validation.validate_snmpv3_params(
+                v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password,
+                require_username=True)
+            if v3_err:
+                return jsonify({'error': v3_err}), 400
+        # Same reasoning as the ping check above: one lucky reply out of a
+        # flaky device isn't good enough evidence to register on.
+        ok, successes, attempts = snmp_collector.test_connection(
+            ip, snmp_version, community or 'public', snmp_port_val, v3_username,
             v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password)
-        attempts, needed = 3, 2
-        successes = sum(1 for _ in range(attempts)
-                         if snmp_collector.check_reachable(ip, auth_data, snmp_port_val, timeout=1.5))
-        if successes < needed:
-            return jsonify({'error': f'"{ip}"에서 SNMP 응답을 받지 못했습니다 ({attempts}회 중 {successes}회만 응답). Community 문자열/버전/포트를 확인해주세요. 응답이 없어도 꼭 등록해야 한다면 Ping이나 Agent 방식을 이용해주세요.'}), 400
+        if not ok:
+            cred_hint = '사용자명/인증·개인정보 보호 정보' if snmp_version == 'v3' else 'Community 문자열'
+            return jsonify({'error': f'"{ip}"에서 SNMP 응답을 받지 못했습니다 ({attempts}회 중 {successes}회만 응답). {cred_hint}/버전/포트를 확인해주세요. 응답이 없어도 꼭 등록해야 한다면 Ping이나 Agent 방식을 이용해주세요.'}), 400
     device_id = uuid.uuid4().hex[:10]
     token = secrets.token_hex(16) if mode == 'agent' else None
     conn = storage.get_db()
@@ -586,6 +633,12 @@ def api_update_device(device_id):
     v3_auth_password = fields.pop('snmpv3AuthPassword', None)
     v3_priv_protocol = fields.pop('snmpv3PrivProtocol', None)
     v3_priv_password = fields.pop('snmpv3PrivPassword', None)
+    if mode == 'snmp' and (v3_username or v3_auth_protocol or v3_auth_password or v3_priv_protocol or v3_priv_password):
+        v3_err = validation.validate_snmpv3_params(
+            v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password,
+            require_username=False, partial=True)
+        if v3_err:
+            return jsonify({'error': v3_err}), 400
     conn = storage.get_db()
     conn.execute('UPDATE devices SET name=?, ip=?, fields=? WHERE id=?',
                  (name, ip, json.dumps(fields), device_id))

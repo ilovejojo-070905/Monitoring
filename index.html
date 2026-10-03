@@ -2088,6 +2088,12 @@ function renderIncidents(){
 
 /* ================= REGISTER ================= */
 let regCategory = 'server', regMode = 'agent', editingDeviceId = null;
+// SNMP connection-test gate (1-3. SNMPv3 등록 UI): a *new* SNMP device can't
+// be registered until a test against these exact field values has passed --
+// reset to false by any change to an SNMP-relevant input. Edits skip this
+// gate (the update endpoint never re-checks reachability either, same as
+// before this feature), so it only matters for fresh registrations.
+let snmpTestPassed = false;
 function renderRegisterSkeleton(){
   const el = $('#view-register');
   el.innerHTML = `
@@ -2152,9 +2158,38 @@ function renderRegisterSkeleton(){
           </div>
 
           <div class="form-grid" data-mode-group="snmp" style="margin-top:14px;display:none">
-            <div class="field"><label>Community</label><input type="text" id="f-snmp-community" value="public" placeholder="public"></div>
-            <div class="field"><label>SNMP 버전</label><select id="f-snmp-version"><option value="v2c">v2c</option><option value="v1">v1</option></select></div>
+            <div class="field" id="f-snmp-community-wrap"><label>Community</label><input type="text" id="f-snmp-community" value="public" placeholder="public"></div>
+            <div class="field"><label>SNMP 버전</label><select id="f-snmp-version"><option value="v2c">v2c</option><option value="v1">v1</option><option value="v3">v3</option></select></div>
             <div class="field"><label>포트</label><input type="number" id="f-snmp-port" value="161" min="1" max="65535"></div>
+          </div>
+
+          <div id="f-snmpv3-group" data-mode-group="snmp" style="display:none">
+            <div class="form-grid" style="margin-top:14px">
+              <div class="field"><label>SNMPv3 사용자명 *</label><input type="text" id="f-snmp-v3-username" placeholder="예: monitor" autocomplete="off"></div>
+              <div class="field"><label>보안 수준</label>
+                <select id="f-snmp-v3-seclevel">
+                  <option value="authPriv">인증 + 암호화 (authPriv)</option>
+                  <option value="authNoPriv">인증만 (authNoPriv)</option>
+                  <option value="noAuthNoPriv">인증 없음 (noAuthNoPriv)</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-grid" id="f-snmp-v3-auth-row" style="margin-top:14px">
+              <div class="field"><label>인증 프로토콜</label><select id="f-snmp-v3-authproto"><option value="SHA">SHA</option><option value="MD5">MD5</option></select></div>
+              <div class="field"><label id="f-snmp-v3-authpw-label">인증 비밀번호 *</label><input type="password" id="f-snmp-v3-authpw" placeholder="8자 이상" autocomplete="new-password"></div>
+            </div>
+            <div class="form-grid" id="f-snmp-v3-priv-row" style="margin-top:14px">
+              <div class="field"><label>개인정보 보호 프로토콜</label><select id="f-snmp-v3-privproto"><option value="AES">AES</option><option value="DES">DES</option></select></div>
+              <div class="field"><label id="f-snmp-v3-privpw-label">암호화 비밀번호 *</label><input type="password" id="f-snmp-v3-privpw" placeholder="8자 이상" autocomplete="new-password"></div>
+            </div>
+          </div>
+
+          <div id="f-snmp-test-row" data-mode-group="snmp" style="display:none;margin-top:14px">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <button type="button" class="btn" id="snmp-test-btn">연결 테스트</button>
+              <span id="snmp-test-result" style="font-size:12px"></span>
+            </div>
+            <div id="snmp-test-hint" style="font-size:11px;color:var(--text-faint);margin-top:6px">신규 등록은 연결 테스트를 먼저 통과해야 "장비 등록" 버튼이 활성화됩니다</div>
           </div>
 
           <div id="agent-command-box" class="card" style="display:none;margin-top:16px;background:var(--surface-2);border-style:dashed">
@@ -2200,19 +2235,114 @@ function renderRegisterSkeleton(){
     $$('#reg-mode-chips .chip-btn').forEach(x=> x.classList.toggle('active', x.dataset.mode===regMode));
     $$('#reg-form [data-mode-group]').forEach(g=>{ g.style.display = g.dataset.modeGroup===regMode ? '' : 'none'; });
     $('#f-ip-label').textContent = (regMode==='ping'||regMode==='snmp') ? 'IP 주소 *' : 'IP 주소 (선택)';
+    updateSnmpFieldVisibility();
+  }
+  // v3 vs v1/v2c sub-layout (Community field vs the username/protocol/
+  // password block) and, within v3, which of the auth/priv rows apply at
+  // the chosen security level. Runs after updateFormVisibility()'s own
+  // mode-based show/hide, since that's what reveals the whole SNMP section
+  // in the first place.
+  function updateSnmpFieldVisibility(){
+    const isV3 = $('#f-snmp-version').value === 'v3';
+    $('#f-snmp-community-wrap').style.display = isV3 ? 'none' : '';
+    $('#f-snmpv3-group').style.display = (regMode==='snmp' && isV3) ? '' : 'none';
+    const lvl = $('#f-snmp-v3-seclevel').value;
+    $('#f-snmp-v3-auth-row').style.display = (lvl==='authNoPriv' || lvl==='authPriv') ? '' : 'none';
+    $('#f-snmp-v3-priv-row').style.display = (lvl==='authPriv') ? '' : 'none';
+    const pwPlaceholder = editingDeviceId ? '변경하려면 입력 (비워두면 기존 값 유지)' : '8자 이상';
+    $('#f-snmp-v3-authpw').placeholder = pwPlaceholder;
+    $('#f-snmp-v3-privpw').placeholder = pwPlaceholder;
+  }
+  function markSnmpUntested(){
+    snmpTestPassed = false;
+    $('#snmp-test-result').textContent = '';
+    updateSnmpSubmitGate();
+  }
+  // New registrations only -- edits never re-check reachability (same as
+  // before this feature; see api_update_device), so the gate would just be
+  // in the way of e.g. renaming a device without touching its SNMP creds.
+  function updateSnmpSubmitGate(){
+    const effMode = regCategory==='server' ? regMode : (regMode==='agent' ? 'ping' : regMode);
+    const blocked = effMode==='snmp' && !editingDeviceId && !snmpTestPassed;
+    $('#reg-submit-btn').disabled = blocked;
+    $('#snmp-test-hint').style.display = blocked ? '' : 'none';
   }
   $$('#reg-cat-chips .chip-btn').forEach(b=> b.addEventListener('click', ()=>{
     $$('#reg-cat-chips .chip-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active');
-    regCategory = b.dataset.cat; updateFormVisibility();
+    regCategory = b.dataset.cat; updateFormVisibility(); markSnmpUntested();
   }));
   $$('#reg-mode-chips .chip-btn').forEach(b=> b.addEventListener('click', ()=>{
-    regMode = b.dataset.mode; updateFormVisibility();
+    regMode = b.dataset.mode; updateFormVisibility(); markSnmpUntested();
   }));
   $('#agent-copy-btn').addEventListener('click', ()=>{
     const text = $('#agent-command-text').textContent;
     try{ navigator.clipboard.writeText(text); }catch(e){}
   });
+  ['f-ip','f-snmp-version','f-snmp-port','f-snmp-community','f-snmp-v3-username',
+   'f-snmp-v3-seclevel','f-snmp-v3-authproto','f-snmp-v3-authpw','f-snmp-v3-privproto','f-snmp-v3-privpw']
+    .forEach(id=> $('#'+id).addEventListener('input', markSnmpUntested));
+  $('#f-snmp-version').addEventListener('change', updateSnmpFieldVisibility);
+  $('#f-snmp-v3-seclevel').addEventListener('change', updateSnmpFieldVisibility);
+  function buildSnmpTestPayload(){
+    const ip = $('#f-ip').value.trim();
+    if(!ip) return {error:'IP 주소를 먼저 입력하세요'};
+    const version = $('#f-snmp-version').value;
+    const port = parseInt($('#f-snmp-port').value) || 161;
+    const payload = {ip, snmpVersion: version, snmpPort: port};
+    if(version === 'v3'){
+      const username = $('#f-snmp-v3-username').value.trim();
+      if(!username) return {error:'SNMPv3 사용자명을 입력하세요'};
+      payload.snmpv3Username = username;
+      const lvl = $('#f-snmp-v3-seclevel').value;
+      if(lvl==='authNoPriv' || lvl==='authPriv'){
+        const authPw = $('#f-snmp-v3-authpw').value;
+        if(!authPw) return {error:'인증 비밀번호를 입력하세요'};
+        if(authPw.length < 8) return {error:'인증 비밀번호는 8자 이상이어야 합니다'};
+        payload.snmpv3AuthProtocol = $('#f-snmp-v3-authproto').value;
+        payload.snmpv3AuthPassword = authPw;
+      }
+      if(lvl==='authPriv'){
+        const privPw = $('#f-snmp-v3-privpw').value;
+        if(!privPw) return {error:'개인정보 보호 비밀번호를 입력하세요'};
+        if(privPw.length < 8) return {error:'개인정보 보호 비밀번호는 8자 이상이어야 합니다'};
+        payload.snmpv3PrivProtocol = $('#f-snmp-v3-privproto').value;
+        payload.snmpv3PrivPassword = privPw;
+      }
+    } else {
+      payload.community = $('#f-snmp-community').value.trim() || 'public';
+    }
+    return payload;
+  }
+  $('#snmp-test-btn').addEventListener('click', async ()=>{
+    const resultEl = $('#snmp-test-result');
+    const btn = $('#snmp-test-btn');
+    const payload = buildSnmpTestPayload();
+    if(payload.error){ resultEl.textContent = payload.error; resultEl.style.color = 'var(--crit)'; return; }
+    btn.disabled = true; btn.textContent = '테스트 중...';
+    resultEl.textContent = '응답 대기 중...'; resultEl.style.color = 'var(--text-faint)';
+    try{
+      const r = await apiFetch('/api/devices/test-snmp', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      const j = await r.json();
+      if(!r.ok || j.ok === false){
+        resultEl.textContent = j.error || '테스트에 실패했습니다';
+        resultEl.style.color = 'var(--crit)';
+        snmpTestPassed = false;
+      } else {
+        resultEl.textContent = '✓ ' + (j.message || '연결에 성공했습니다');
+        resultEl.style.color = 'var(--good)';
+        snmpTestPassed = true;
+      }
+    }catch(err){
+      resultEl.textContent = err.message || '테스트 중 오류가 발생했습니다';
+      resultEl.style.color = 'var(--crit)';
+      snmpTestPassed = false;
+    }finally{
+      btn.disabled = false; btn.textContent = '연결 테스트';
+      updateSnmpSubmitGate();
+    }
+  });
   updateFormVisibility();
+  markSnmpUntested();
 
   $('#scan-start-btn').addEventListener('click', async ()=>{
     const range = $('#scan-range').value.trim();
@@ -2289,6 +2419,7 @@ function renderRegisterSkeleton(){
     $('#f-snmp-community').placeholder = 'public';
     $('#reg-form').reset();
     updateFormVisibility();
+    markSnmpUntested();
     $('#reg-form-card').classList.remove('modal-mode');
     $('#reg-edit-overlay').classList.remove('show');
     // Also the reset target for simply leaving the 등록 screen after a
@@ -2326,7 +2457,20 @@ function renderRegisterSkeleton(){
       $('#f-snmp-community').placeholder = '변경하려면 입력 (비워두면 기존 값 유지)';
       $('#f-snmp-version').value = entity.snmpVersion || 'v2c';
       $('#f-snmp-port').value = entity.snmpPort || 161;
+      // v3 username/protocols/passwords are credentials -- like the community
+      // string above, they're never sent back to the client to prefill, so
+      // every v3 field starts blank here. Unlike community there's no
+      // sensible non-secret default to fall back to if left blank, so the
+      // security level defaults to the most-common case (authPriv) rather
+      // than implying "no auth" just because nothing was typed.
+      $('#f-snmp-v3-username').value = '';
+      $('#f-snmp-v3-username').placeholder = '변경하려면 입력 (비워두면 기존 값 유지)';
+      $('#f-snmp-v3-seclevel').value = 'authPriv';
+      $('#f-snmp-v3-authpw').value = '';
+      $('#f-snmp-v3-privpw').value = '';
     }
+    updateSnmpFieldVisibility();
+    markSnmpUntested();
     $('#agent-command-box').style.display = 'none';
     $('#reg-form-card').classList.add('modal-mode');
     $('#reg-edit-overlay').classList.add('show');
@@ -2349,13 +2493,45 @@ function renderRegisterSkeleton(){
     else if(regCategory==='net'){ fields.type=$('#f-nettype').value; fields.role=$('#f-role-net').value.trim(); }
     else if(regCategory==='fac'){ fields.type=$('#f-factype').value; fields.role=$('#f-role-fac').value.trim(); }
     if(effMode==='snmp'){
-      const communityInput = $('#f-snmp-community').value.trim();
-      // Editing: blank means "keep the existing secret" (it's never sent
-      // back to the client to prefill, so blank is the only way to say
-      // that). Adding: blank falls back to the common SNMP default.
-      if(communityInput || !editingDeviceId) fields.community = communityInput || 'public';
-      fields.snmpVersion = $('#f-snmp-version').value;
+      if(!editingDeviceId && !snmpTestPassed){
+        errEl.textContent = 'SNMP 연결 테스트를 먼저 통과해야 등록할 수 있습니다';
+        return;
+      }
+      const snmpVersion = $('#f-snmp-version').value;
+      fields.snmpVersion = snmpVersion;
       fields.snmpPort = parseInt($('#f-snmp-port').value)||161;
+      if(snmpVersion === 'v3'){
+        const usernameInput = $('#f-snmp-v3-username').value.trim();
+        if(!editingDeviceId && !usernameInput){ errEl.textContent = 'SNMPv3 사용자명을 입력하세요'; return; }
+        // Editing: blank means "keep the existing secret" (it's never sent
+        // back to the client to prefill, so blank is the only way to say
+        // that) -- same pattern the community string already used below.
+        if(usernameInput || !editingDeviceId) fields.snmpv3Username = usernameInput;
+        const lvl = $('#f-snmp-v3-seclevel').value;
+        if(lvl==='authNoPriv' || lvl==='authPriv'){
+          const authPwInput = $('#f-snmp-v3-authpw').value;
+          if(authPwInput || !editingDeviceId){
+            if(!authPwInput){ errEl.textContent = '인증 비밀번호를 입력하세요'; return; }
+            if(authPwInput.length < 8){ errEl.textContent = '인증 비밀번호는 8자 이상이어야 합니다'; return; }
+            fields.snmpv3AuthProtocol = $('#f-snmp-v3-authproto').value;
+            fields.snmpv3AuthPassword = authPwInput;
+          }
+        }
+        if(lvl==='authPriv'){
+          const privPwInput = $('#f-snmp-v3-privpw').value;
+          if(privPwInput || !editingDeviceId){
+            if(!privPwInput){ errEl.textContent = '개인정보 보호 비밀번호를 입력하세요'; return; }
+            if(privPwInput.length < 8){ errEl.textContent = '개인정보 보호 비밀번호는 8자 이상이어야 합니다'; return; }
+            fields.snmpv3PrivProtocol = $('#f-snmp-v3-privproto').value;
+            fields.snmpv3PrivPassword = privPwInput;
+          }
+        }
+      } else {
+        const communityInput = $('#f-snmp-community').value.trim();
+        // Adding: blank falls back to the common SNMP default (v3 has no
+        // equivalent insecure default, which is why it's required above).
+        if(communityInput || !editingDeviceId) fields.community = communityInput || 'public';
+      }
     }
 
     // Prevents an impatient/accidental double-click on 장비 등록 from firing
@@ -2382,6 +2558,7 @@ function renderRegisterSkeleton(){
           e.target.reset();
           $('#agent-command-box').style.display = 'none';
           updateFormVisibility();
+          markSnmpUntested();
         }
       }
     }catch(err){
@@ -2389,7 +2566,11 @@ function renderRegisterSkeleton(){
       errEl.textContent = msg;
       alert(msg);
     }finally{
-      submitBtn.disabled = false;
+      // Not a blind re-enable: a freshly-submitted/reset SNMP form needs a
+      // new connection test before the NEXT registration too, so this has
+      // to go through the same gate rather than just flipping disabled back
+      // to false regardless of state.
+      updateSnmpSubmitGate();
       submitBtn.textContent = editingDeviceId ? '수정 완료' : '장비 등록';
     }
   });

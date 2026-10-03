@@ -57,6 +57,53 @@ def is_valid_email(s):
     return bool(_EMAIL_RE.match(s or ''))
 
 
+_SNMPV3_AUTH_PROTOCOLS = {'MD5', 'SHA'}
+_SNMPV3_PRIV_PROTOCOLS = {'DES', 'AES'}
+
+
+def validate_snmpv3_params(username, auth_protocol, auth_password, priv_protocol, priv_password,
+                            require_username=True, partial=False):
+    """Pure validation of an SNMPv3 USM credential set -- shared by the
+    device-registration/update endpoints and the standalone connection-test
+    endpoint so the same rules apply everywhere a user can submit these
+    fields. Returns a Korean error message, or None if the combination is
+    valid. require_username is False for device *updates*, where a blank
+    username legitimately means "keep the existing one" (it's never sent
+    back to the client to prefill) rather than "no username".
+
+    partial=True relaxes the cross-field dependency checks (priv needs auth,
+    a password needs its protocol): a device *update* can legitimately submit
+    just one changed field (e.g. only a new priv password) while an already-
+    stored auth protocol/password from registration time stays in place --
+    this function has no DB access, so it cannot tell "missing" apart from
+    "unchanged, already set". Registration and the connection-test endpoint
+    always submit the full set in one shot, so they keep partial=False.
+    """
+    username = (username or '').strip()
+    if require_username and not username:
+        return 'SNMPv3 사용자명을 입력해주세요'
+    if len(username) > 64:
+        return 'SNMPv3 사용자명은 64자 이하여야 합니다'
+    if auth_protocol and auth_protocol not in _SNMPV3_AUTH_PROTOCOLS:
+        return f'인증 프로토콜은 {", ".join(sorted(_SNMPV3_AUTH_PROTOCOLS))} 중 하나여야 합니다'
+    if priv_protocol and priv_protocol not in _SNMPV3_PRIV_PROTOCOLS:
+        return f'개인정보 보호 프로토콜은 {", ".join(sorted(_SNMPV3_PRIV_PROTOCOLS))} 중 하나여야 합니다'
+    # USM's own minimum (RFC 3414) -- pysnmp raises an opaque error below this
+    # length, so this is just surfacing that same floor with a clear message.
+    if auth_password and not (8 <= len(auth_password) <= 200):
+        return '인증 비밀번호는 8~200자 사이여야 합니다 (SNMPv3 USM 규격)'
+    if priv_password and not (8 <= len(priv_password) <= 200):
+        return '개인정보 보호 비밀번호는 8~200자 사이여야 합니다 (SNMPv3 USM 규격)'
+    if not partial:
+        if priv_password and not auth_password:
+            return '개인정보 보호(Priv) 비밀번호를 사용하려면 인증(Auth) 비밀번호도 함께 설정해야 합니다'
+        if auth_password and not auth_protocol:
+            return '인증 비밀번호를 사용하려면 인증 프로토콜을 선택해주세요'
+        if priv_password and not priv_protocol:
+            return '개인정보 보호 비밀번호를 사용하려면 개인정보 보호 프로토콜을 선택해주세요'
+    return None
+
+
 def clamp_int(v, lo, hi, default=None):
     try:
         n = int(v)

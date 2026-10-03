@@ -92,6 +92,23 @@ def check_reachable(ip, auth_data, port, timeout=1.5):
         return False
 
 
+def test_connection(ip, version, community, port, v3_username=None, v3_auth_protocol=None,
+                     v3_auth_password=None, v3_priv_protocol=None, v3_priv_password=None,
+                     attempts=3, needed=2, timeout=1.5):
+    """Majority-vote reachability probe (a single flaky reply isn't enough
+    evidence either way) shared by two callers: the registration/update
+    endpoints, which gate persistence on it, and the standalone
+    /api/devices/test-snmp endpoint, which lets the registration UI show a
+    pass/fail result before the user commits to registering. Returns
+    (ok, successes, attempts) -- the counts are surfaced in the UI/error
+    message, not just a bare bool, so "1 of 3 answered" reads differently
+    from "0 of 3"."""
+    auth_data = build_auth_data_raw(version, community, v3_username, v3_auth_protocol,
+                                     v3_auth_password, v3_priv_protocol, v3_priv_password)
+    successes = sum(1 for _ in range(attempts) if check_reachable(ip, auth_data, port, timeout=timeout))
+    return successes >= needed, successes, attempts
+
+
 async def _snmp_get(engine, ip, auth_data, port, oids, timeout=1.5):
     target = await UdpTransportTarget.create((ip, int(port)), timeout=timeout, retries=0)
     var_binds = [ObjectType(ObjectIdentity(oid)) for oid in oids]
