@@ -171,15 +171,22 @@ Write-Step '[7/8] 로그온 시 자동 시작 등록'
 # ----------------------------------------------------------- [8] 방화벽 --
 Write-Step '[8/8] 방화벽 인바운드 규칙'
 $rules = @(
-    @{ Name = 'InfraSight HTTPS (Caddy)'; Port = 8443 },
-    @{ Name = 'InfraSight HTTP (agents)';  Port = 5057 }
+    @{ Name = 'InfraSight HTTPS (Caddy)'; Port = 8443; Protocol = 'TCP' },
+    @{ Name = 'InfraSight HTTP (agents)';  Port = 5057; Protocol = 'TCP' },
+    # 4-3: NetFlow/sFlow are push-based -- a device exports to these UDP
+    # ports on its own, so without an inbound allow rule here its export
+    # traffic just gets silently dropped before it ever reaches
+    # collector/flow_listener.py, regardless of how correctly the device
+    # itself is configured.
+    @{ Name = 'InfraSight NetFlow (UDP)'; Port = 2055; Protocol = 'UDP' },
+    @{ Name = 'InfraSight sFlow (UDP)';   Port = 6343; Protocol = 'UDP' }
 )
 foreach ($r in $rules) {
     try {
         if (-not (Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -DisplayName $r.Name -Direction Inbound -Protocol TCP -LocalPort $r.Port -Action Allow | Out-Null
+            New-NetFirewallRule -DisplayName $r.Name -Direction Inbound -Protocol $r.Protocol -LocalPort $r.Port -Action Allow | Out-Null
         }
-        Write-Ok "방화벽 규칙 확인/추가됨: $($r.Name) (포트 $($r.Port))"
+        Write-Ok "방화벽 규칙 확인/추가됨: $($r.Name) (포트 $($r.Port)/$($r.Protocol))"
     } catch {
         Write-Warn2 "방화벽 규칙 추가 실패 ($($r.Name)): $_"
     }

@@ -18,6 +18,7 @@ from apscheduler.jobstores.base import JobLookupError
 import storage
 from collector import state, health, metrics
 from collector import local_collector, ping_collector, snmp_collector, agent_collector
+from collector import flow_listener
 
 def _compute_max_workers():
     """Code review pass, finding #4: this was a flat, hardcoded 10
@@ -145,6 +146,7 @@ def _run_retention_job():
     try:
         storage.run_metrics_retention()
         storage.run_incident_retention()
+        storage.run_flow_retention()
         health.record_tick_success()
     except Exception as e:
         health.record_tick_error(f"retention: {e}")
@@ -172,6 +174,10 @@ def start():
     # hours. Times are staggered so the backup doesn't run mid-aggregation.
     _scheduler.add_job(_run_retention_job, 'cron', hour=3, minute=10, id='metrics_retention', replace_existing=True)
     _scheduler.add_job(_run_backup_job, 'cron', hour=3, minute=0, id='db_backup', replace_existing=True)
+    # 4-3: flush flow_listener's in-memory NetFlow/sFlow aggregates to
+    # storage once a minute -- this scheduler's thread pool, not a new one,
+    # same reasoning as every other periodic job here.
+    _scheduler.add_job(flow_listener.flush, 'interval', seconds=60, id='flow_flush', replace_existing=True)
 
 
 def shutdown():

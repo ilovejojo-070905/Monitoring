@@ -29,6 +29,7 @@ from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
 from collector import snmp_collector
 from collector import discovery
+from collector import flow_listener
 
 BASE_DIR = storage.BASE_DIR
 PORT = storage.PORT
@@ -807,6 +808,62 @@ def api_topology_links():
     return jsonify({'links': storage.load_device_links()})
 
 
+# ------------------------------------------------------------------- 4-3 --
+# NetFlow/sFlow traffic analysis. Read-only (VIEWER, like /api/state) --
+# nothing here writes anything; collector/flow_listener.py's UDP threads and
+# the 60s flush job in collector/scheduler.py are what populate the data
+# these endpoints read.
+_FLOW_RANGE_MS = {'1h': 3600_000, '6h': 6 * 3600_000, '24h': 24 * 3600_000, '7d': 7 * 24 * 3600_000}
+# Coarser buckets for a longer range -- a 7-day chart at 1-minute resolution
+# would be 10k points for no visual benefit over hourly.
+_FLOW_RANGE_BUCKET_MS = {'1h': 60_000, '6h': 5 * 60_000, '24h': 15 * 60_000, '7d': 60 * 60_000}
+
+
+def _flow_range_params():
+    range_key = request.args.get('range') or '1h'
+    if range_key not in _FLOW_RANGE_MS:
+        range_key = '1h'
+    since_ms = int(time.time() * 1000) - _FLOW_RANGE_MS[range_key]
+    device_id = (request.args.get('deviceId') or '').strip() or None
+    return since_ms, device_id, _FLOW_RANGE_BUCKET_MS[range_key]
+
+
+@app.get('/api/flow/status')
+@require_role('VIEWER')
+def api_flow_status():
+    return jsonify({'exporters': storage.load_flow_status(),
+                     'netflowPort': storage.NETFLOW_PORT, 'sflowPort': storage.SFLOW_PORT})
+
+
+@app.get('/api/flow/summary')
+@require_role('VIEWER')
+def api_flow_summary():
+    since_ms, device_id, _ = _flow_range_params()
+    return jsonify(storage.load_flow_summary(device_id, since_ms))
+
+
+@app.get('/api/flow/timeseries')
+@require_role('VIEWER')
+def api_flow_timeseries():
+    since_ms, device_id, bucket_ms = _flow_range_params()
+    return jsonify({'points': storage.load_flow_timeseries(device_id, since_ms, bucket_ms)})
+
+
+@app.get('/api/flow/protocols')
+@require_role('VIEWER')
+def api_flow_protocols():
+    since_ms, device_id, _ = _flow_range_params()
+    return jsonify({'protocols': storage.load_flow_protocols(device_id, since_ms)})
+
+
+@app.get('/api/flow/top-talkers')
+@require_role('VIEWER')
+def api_flow_top_talkers():
+    since_ms, device_id, _ = _flow_range_params()
+    limit = validation.clamp_int(request.args.get('limit'), 1, 50, default=10)
+    return jsonify({'pairs': storage.load_flow_top_pairs(device_id, since_ms, limit)})
+
+
 @app.get('/api/settings/smtp')
 @require_role('ADMIN')
 def api_get_smtp_settings():
@@ -975,6 +1032,7 @@ def main():
     # after its own setup wizard, instead of duplicating backend startup.
     storage.init_db()
     scheduler.start()
+    flow_listener.start()
     conn = storage.get_db()
     has_admin = conn.execute('SELECT 1 FROM users LIMIT 1').fetchone() is not None
     conn.close()

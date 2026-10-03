@@ -29,6 +29,12 @@ DB_PATH = os.path.join(BASE_DIR, 'infrasight.db')
 # isolated instance run side by side with the real one for testing, without
 # needing a code change each time.
 PORT = int(os.environ.get('INFRASIGHT_PORT', '5057'))
+# 4-3: NetFlow/sFlow are push-based (the device sends to us), not polled --
+# these are the UDP ports collector/flow_listener.py binds and listens on,
+# the IANA-registered defaults for each. Overridable for the same reason
+# PORT is (a second isolated instance for testing).
+NETFLOW_PORT = int(os.environ.get('INFRASIGHT_NETFLOW_PORT', '2055'))
+SFLOW_PORT = int(os.environ.get('INFRASIGHT_SFLOW_PORT', '6343'))
 LOCAL_ID = 'local-pc'
 IS_WINDOWS = os.name == 'nt'
 
@@ -244,6 +250,53 @@ def init_db():
         max_value REAL NOT NULL,
         sample_count INTEGER NOT NULL,
         PRIMARY KEY (device_id, metric, bucket_ts)
+    )''')
+    # 4-3: NetFlow/sFlow flow records, pre-aggregated into 1-minute buckets.
+    # Unlike metrics_raw above, there is deliberately no raw per-flow table --
+    # flow volume scales with actual network traffic (not a fixed poll rate),
+    # so collector/flow_listener.py accumulates incoming records in memory
+    # and flushes already-aggregated rows here once a minute. device_id is
+    # the registered device whose IP matches the flow's exporter, or
+    # 'unknown:<ip>' when no device is registered at that IP yet -- which is
+    # itself useful (it's how you discover an exporter that hasn't been
+    # registered).
+    conn.execute('''CREATE TABLE IF NOT EXISTS flow_bandwidth_1m(
+        device_id TEXT NOT NULL,
+        bucket_ts INTEGER NOT NULL,
+        bytes_total INTEGER NOT NULL,
+        packets_total INTEGER NOT NULL,
+        PRIMARY KEY (device_id, bucket_ts)
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS flow_protocol_1m(
+        device_id TEXT NOT NULL,
+        bucket_ts INTEGER NOT NULL,
+        protocol TEXT NOT NULL,
+        bytes_total INTEGER NOT NULL,
+        packets_total INTEGER NOT NULL,
+        PRIMARY KEY (device_id, bucket_ts, protocol)
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS flow_top_pairs_1m(
+        device_id TEXT NOT NULL,
+        bucket_ts INTEGER NOT NULL,
+        src_ip TEXT NOT NULL,
+        dst_ip TEXT NOT NULL,
+        bytes_total INTEGER NOT NULL,
+        packets_total INTEGER NOT NULL,
+        PRIMARY KEY (device_id, bucket_ts, src_ip, dst_ip)
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_flow_bandwidth_1m ON flow_bandwidth_1m(bucket_ts)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_flow_protocol_1m ON flow_protocol_1m(bucket_ts)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_flow_top_pairs_1m ON flow_top_pairs_1m(bucket_ts)')
+    # 4-3: which exporters we've actually heard from -- the runtime answer to
+    # "장비 지원 여부 확인" (does this device actually support NetFlow/sFlow
+    # and is it configured to send here), independent of whether it's a
+    # registered InfraSight device.
+    conn.execute('''CREATE TABLE IF NOT EXISTS flow_exporters(
+        exporter_ip TEXT PRIMARY KEY,
+        protocol TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        record_count INTEGER NOT NULL DEFAULT 0
     )''')
     conn.commit()
     conn.close()
@@ -830,6 +883,178 @@ def _aggregate_into(conn, table, bucket_ms):
             avg_value=excluded.avg_value, min_value=excluded.min_value,
             max_value=excluded.max_value, sample_count=excluded.sample_count
     ''')
+
+
+# 4-3: NetFlow/sFlow flow buckets. 14 days at 1-minute resolution is enough
+# for the "기간별 트래픽 그래프" range options (1h/6h/24h/7d) without the
+# unbounded growth a raw per-flow table would risk under real traffic.
+FLOW_RETENTION_MS = 14 * 24 * 3600 * 1000
+FLOW_BUCKET_MS = 60 * 1000
+
+
+def record_flow_bandwidth(rows):
+    """rows: iterable of (device_id, bucket_ts, bytes_total, packets_total).
+    Each bucket is flushed exactly once by collector/flow_listener.py (its
+    in-memory buffer for a minute is cleared right after flushing it), so a
+    plain overwrite-on-conflict is correct here -- this isn't meant to
+    accumulate across repeated calls for the same bucket, unlike the
+    exporter upsert below."""
+    if not rows:
+        return
+    conn = get_db()
+    conn.executemany('''
+        INSERT INTO flow_bandwidth_1m(device_id, bucket_ts, bytes_total, packets_total)
+        VALUES (?,?,?,?)
+        ON CONFLICT(device_id, bucket_ts) DO UPDATE SET
+            bytes_total=excluded.bytes_total, packets_total=excluded.packets_total
+    ''', rows)
+    conn.commit()
+    conn.close()
+
+
+def record_flow_protocols(rows):
+    """rows: iterable of (device_id, bucket_ts, protocol, bytes_total, packets_total)."""
+    if not rows:
+        return
+    conn = get_db()
+    conn.executemany('''
+        INSERT INTO flow_protocol_1m(device_id, bucket_ts, protocol, bytes_total, packets_total)
+        VALUES (?,?,?,?,?)
+        ON CONFLICT(device_id, bucket_ts, protocol) DO UPDATE SET
+            bytes_total=excluded.bytes_total, packets_total=excluded.packets_total
+    ''', rows)
+    conn.commit()
+    conn.close()
+
+
+def record_flow_top_pairs(rows):
+    """rows: iterable of (device_id, bucket_ts, src_ip, dst_ip, bytes_total, packets_total)."""
+    if not rows:
+        return
+    conn = get_db()
+    conn.executemany('''
+        INSERT INTO flow_top_pairs_1m(device_id, bucket_ts, src_ip, dst_ip, bytes_total, packets_total)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(device_id, bucket_ts, src_ip, dst_ip) DO UPDATE SET
+            bytes_total=excluded.bytes_total, packets_total=excluded.packets_total
+    ''', rows)
+    conn.commit()
+    conn.close()
+
+
+def record_flow_exporters(rows):
+    """rows: iterable of (exporter_ip, protocol, last_seen_at, record_count).
+    Batched once per flush cycle (not once per packet) by flow_listener.py --
+    record_count accumulates (an exporter sends many packets over time);
+    first_seen_at is set only on the row's first-ever insert, never touched
+    again."""
+    if not rows:
+        return
+    conn = get_db()
+    conn.executemany('''
+        INSERT INTO flow_exporters(exporter_ip, protocol, first_seen_at, last_seen_at, record_count)
+        VALUES (?,?,?,?,?)
+        ON CONFLICT(exporter_ip) DO UPDATE SET
+            protocol=excluded.protocol, last_seen_at=excluded.last_seen_at,
+            record_count=record_count+excluded.record_count
+    ''', [(ip, proto, last_seen, last_seen, cnt) for ip, proto, last_seen, cnt in rows])
+    conn.commit()
+    conn.close()
+
+
+def run_flow_retention():
+    """Purges flow_*_1m rows (and exporters not heard from in a while) past
+    FLOW_RETENTION_MS. Called from the same daily cron as
+    run_metrics_retention() -- no separate schedule needed."""
+    now = int(time.time() * 1000)
+    cutoff = now - FLOW_RETENTION_MS
+    conn = get_db()
+    try:
+        conn.execute('DELETE FROM flow_bandwidth_1m WHERE bucket_ts < ?', (cutoff,))
+        conn.execute('DELETE FROM flow_protocol_1m WHERE bucket_ts < ?', (cutoff,))
+        conn.execute('DELETE FROM flow_top_pairs_1m WHERE bucket_ts < ?', (cutoff,))
+        conn.execute('DELETE FROM flow_exporters WHERE last_seen_at < ?', (cutoff,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_flow_status():
+    """Every exporter ever heard from, each annotated with whichever
+    registered device (any category) has a matching IP -- the runtime
+    answer to "which of my devices actually support/are configured for
+    NetFlow/sFlow", independent of whether it's even a registered device."""
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM flow_exporters ORDER BY last_seen_at DESC').fetchall()
+    conn.close()
+    devices_by_ip = {d['ip']: d for d in load_devices() if d.get('ip')}
+    out = []
+    for r in rows:
+        d = devices_by_ip.get(r['exporter_ip'])
+        out.append({
+            'exporterIp': r['exporter_ip'], 'protocol': r['protocol'],
+            'firstSeenAt': r['first_seen_at'], 'lastSeenAt': r['last_seen_at'],
+            'recordCount': r['record_count'],
+            'deviceId': d['id'] if d else None, 'deviceName': d['name'] if d else None,
+        })
+    return out
+
+
+def load_flow_summary(device_id, since_ms):
+    conn = get_db()
+    q = 'SELECT COALESCE(SUM(bytes_total),0) b, COALESCE(SUM(packets_total),0) p FROM flow_bandwidth_1m WHERE bucket_ts >= ?'
+    params = [since_ms]
+    if device_id:
+        q += ' AND device_id=?'
+        params.append(device_id)
+    row = conn.execute(q, params).fetchone()
+    conn.close()
+    return {'bytesTotal': row['b'], 'packetsTotal': row['p']}
+
+
+def load_flow_timeseries(device_id, since_ms, bucket_ms=FLOW_BUCKET_MS):
+    """bucket_ms lets the caller pick a coarser resolution for a longer
+    range (e.g. hourly buckets over 7 days) so the chart isn't handed
+    thousands of 1-minute points."""
+    conn = get_db()
+    q = f'''SELECT (bucket_ts/{bucket_ms})*{bucket_ms} AS b, SUM(bytes_total) bytes, SUM(packets_total) packets
+            FROM flow_bandwidth_1m WHERE bucket_ts >= ?'''
+    params = [since_ms]
+    if device_id:
+        q += ' AND device_id=?'
+        params.append(device_id)
+    q += ' GROUP BY b ORDER BY b'
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [{'ts': r['b'], 'bytes': r['bytes'], 'packets': r['packets']} for r in rows]
+
+
+def load_flow_protocols(device_id, since_ms):
+    conn = get_db()
+    q = 'SELECT protocol, SUM(bytes_total) bytes, SUM(packets_total) packets FROM flow_protocol_1m WHERE bucket_ts >= ?'
+    params = [since_ms]
+    if device_id:
+        q += ' AND device_id=?'
+        params.append(device_id)
+    q += ' GROUP BY protocol ORDER BY bytes DESC'
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [{'protocol': r['protocol'], 'bytes': r['bytes'], 'packets': r['packets']} for r in rows]
+
+
+def load_flow_top_pairs(device_id, since_ms, limit=10):
+    conn = get_db()
+    q = '''SELECT src_ip, dst_ip, SUM(bytes_total) bytes, SUM(packets_total) packets
+           FROM flow_top_pairs_1m WHERE bucket_ts >= ?'''
+    params = [since_ms]
+    if device_id:
+        q += ' AND device_id=?'
+        params.append(device_id)
+    q += ' GROUP BY src_ip, dst_ip ORDER BY bytes DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [{'srcIp': r['src_ip'], 'dstIp': r['dst_ip'], 'bytes': r['bytes'], 'packets': r['packets']} for r in rows]
 
 
 def run_metrics_retention():

@@ -503,6 +503,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="3" y="10" width="18" height="5" rx="1.5"/><path d="M7 15v3M17 15v3M7 10V6h10v4"/></svg>
       네트워크 (NMS) <span class="count" id="nav-count-net">-</span>
     </button>
+    <button class="nav-item" data-view="flowanalysis">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+      트래픽 분석 (Flow)
+    </button>
     <button class="nav-item" data-view="facility">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M6 3v18M18 3v18M6 8h4M14 16h4M6 8a2 2 0 0 1 2-2M18 16a2 2 0 0 1-2 2"/></svg>
       전산실 설비 (FMS) <span class="count" id="nav-count-fac">-</span>
@@ -573,6 +577,9 @@
 
     <!-- ============ NETWORK ============ -->
     <section class="view" data-view="network" id="view-network"></section>
+
+    <!-- ============ FLOW ANALYSIS (NetFlow/sFlow, 4-3) ============ -->
+    <section class="view" data-view="flowanalysis" id="view-flowanalysis"></section>
 
     <!-- ============ FACILITY ============ -->
     <section class="view" data-view="facility" id="view-facility"></section>
@@ -1983,6 +1990,145 @@ function renderNetwork(){
   }
 }
 
+/* ================= FLOW ANALYSIS (NetFlow/sFlow, 4-3) =================
+   Push-based, unlike every other view in this file: SNMP/Ping/Agent all
+   poll a device on a schedule, but a flow exporter sends data to us on its
+   own schedule (collector/flow_listener.py's UDP listeners), so this view's
+   first job is just answering "is anything actually sending us flows yet".
+   No local device in this environment supports NetFlow/sFlow (see the 4-3
+   plan notes), so #flow-status-card's empty state is the realistic default
+   until real hardware is pointed at this collector. */
+let flowRange = '1h';
+let flowDeviceFilter = '';
+function fmtBytes(n){
+  n = n || 0;
+  const units = ['B','KB','MB','GB','TB'];
+  let i = 0;
+  while(n >= 1024 && i < units.length-1){ n /= 1024; i++; }
+  return (i===0 ? fmt0(n) : fmt1(n)) + ' ' + units[i];
+}
+function renderFlowSkeleton(){
+  const el = $('#view-flowanalysis');
+  el.innerHTML = `
+    <div class="card" id="flow-status-card">
+      <div class="card-head"><h3>수신 현황</h3><span class="sub">NetFlow(UDP) · sFlow(UDP) exporter</span></div>
+      <div id="flow-status-body" class="empty-note">불러오는 중...</div>
+    </div>
+    <div class="card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>트래픽 분석</h3><span class="sub">흐름(flow) 기반 집계 · 방향(송/수신) 구분 없이 전체 트래픽량 기준</span></div>
+        <div class="chip-row" id="flow-range-chips">
+          <button class="chip-btn active" data-range="1h">1시간</button>
+          <button class="chip-btn" data-range="6h">6시간</button>
+          <button class="chip-btn" data-range="24h">24시간</button>
+          <button class="chip-btn" data-range="7d">7일</button>
+        </div>
+        <select id="flow-device-filter" style="margin-left:auto"><option value="">전체 장비</option></select>
+      </div>
+    </div>
+    <div class="grid grid-3">
+      <div class="card grid-span2">
+        <div class="card-head"><h3>대역폭 사용량</h3><span class="sub" id="flow-summary-sub">-</span></div>
+        <div style="height:200px"><canvas id="flow-bandwidth-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>프로토콜별 분석</h3></div>
+        <div style="display:flex;align-items:center;gap:14px">
+          <div style="position:relative;width:92px;height:92px;flex:none">
+            <canvas id="flow-protocol-chart"></canvas>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px;flex:1;min-width:0" id="flow-protocol-legend"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>상위 트래픽 출발지 / 목적지</h3><span class="sub">bytes 기준 상위 10개 (sFlow 수치는 샘플링 비율로 보정된 추정치)</span></div>
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>출발지 IP</th><th>목적지 IP</th><th>트래픽</th><th>패킷</th></tr></thead>
+        <tbody id="flow-talkers-tbody"></tbody>
+      </table></div>
+    </div>
+  `;
+  $$('#flow-range-chips .chip-btn').forEach(b=> b.addEventListener('click', ()=>{
+    $$('#flow-range-chips .chip-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active');
+    flowRange = b.dataset.range; renderFlow();
+  }));
+  $('#flow-device-filter').addEventListener('change', ()=>{
+    flowDeviceFilter = $('#flow-device-filter').value; renderFlow();
+  });
+}
+async function renderFlow(){
+  const deviceList = [...SERVERS, ...DBS, ...NETS, ...FACS];
+  const filterEl = $('#flow-device-filter');
+  if(filterEl && filterEl.options.length <= 1){
+    filterEl.innerHTML = '<option value="">전체 장비</option>' +
+      deviceList.map(d=>`<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+  }
+  const qs = `range=${flowRange}` + (flowDeviceFilter ? `&deviceId=${encodeURIComponent(flowDeviceFilter)}` : '');
+  let status, summary, timeseries, protocols, talkers;
+  try{
+    [status, summary, timeseries, protocols, talkers] = await Promise.all([
+      apiFetch('/api/flow/status').then(r=>r.json()),
+      apiFetch(`/api/flow/summary?${qs}`).then(r=>r.json()),
+      apiFetch(`/api/flow/timeseries?${qs}`).then(r=>r.json()),
+      apiFetch(`/api/flow/protocols?${qs}`).then(r=>r.json()),
+      apiFetch(`/api/flow/top-talkers?${qs}`).then(r=>r.json()),
+    ]);
+  }catch(err){
+    $('#flow-status-body').innerHTML = `<div class="empty-note">불러오기 실패: ${escapeHtml(err.message||'')}</div>`;
+    return;
+  }
+
+  const statusBody = $('#flow-status-body');
+  if(!status.exporters || !status.exporters.length){
+    statusBody.innerHTML = `<div class="empty-note">
+      아직 NetFlow(UDP ${status.netflowPort})/sFlow(UDP ${status.sflowPort})로 트래픽을 보내는 장비가 없습니다.
+      장비에서 이 서버 IP로 flow export를 설정하면 여기에 자동으로 나타납니다.
+    </div>`;
+  } else {
+    statusBody.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+      <thead><tr><th>Exporter IP</th><th>매칭된 장비</th><th>방식</th><th>최근 수신</th><th>누적 레코드</th></tr></thead>
+      <tbody>${status.exporters.map(e=>`
+        <tr>
+          <td class="mono">${escapeHtml(e.exporterIp)}</td>
+          <td>${e.deviceName ? escapeHtml(e.deviceName) : '<span style="color:var(--text-faint)">미등록</span>'}</td>
+          <td class="mono">${e.protocol==='netflow'?'NetFlow':'sFlow'}</td>
+          <td class="mono">${timeAgo(new Date(e.lastSeenAt))}</td>
+          <td class="mono">${fmt0(e.recordCount)}</td>
+        </tr>`).join('')}</tbody>
+    </table></div>`;
+  }
+
+  $('#flow-summary-sub').textContent = `총 ${fmtBytes(summary.bytesTotal)} · 패킷 ${fmt0(summary.packetsTotal)}개 (${flowRange})`;
+  const labels = timeseries.points.map(p=> new Date(p.ts).toLocaleTimeString('ko-KR',{hour12:false,hour:'2-digit',minute:'2-digit'}));
+  const bwData = timeseries.points.map(p=> p.bytes);
+  if(charts.flow_bandwidth) destroyChart('flow_bandwidth');
+  charts.flow_bandwidth = lineChart($('#flow-bandwidth-chart'), labels, [
+    {label:'트래픽', data:bwData, color:'#3ecbff', fill:true},
+  ], {showX:true});
+
+  const protoColors = {TCP:'#7c5cff', UDP:'#00e6a8', ICMP:'#ffb020', OTHER:'#8f99b3'};
+  if(charts.flow_protocol) destroyChart('flow_protocol');
+  charts.flow_protocol = doughnutChart($('#flow-protocol-chart'),
+    protocols.protocols.map(p=>p.protocol), protocols.protocols.map(p=>p.bytes),
+    protocols.protocols.map(p=>protoColors[p.protocol]||'#8f99b3'));
+  const protoTotal = protocols.protocols.reduce((s,p)=>s+p.bytes,0);
+  $('#flow-protocol-legend').innerHTML = protocols.protocols.length ? protocols.protocols.map(p=>`
+    <div style="display:flex;align-items:center;gap:7px">
+      <span style="width:8px;height:8px;border-radius:50%;background:${protoColors[p.protocol]||'#8f99b3'};flex:none"></span>
+      <span style="color:var(--text-dim);font-size:11px;flex:1">${escapeHtml(p.protocol)}</span>
+      <span class="mono" style="font-size:10.5px;color:var(--text-faint)">${protoTotal? fmt0(p.bytes/protoTotal*100):0}%</span>
+    </div>`).join('') : `<div class="empty-note" style="padding:8px">데이터 없음</div>`;
+
+  $('#flow-talkers-tbody').innerHTML = talkers.pairs.map(p=>`
+    <tr>
+      <td class="mono">${escapeHtml(p.srcIp)}</td>
+      <td class="mono">${escapeHtml(p.dstIp)}</td>
+      <td class="mono">${fmtBytes(p.bytes)}</td>
+      <td class="mono">${fmt0(p.packets)}</td>
+    </tr>`).join('') || `<tr><td colspan="4"><div class="empty-note">해당 구간에 수집된 트래픽이 없습니다</div></td></tr>`;
+}
+
 /* ================= FACILITY ================= */
 let facFilter = 'all';
 function renderFacilitySkeleton(){
@@ -3044,6 +3190,7 @@ const VIEWS = {
   servers: {skeleton:renderServersSkeleton, render:renderServers, title:'서버 관리 (SMS)', sub:'CPU · 메모리 · 디스크 · 프로세스 모니터링'},
   database: {skeleton:renderDatabaseSkeleton, render:renderDatabase, title:'데이터베이스 관리 (DBMS)', sub:'RDBMS / NoSQL 성능 및 세션 모니터링'},
   network: {skeleton:renderNetworkSkeleton, render:renderNetwork, title:'네트워크 관리 (NMS)', sub:'스위치 · 라우터 트래픽 및 포트 상태'},
+  flowanalysis: {skeleton:renderFlowSkeleton, render:renderFlow, title:'트래픽 분석 (NetFlow/sFlow)', sub:'흐름(flow) 기반 대역폭·상위 트래픽·프로토콜 분석'},
   facility: {skeleton:renderFacilitySkeleton, render:renderFacility, title:'전산실 설비 관리 (FMS)', sub:'UPS · 항온항습기 · 전원 설비 모니터링'},
   incidents: {skeleton:renderIncidentsSkeleton, render:renderIncidents, title:'이벤트 / 장애 관리', sub:'전체 영역 통합 이벤트 로그 및 조치 이력'},
   register: {skeleton:renderRegisterSkeleton, render:renderRegister, title:'장비 등록', sub:'신규 서버 · DB · 네트워크 · 설비 등록 및 관리'},
