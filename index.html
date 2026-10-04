@@ -634,6 +634,18 @@
     <button type="button" class="btn primary" id="groupEditOkBtn">저장</button>
   </div>
 </div>
+<div class="overlay" id="thresholdEditOverlay" style="z-index:89"></div>
+<div class="confirm-modal" id="thresholdEditModal" style="width:420px">
+  <div class="confirm-title" id="thresholdEditTitle">임계치 설정</div>
+  <div class="sub" id="thresholdEditSub" style="margin-bottom:12px"></div>
+  <div id="thresholdEditFields"></div>
+  <div id="thresholdEditError" style="color:var(--crit);font-size:12px;min-height:16px;margin:4px 0 8px"></div>
+  <div class="confirm-actions">
+    <button type="button" class="btn" id="thresholdEditClearBtn">기본값으로 초기화</button>
+    <button type="button" class="btn" id="thresholdEditCancelBtn">취소</button>
+    <button type="button" class="btn primary" id="thresholdEditOkBtn">저장</button>
+  </div>
+</div>
 <div class="overlay" id="overlay"></div>
 <div class="drawer" id="drawer">
   <div class="drawer-head">
@@ -671,6 +683,28 @@ function fmt1(n){ return (Math.round(n*10)/10).toFixed(1); }
 function fmt0(n){ return Math.round(n).toString(); }
 function pad2(n){ return n.toString().padStart(2,'0'); }
 function levelOf(pct, warnAt, critAt){ return pct>=critAt?'crit': pct>=warnAt?'warn':'good'; }
+// 2-2: the same 75/90/80/92/80/92 that used to be hardcoded at every call
+// site below -- now only the last-resort fallback for when a device's
+// server-resolved thresholds haven't loaded yet (e.g. GLOBAL_THRESHOLDS
+// fetch still in flight on first paint).
+const DEFAULT_THRESHOLDS = {
+  cpu: {warn:75, crit:90}, mem: {warn:80, crit:92}, disk: {warn:80, crit:92},
+};
+let GLOBAL_THRESHOLDS = DEFAULT_THRESHOLDS;
+async function loadGlobalThresholds(){
+  try{
+    const r = await fetch('/api/thresholds/global');
+    if(r.ok) GLOBAL_THRESHOLDS = await r.json();
+  }catch(e){}
+}
+// A single device's resolvedThresholds (device > group > global precedence,
+// computed server-side by collector/thresholds.py) is what status/incidents
+// actually evaluate against -- this is the UI equivalent, so a bar/gauge
+// never shows a color the backend wouldn't also alert on.
+function devLevelOf(dev, metric, value){
+  const t = (dev && dev.resolvedThresholds && dev.resolvedThresholds[metric]) || DEFAULT_THRESHOLDS[metric];
+  return levelOf(value, t.warn, t.crit);
+}
 function levelColor(lv){ return lv==='crit'?'var(--crit)': lv==='warn'?'var(--warn)':'var(--good)'; }
 function levelColorHex(lv){ return lv==='crit'?'#ef3b5c': lv==='warn'?'#e6960f':'#00b087'; }
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -1363,8 +1397,8 @@ function renderOverview(){
   const cpuServers = SERVERS.filter(s=>typeof s.cpu==='number');
   const avgCpu = cpuServers.length ? cpuServers.reduce((s,x)=>s+x.cpu,0)/cpuServers.length : 0;
   const avgMem = cpuServers.length ? cpuServers.reduce((s,x)=>s+x.mem,0)/cpuServers.length : 0;
-  $('#ov-g-cpu').innerHTML = gaugeHtml(avgCpu, levelOf(avgCpu,75,90), 'CPU', fmt0(avgCpu)+'%') + `<span>CPU 평균</span>`;
-  $('#ov-g-mem').innerHTML = gaugeHtml(avgMem, levelOf(avgMem,80,92), 'MEM', fmt0(avgMem)+'%') + `<span>메모리 평균</span>`;
+  $('#ov-g-cpu').innerHTML = gaugeHtml(avgCpu, levelOf(avgCpu,GLOBAL_THRESHOLDS.cpu.warn,GLOBAL_THRESHOLDS.cpu.crit), 'CPU', fmt0(avgCpu)+'%') + `<span>CPU 평균</span>`;
+  $('#ov-g-mem').innerHTML = gaugeHtml(avgMem, levelOf(avgMem,GLOBAL_THRESHOLDS.mem.warn,GLOBAL_THRESHOLDS.mem.crit), 'MEM', fmt0(avgMem)+'%') + `<span>메모리 평균</span>`;
 
   const top5 = cpuServers.slice().sort((a,b)=>b.cpu-a.cpu).slice(0,5);
   if(charts.ov_top5){
@@ -1893,9 +1927,9 @@ function renderServers(){
       <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}${groupTag(s)}${tagsHtml(s)}</td>
       <td class="mono">${s.ip||'-'}</td>
       <td>${escapeHtml(s.role||'-')}</td>
-      <td class="mono">${metricCell(s.cpu,75,90)}</td>
-      <td class="mono">${metricCell(s.mem,80,92)}</td>
-      <td class="mono">${metricCell(s.disk,80,92)}</td>
+      <td class="mono">${metricCell(s,'cpu')}</td>
+      <td class="mono">${metricCell(s,'mem')}</td>
+      <td class="mono">${metricCell(s,'disk')}</td>
       <td class="mono">${typeof s.load==='number' ? fmt1(s.load) : '—'}</td>
       <td class="mono">${typeof s.uptime==='number' ? s.uptime+'d' : '—'}</td>
     </tr>`).join('') || `<tr><td colspan="9"><div class="empty-note">검색 결과가 없습니다</div></td></tr>`;
@@ -1907,9 +1941,10 @@ function miniBar(pct, lv){
     <span style="width:38px;text-align:right;color:${levelColor(lv)}">${fmt0(pct)}%</span>
   </div>`;
 }
-function metricCell(v, warnAt, critAt){
+function metricCell(dev, metric){
+  const v = dev[metric];
   if(typeof v !== 'number') return `<span style="color:var(--text-faint)">—</span>`;
-  return miniBar(v, levelOf(v, warnAt, critAt));
+  return miniBar(v, devLevelOf(dev, metric, v));
 }
 /* ================= Phase 6: shared search/status filter ================= */
 function statusFilterRow(id, current){
@@ -2040,8 +2075,8 @@ function renderNetwork(){
       <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}${groupTag(n)}${tagsHtml(n)}</td>
       <td>${escapeHtml(n.type||'-')}</td>
       <td class="mono">${n.ip||'-'}</td>
-      <td class="mono">${metricCell(n.cpu,75,90)}</td>
-      <td class="mono">${metricCell(n.mem,80,92)}</td>
+      <td class="mono">${metricCell(n,'cpu')}</td>
+      <td class="mono">${metricCell(n,'mem')}</td>
       <td class="mono">${typeof n.trafficIn==='number' ? fmtMbps((n.trafficIn||0)+(n.trafficOut||0))+' Mbps' : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono" style="color:${n.reachable?'var(--text-dim)':'var(--crit)'}">${n.reachable? fmt0(n.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
@@ -2340,6 +2375,17 @@ function renderRegisterSkeleton(){
       <div id="grp-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
       <div id="grp-list"></div>
     </div>
+    <div class="card" id="threshold-global-card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>임계치 기본값 (전역)</h3><span class="sub">그룹·장비별 개별 설정이 없으면 이 값이 적용됩니다. 지속 시간을 넘겨 계속 초과해야 장애 이벤트가 발생합니다 (0초 = 즉시)</span></div>
+        <div style="display:flex;gap:8px;margin-left:auto">
+          <button type="button" class="btn" id="threshold-history-btn">변경 이력</button>
+          <button type="button" class="btn primary" id="threshold-global-edit-btn">수정</button>
+        </div>
+      </div>
+      <div id="threshold-global-summary" class="kv-grid"></div>
+      <div id="threshold-history-panel" style="display:none;margin-top:12px"></div>
+    </div>
     <div class="card">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>네트워크 자동 스캔</h3><span class="sub">IP 대역을 지정하면 살아있는 장비를 찾아 등록 후보로 보여줍니다</span></div>
@@ -2383,6 +2429,10 @@ function renderRegisterSkeleton(){
             <div class="field"><label>그룹 (선택)</label><input type="text" id="f-group" list="f-group-list" placeholder="예: 3층 서버실, 개발팀 PC"><datalist id="f-group-list"></datalist></div>
             <div class="field"><label>태그 (선택, 쉼표로 구분)</label><input type="text" id="f-tags" placeholder="예: 중요, 백업대상"></div>
           </div>
+          <details style="margin-top:14px">
+            <summary style="cursor:pointer;font-size:12.5px;color:var(--text-dim)">임계치 개별 설정 (선택 — 비워두면 그룹/전역 기본값 적용)</summary>
+            <div style="margin-top:10px" id="f-threshold-fields"></div>
+          </details>
 
           <div class="form-grid" data-group="server" style="margin-top:14px">
             <div class="field"><label>OS</label><select id="f-os"><option value="linux">Linux</option><option value="windows">Windows</option></select></div>
@@ -2590,6 +2640,16 @@ function renderRegisterSkeleton(){
   });
   updateFormVisibility();
   markSnmpUntested();
+  $('#f-threshold-fields').innerHTML = thresholdFieldsHtml('f-th', {});
+  $('#threshold-global-edit-btn').addEventListener('click', ()=>{
+    openThresholdEditModal({
+      scope:'global', title:'전역 기본 임계치 수정',
+      sub:'그룹·장비별 개별 설정이 없는 모든 장비에 적용되는 기본값입니다.',
+      current: GLOBAL_THRESHOLDS, putUrl: '/api/thresholds/global',
+      onSaved: renderGlobalThresholdsSummary,
+    });
+  });
+  $('#threshold-history-btn').addEventListener('click', wireThresholdHistoryPanel);
 
   function scanResultsTableHtml(results){
     if(!results.length) return `<div class="empty-note">응답하는 장비를 찾지 못했습니다.</div>`;
@@ -2739,6 +2799,7 @@ function renderRegisterSkeleton(){
     $('#reg-submit-btn').textContent = '장비 등록';
     $('#f-snmp-community').placeholder = 'public';
     $('#reg-form').reset();
+    $('#f-threshold-fields').innerHTML = thresholdFieldsHtml('f-th', {});
     updateFormVisibility();
     markSnmpUntested();
     $('#reg-form-card').classList.remove('modal-mode');
@@ -2770,6 +2831,7 @@ function renderRegisterSkeleton(){
     $('#f-ip').value = entity.ip || '';
     $('#f-group').value = entity.group || '';
     $('#f-tags').value = (entity.tags || []).join(', ');
+    $('#f-threshold-fields').innerHTML = thresholdFieldsHtml('f-th', entity.thresholds || {});
     if(cat==='server'){ $('#f-os').value = entity.os||'linux'; $('#f-role-server').value = entity.role||''; }
     else if(cat==='db'){ $('#f-engine').value = entity.engine||'Oracle'; $('#f-role-db').value = entity.role||''; }
     else if(cat==='net'){ $('#f-nettype').value = entity.type||'공유기'; $('#f-role-net').value = entity.role||''; }
@@ -2812,6 +2874,10 @@ function renderRegisterSkeleton(){
     if(groupVal) fields.group = groupVal;
     const tagsVal = $('#f-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
     if(tagsVal.length) fields.tags = tagsVal;
+    try{
+      const th = readThresholdFields('f-th');
+      if(Object.keys(th).length) fields.thresholds = th;
+    }catch(thErr){ errEl.textContent = thErr.message; return; }
     if(regCategory==='server'){ fields.os=$('#f-os').value; fields.role=$('#f-role-server').value.trim(); }
     else if(regCategory==='db'){ fields.engine=$('#f-engine').value; fields.role=$('#f-role-db').value.trim(); }
     else if(regCategory==='net'){ fields.type=$('#f-nettype').value; fields.role=$('#f-role-net').value.trim(); }
@@ -2911,6 +2977,7 @@ function renderRegister(){
   const distinctGroups = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
   groupList.innerHTML = distinctGroups.map(g=>`<option value="${escapeHtml(g)}">`).join('');
   renderGroupsList();
+  renderGlobalThresholdsSummary();
 }
 
 /* ================= USERS (ADMIN only -- server enforces this regardless) ================= */
@@ -3088,6 +3155,7 @@ async function renderGroupsList(){
               </td>
               <td class="mono" style="font-size:11px">미해결 ${g.openIncidents} / 누적 ${g.totalIncidents}</td>
               <td style="display:flex;gap:6px">
+                <button type="button" class="btn" data-th-group="${escapeHtml(g.name)}" title="${g.thresholds?'개별 임계치 설정됨':'전역 기본값 사용 중'}">임계치${g.thresholds?' ●':''}</button>
                 <button type="button" class="btn" data-edit-group="${escapeHtml(g.name)}" data-desc="${escapeHtml(g.description||'')}">수정</button>
                 <button type="button" class="btn" data-del-group="${escapeHtml(g.name)}" ${g.deviceCount>0?'disabled title="장비가 속해 있어 삭제할 수 없습니다 (장비들의 그룹을 먼저 바꿔주세요)"':''}>삭제</button>
               </td>
@@ -3104,6 +3172,15 @@ async function renderGroupsList(){
       renderGroupsList();
     }));
     $$('[data-edit-group]', listEl).forEach(b=> b.addEventListener('click', ()=> openGroupEditModal(b.dataset.editGroup, b.dataset.desc)));
+    $$('[data-th-group]', listEl).forEach(b=> b.addEventListener('click', ()=>{
+      const g = j.groups.find(x=>x.name===b.dataset.thGroup);
+      openThresholdEditModal({
+        scope:'group', title:`"${g.name}" 그룹 임계치 수정`,
+        sub:'이 그룹에 속한 장비에 적용됩니다 (장비별 개별 설정이 있으면 그 설정이 우선합니다). 비워두면 전역 기본값을 따릅니다.',
+        current: g.thresholds, putUrl: '/api/groups/'+encodeURIComponent(g.name)+'/thresholds',
+        onSaved: renderGroupsList,
+      });
+    }));
   }catch(err){
     listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
   }
@@ -3140,6 +3217,116 @@ function openGroupEditModal(name, description){
   $('#groupEditOkBtn').addEventListener('click', onSave);
   $('#groupEditCancelBtn').addEventListener('click', close);
   $('#groupEditOverlay').addEventListener('click', close);
+}
+
+/* ================= 2-2 threshold settings (global/group/device) ================= */
+const THRESHOLD_METRIC_LABEL = {cpu:'CPU', mem:'메모리', disk:'디스크'};
+function thresholdFieldsHtml(prefix, values){
+  const v = values || {};
+  return `
+    <div class="form-grid">
+      ${Object.entries(THRESHOLD_METRIC_LABEL).map(([k,label])=>`
+        <div class="field"><label>${label} 경고 (%)</label><input type="number" min="0" max="100" id="${prefix}-${k}-warn" value="${v[k]&&v[k].warn!=null?v[k].warn:''}"></div>
+        <div class="field"><label>${label} 심각 (%)</label><input type="number" min="0" max="100" id="${prefix}-${k}-crit" value="${v[k]&&v[k].crit!=null?v[k].crit:''}"></div>
+      `).join('')}
+      <div class="field" style="grid-column:1/-1"><label>초과 지속 시간 (초, 0=즉시)</label><input type="number" min="0" max="14400" id="${prefix}-sustained" value="${v.sustainedSec!=null?v.sustainedSec:''}"></div>
+    </div>`;
+}
+function readThresholdFields(prefix){
+  const out = {};
+  for(const k of Object.keys(THRESHOLD_METRIC_LABEL)){
+    const wEl = $('#'+prefix+'-'+k+'-warn'), cEl = $('#'+prefix+'-'+k+'-crit');
+    if(!wEl) continue;
+    const w = wEl.value.trim(), c = cEl.value.trim();
+    if(w === '' && c === '') continue;
+    if(w === '' || c === '') throw new Error(`${THRESHOLD_METRIC_LABEL[k]} 임계치는 경고/심각 값을 모두 입력해야 합니다`);
+    const wv = Number(w), cv = Number(c);
+    if(!(wv>=0 && wv<=100 && cv>=0 && cv<=100)) throw new Error('임계치는 0~100 사이여야 합니다');
+    if(wv >= cv) throw new Error(`${THRESHOLD_METRIC_LABEL[k]}의 경고 값은 심각 값보다 작아야 합니다`);
+    out[k] = {warn: wv, crit: cv};
+  }
+  const sEl = $('#'+prefix+'-sustained');
+  if(sEl){
+    const s = sEl.value.trim();
+    if(s !== '') out.sustainedSec = Number(s);
+  }
+  return out;
+}
+let thresholdEditCtx = null;
+function openThresholdEditModal(ctx){
+  thresholdEditCtx = ctx;
+  $('#thresholdEditTitle').textContent = ctx.title;
+  $('#thresholdEditSub').textContent = ctx.sub || '';
+  $('#thresholdEditFields').innerHTML = thresholdFieldsHtml('te', ctx.current);
+  $('#thresholdEditError').textContent = '';
+  $('#thresholdEditOverlay').classList.add('show');
+  $('#thresholdEditModal').classList.add('show');
+}
+function closeThresholdEditModal(){
+  $('#thresholdEditOverlay').classList.remove('show');
+  $('#thresholdEditModal').classList.remove('show');
+  thresholdEditCtx = null;
+}
+async function saveThresholdEdit(body){
+  const ctx = thresholdEditCtx;
+  if(!ctx) return;
+  const r = await apiFetch(ctx.putUrl, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if(!r.ok){ $('#thresholdEditError').textContent = j.error || '저장 실패'; return; }
+  const onSaved = ctx.onSaved;
+  closeThresholdEditModal();
+  if(onSaved) onSaved();
+}
+$('#thresholdEditCancelBtn').addEventListener('click', closeThresholdEditModal);
+$('#thresholdEditOverlay').addEventListener('click', closeThresholdEditModal);
+$('#thresholdEditClearBtn').addEventListener('click', async ()=>{
+  if(!thresholdEditCtx) return;
+  const scopeLabel = thresholdEditCtx.scope==='global' ? '전역 기본값(하드코딩 기본)' : '상위 설정(그룹/전역)';
+  const ok = await showConfirm(`개별 설정을 지우고 ${scopeLabel}을 따르도록 초기화할까요?`, {title:'임계치 초기화', okText:'초기화'});
+  if(!ok) return;
+  $('#thresholdEditError').textContent = '';
+  await saveThresholdEdit({});
+});
+$('#thresholdEditOkBtn').addEventListener('click', async ()=>{
+  $('#thresholdEditError').textContent = '';
+  let body;
+  try{ body = readThresholdFields('te'); }
+  catch(e){ $('#thresholdEditError').textContent = e.message; return; }
+  await saveThresholdEdit(body);
+});
+async function renderGlobalThresholdsSummary(){
+  const el = $('#threshold-global-summary');
+  if(!el) return;
+  const r = await apiFetch('/api/thresholds/global');
+  const j = await r.json();
+  GLOBAL_THRESHOLDS = j;
+  el.innerHTML = Object.entries(THRESHOLD_METRIC_LABEL).map(([k,label])=>
+    `<div class="kv"><span>${label}</span><b>경고 ${j[k].warn}% / 심각 ${j[k].crit}%</b></div>`).join('')
+    + `<div class="kv"><span>초과 지속 시간</span><b>${j.sustainedSec>0 ? j.sustainedSec+'초' : '즉시'}</b></div>`;
+}
+function wireThresholdHistoryPanel(){
+  const panel = $('#threshold-history-panel');
+  if(!panel) return;
+  if(panel.style.display !== 'none'){ panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  panel.innerHTML = '<div class="empty-note">불러오는 중...</div>';
+  apiFetch('/api/thresholds/history?limit=50').then(async r=>{
+    const j = await r.json();
+    if(!r.ok){ panel.innerHTML = `<div class="empty-note">${escapeHtml(j.error||'불러오기 실패')}</div>`; return; }
+    if(!j.history.length){ panel.innerHTML = '<div class="empty-note">변경 이력이 없습니다</div>'; return; }
+    const scopeLabel = s => s==='global'?'전역':s==='group'?'그룹':'장비';
+    panel.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+      <thead><tr><th>시각</th><th>범위</th><th>대상</th><th>변경자</th><th>이전</th><th>이후</th></tr></thead>
+      <tbody>${j.history.map(h=>`<tr>
+        <td style="font-size:11px;white-space:nowrap">${fmtWhen(h.changed_at)}</td>
+        <td>${scopeLabel(h.scope)}</td>
+        <td class="mono">${escapeHtml(h.scope_id)}</td>
+        <td>${escapeHtml(h.changed_by||'-')}</td>
+        <td style="font-size:10px;color:var(--text-faint)">${escapeHtml(JSON.stringify(h.old_value||{}))}</td>
+        <td style="font-size:10px;color:var(--text-dim)">${escapeHtml(JSON.stringify(h.new_value||{}))}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  });
 }
 
 /* ================= DRAWER ================= */
@@ -3314,9 +3501,9 @@ function drawServer(s){
     <div class="card">
       <div class="card-head"><h3>리소스 사용률</h3></div>
       <div style="display:flex;flex-direction:column;gap:12px">
-        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>CPU</span><span class="mono">${fmt1(s.cpu)}%</span></div><div class="bar ${levelOf(s.cpu,75,90)}"><i style="width:${s.cpu}%"></i></div></div>
-        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>메모리</span><span class="mono">${fmt1(s.mem)}%</span></div><div class="bar ${levelOf(s.mem,80,92)}"><i style="width:${s.mem}%"></i></div></div>
-        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>디스크</span><span class="mono">${fmt1(s.disk)}%</span></div><div class="bar ${levelOf(s.disk,80,92)}"><i style="width:${s.disk}%"></i></div></div>
+        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>CPU</span><span class="mono">${fmt1(s.cpu)}%</span></div><div class="bar ${devLevelOf(s,'cpu',s.cpu)}"><i style="width:${s.cpu}%"></i></div></div>
+        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>메모리</span><span class="mono">${fmt1(s.mem)}%</span></div><div class="bar ${devLevelOf(s,'mem',s.mem)}"><i style="width:${s.mem}%"></i></div></div>
+        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>디스크</span><span class="mono">${fmt1(s.disk)}%</span></div><div class="bar ${devLevelOf(s,'disk',s.disk)}"><i style="width:${s.disk}%"></i></div></div>
       </div>
     </div>
     <div class="card"><div class="card-head"><h3>Top 프로세스</h3><span class="sub">CPU 사용률 순</span></div>
@@ -3329,8 +3516,8 @@ function drawServer(s){
       <div style="display:flex;flex-direction:column;gap:12px">
         ${(s.disks||[]).map(d=>`
           <div>
-            <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span class="mono">${escapeHtml(d.mount)}</span><span class="mono" style="color:${levelColor(levelOf(d.pct,80,92))}">${fmt1(d.used)} / ${fmt1(d.total)} GB (${fmt1(d.pct)}%)</span></div>
-            <div class="bar ${levelOf(d.pct,80,92)}"><i style="width:${d.pct}%"></i></div>
+            <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span class="mono">${escapeHtml(d.mount)}</span><span class="mono" style="color:${levelColor(devLevelOf(s,'disk',d.pct))}">${fmt1(d.used)} / ${fmt1(d.total)} GB (${fmt1(d.pct)}%)</span></div>
+            <div class="bar ${devLevelOf(s,'disk',d.pct)}"><i style="width:${d.pct}%"></i></div>
           </div>`).join('') || '<span style="font-size:12px;color:var(--text-faint)">데이터 없음</span>'}
       </div>
     </div>
@@ -3367,8 +3554,8 @@ function drawPingDevice(e, catLabel){
   $('#drawerRole').textContent = `${catLabel} · ${e.ip||'-'}`;
   const isSnmp = e.mode==='snmp';
   let extraKv = '';
-  if(typeof e.cpu === 'number') extraKv += `<div class="kv"><span>CPU (SNMP 실측)</span><b>${fmt1(e.cpu)}%</b></div>`;
-  if(typeof e.mem === 'number') extraKv += `<div class="kv"><span>메모리 (SNMP 실측)</span><b>${fmt1(e.mem)}%</b></div>`;
+  if(typeof e.cpu === 'number') extraKv += `<div class="kv"><span>CPU (SNMP 실측)</span><b style="color:${levelColor(devLevelOf(e,'cpu',e.cpu))}">${fmt1(e.cpu)}%</b></div>`;
+  if(typeof e.mem === 'number') extraKv += `<div class="kv"><span>메모리 (SNMP 실측)</span><b style="color:${levelColor(devLevelOf(e,'mem',e.mem))}">${fmt1(e.mem)}%</b></div>`;
   if(typeof e.uptime === 'number') extraKv += `<div class="kv"><span>Uptime (SNMP 실측)</span><b>${fmt1(e.uptime)}일</b></div>`;
   if(typeof e.battPct === 'number') extraKv += `<div class="kv"><span>배터리 (SNMP 실측)</span><b>${fmt0(e.battPct)}%</b></div>`;
   if(typeof e.portsTotal === 'number') extraKv += `<div class="kv"><span>인터페이스</span><b>${e.portsUp}/${e.portsTotal} Up</b></div>`;
@@ -3556,6 +3743,7 @@ tickClock();
 setInterval(tickClock, 1000);
 (async function boot(){
   await ensureAuthed();
+  await loadGlobalThresholds();
   await syncState();
   refreshBadges();
   switchView('overview');

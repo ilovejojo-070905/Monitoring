@@ -15,7 +15,7 @@ import asyncio
 import time
 
 import storage
-from collector import state
+from collector import state, thresholds
 from collector.state import hist, push_cap, evaluate_status
 from collector import snmp_profiles
 from collector import lldp
@@ -360,3 +360,29 @@ def sample_snmp(entity, device_row):
                 entity['battPct'] = float(batt[0])
         except Exception:
             pass
+
+    # 2-2: resource-threshold evaluation -- until now SNMP-polled devices
+    # (switches/routers/SNMP-mode servers/DBs) only ever got a status/
+    # incident from reachability, never from the CPU/mem a poll actually
+    # read (that's the "biggest gap" the 2-2 audit found). category=='fac'
+    # battery has its own separate UI threshold untouched by this ticket,
+    # and no category here exposes a disk OID, so disk stays None
+    # (evaluate_resource already treats None as "can't be over threshold").
+    cpu_val = entity.get('cpu') if category in ('net', 'server', 'db') else None
+    mem_val = entity.get('mem') if category == 'net' else None
+    if cpu_val is not None or mem_val is not None:
+        device_thresholds = thresholds.resolve_thresholds(device_row)
+        resource_status, incident_event = thresholds.evaluate_resource(
+            device_row['id'], cpu_val, mem_val, None, device_thresholds)
+        with state.LOCK:
+            entity['status'] = thresholds.worse(entity['status'], resource_status)
+        if incident_event and not storage.in_maintenance(device_row):
+            kind, new_status = incident_event
+            if kind == 'escalate':
+                storage.add_incident(new_status, device_row['name'], storage.category_label(category),
+                                      f"리소스 사용률 {'임계치 초과' if new_status == 'crit' else '주의 구간 진입'} (CPU {cpu_val or 0:.0f}% / MEM {mem_val or 0:.0f}%)",
+                                      device_id=device_row['id'], event_type='RESOURCE')
+            else:
+                storage.add_incident('info', device_row['name'], storage.category_label(category),
+                                      f"{device_row['name']} 리소스 사용률 정상 범위로 복구",
+                                      device_id=device_row['id'], event_type='RESOURCE')

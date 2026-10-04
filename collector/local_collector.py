@@ -1,14 +1,15 @@
 """Local-PC sampler (psutil). Logic moved from server.py's sample_local()
-unchanged -- only the CPU/mem/disk threshold status stays "immediate" (this
-is a resource-threshold check, not a reachability check, so the Phase 1
-consecutive-failure smoothing in collector.state.evaluate_status doesn't
-apply here)."""
+unchanged -- resource-threshold status stays immediate by default (not the
+Phase 1 consecutive-failure smoothing in collector.state.evaluate_status,
+which is a reachability-only concept), but 2-2 makes "immediate" a
+configurable default rather than the only option -- see
+collector/thresholds.py's sustainedSec."""
 import os
 import time
 
 import psutil
 
-from collector import state
+from collector import state, thresholds
 from collector.state import push_cap
 import storage
 
@@ -133,14 +134,14 @@ def sample_local(entity, device_row):
     procs.sort(key=lambda x: x['pct'], reverse=True)
     disks = sample_disks()
     services = sample_services()
-    status = 'crit' if (cpu >= 90 or mem >= 92 or disk >= 92) else 'warn' if (cpu >= 75 or mem >= 80 or disk >= 80) else 'good'
+    device_thresholds = thresholds.resolve_thresholds(device_row)
+    status, incident_event = thresholds.evaluate_resource(device_row['id'], cpu, mem, disk, device_thresholds)
     # Code review pass, finding #5: psutil gathering above stays unlocked
     # (it's the slow part, and this is the only device that ever runs on
     # this collector so there's no cross-device parallelism to lose
     # anyway) -- only the dict mutation itself needs to be atomic against
     # /api/state reading the same entity concurrently.
     with state.LOCK:
-        prev_status = entity.get('status', 'good')
         entity.update(mode='local', online=True, reachable=True, latencyMs=0,
                       cpu=round(cpu, 1), mem=round(mem, 1), disk=round(disk, 1),
                       netIn=round(net_in, 2), netOut=round(net_out, 2), load=round(load, 2),
@@ -157,12 +158,13 @@ def sample_local(entity, device_row):
     storage.update_failure_state(device_row['id'], 0, None, now_ms, now_ms, device_row.get('last_failure_at'))
     if storage.in_maintenance(device_row):
         return
-    rank = {'good': 0, 'warn': 1, 'crit': 2}
-    if rank[status] > rank[prev_status]:
-        storage.add_incident(status, device_row['name'], 'SMS',
-                              f"리소스 사용률 {'임계치 초과' if status=='crit' else '주의 구간 진입'} (CPU {cpu:.0f}% / MEM {mem:.0f}%)",
-                              device_id=device_row['id'], event_type='RESOURCE')
-    elif status == 'good' and prev_status != 'good':
-        storage.add_incident('info', device_row['name'], 'SMS',
-                              f"{device_row['name']} 리소스 사용률 정상 범위로 복구",
-                              device_id=device_row['id'], event_type='RESOURCE')
+    if incident_event:
+        kind, new_status = incident_event
+        if kind == 'escalate':
+            storage.add_incident(new_status, device_row['name'], 'SMS',
+                                  f"리소스 사용률 {'임계치 초과' if new_status=='crit' else '주의 구간 진입'} (CPU {cpu:.0f}% / MEM {mem:.0f}%)",
+                                  device_id=device_row['id'], event_type='RESOURCE')
+        else:
+            storage.add_incident('info', device_row['name'], 'SMS',
+                                  f"{device_row['name']} 리소스 사용률 정상 범위로 복구",
+                                  device_id=device_row['id'], event_type='RESOURCE')

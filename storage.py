@@ -116,6 +116,14 @@ _NEW_USER_COLUMNS = [
     ('is_active', 'INTEGER DEFAULT 1'),
 ]
 
+# 2-2: group-level default thresholds (JSON text, NULL = "no override --
+# fall back to the global default"). device_groups itself was introduced in
+# 2-1 this same session, but the additive-migration pattern is followed
+# anyway for consistency with every other table here.
+_NEW_GROUP_COLUMNS = [
+    ('thresholds', 'TEXT DEFAULT NULL'),
+]
+
 ROLES = ('ADMIN', 'OPERATOR', 'VIEWER')
 ROLE_RANK = {'VIEWER': 0, 'OPERATOR': 1, 'ADMIN': 2}
 MAX_FAILED_ATTEMPTS = 5
@@ -340,6 +348,19 @@ def init_db():
         description TEXT,
         created_at INTEGER NOT NULL
     )''')
+    # 2-2: every threshold change, at any of the 3 scopes (global/group/
+    # device) -- "임계치 변경 이력을 저장한다". scope_id is NULL for global,
+    # the group name for a group, or the device id for a device.
+    conn.execute('''CREATE TABLE IF NOT EXISTS threshold_history(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope TEXT NOT NULL,
+        scope_id TEXT,
+        changed_by TEXT,
+        changed_at INTEGER NOT NULL,
+        old_value TEXT,
+        new_value TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_threshold_history_scope ON threshold_history(scope, scope_id, changed_at)')
     conn.commit()
     conn.close()
     migrate_db()
@@ -365,6 +386,12 @@ def migrate_db():
     for col_name, col_def in _NEW_USER_COLUMNS:
         if col_name not in existing_users:
             conn.execute(f'ALTER TABLE users ADD COLUMN {col_name} {col_def}')
+    # 2-2: per-group default thresholds, additive onto the 2-1 device_groups
+    # table the same way as everywhere else in this function.
+    existing_groups = {r['name'] for r in conn.execute('PRAGMA table_info(device_groups)').fetchall()}
+    for col_name, col_def in _NEW_GROUP_COLUMNS:
+        if col_name not in existing_groups:
+            conn.execute(f'ALTER TABLE device_groups ADD COLUMN {col_name} {col_def}')
     conn.commit()
     conn.close()
 
@@ -386,9 +413,71 @@ def load_device(device_id):
 # ------------------------------------------------------------- 2-1 groups --
 def load_device_groups():
     conn = get_db()
-    rows = conn.execute('SELECT name,description,created_at FROM device_groups ORDER BY name').fetchall()
+    rows = conn.execute('SELECT name,description,created_at,thresholds FROM device_groups ORDER BY name').fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['thresholds'] = json.loads(d['thresholds']) if d['thresholds'] else None
+        out.append(d)
+    return out
+
+
+def get_device_group(name):
+    conn = get_db()
+    row = conn.execute('SELECT name,description,created_at,thresholds FROM device_groups WHERE name=?', (name,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    d['thresholds'] = json.loads(d['thresholds']) if d['thresholds'] else None
+    return d
+
+
+def set_device_group_thresholds(name, thresholds):
+    """thresholds: a dict (validated by the caller) or None to clear the
+    group's override and fall back to the global default again."""
+    conn = get_db()
+    conn.execute('UPDATE device_groups SET thresholds=? WHERE name=?',
+                 (json.dumps(thresholds) if thresholds else None, name))
+    conn.commit()
+    conn.close()
+
+
+def record_threshold_change(scope, scope_id, changed_by, old_value, new_value):
+    """old_value/new_value: dicts (or None) -- stored as JSON text so the
+    history reads back as exactly what was in effect before/after, not just
+    "something changed"."""
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO threshold_history(scope,scope_id,changed_by,changed_at,old_value,new_value) VALUES (?,?,?,?,?,?)',
+        (scope, scope_id, changed_by, int(time.time() * 1000),
+         json.dumps(old_value) if old_value else None, json.dumps(new_value) if new_value else None))
+    conn.commit()
+    conn.close()
+
+
+def load_threshold_history(scope=None, scope_id=None, limit=50):
+    conn = get_db()
+    q = 'SELECT * FROM threshold_history'
+    conds, params = [], []
+    if scope:
+        conds.append('scope=?'); params.append(scope)
+    if scope_id is not None:
+        conds.append('scope_id=?'); params.append(scope_id)
+    if conds:
+        q += ' WHERE ' + ' AND '.join(conds)
+    q += ' ORDER BY changed_at DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['old_value'] = json.loads(d['old_value']) if d['old_value'] else None
+        d['new_value'] = json.loads(d['new_value']) if d['new_value'] else None
+        out.append(d)
+    return out
 
 
 def create_device_group(name, description):

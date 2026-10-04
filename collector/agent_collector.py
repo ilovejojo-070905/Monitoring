@@ -10,7 +10,7 @@ freshness window now survives a restart instead of resetting to None.
 """
 import time
 
-from collector import state
+from collector import state, thresholds
 from collector.state import LAST_REPORT, push_cap
 import storage
 
@@ -62,9 +62,12 @@ def check_freshness(entity, device_row):
 
 def record_report(entity, device_row, body, remote_addr=None):
     cpu = float(body.get('cpu', 0)); mem = float(body.get('mem', 0)); disk = float(body.get('disk', 0))
-    status = 'crit' if (cpu >= 90 or mem >= 92 or disk >= 92) else 'warn' if (cpu >= 75 or mem >= 80 or disk >= 80) else 'good'
+    # 2-2: resolved per-device (falls back through group -> global -> the
+    # same 75/90/80/92/80/92 this used to have hardcoded right here).
+    device_thresholds = thresholds.resolve_thresholds(device_row)
+    status, incident_event = thresholds.evaluate_resource(
+        device_row['id'], cpu, mem, disk, device_thresholds)
     with state.LOCK:
-        prev_status = entity.get('status', 'good')
         was_online = entity.get('online', True)
         entity.update(mode='agent', online=True, reachable=True, latencyMs=0,
                       cpu=round(cpu, 1), mem=round(mem, 1), disk=round(disk, 1),
@@ -102,12 +105,13 @@ def record_report(entity, device_row, body, remote_addr=None):
     if not was_online:
         storage.add_incident('info', device_row['name'], 'SMS', f"{device_row['name']} 에이전트 통신 정상 복구",
                               device_id=device_row['id'], event_type='REACHABILITY')
-    rank = {'good': 0, 'warn': 1, 'crit': 2}
-    if rank[status] > rank[prev_status]:
-        storage.add_incident(status, device_row['name'], 'SMS',
-                              f"리소스 사용률 {'임계치 초과' if status=='crit' else '주의 구간 진입'} (CPU {cpu:.0f}% / MEM {mem:.0f}%)",
-                              device_id=device_row['id'], event_type='RESOURCE')
-    elif status == 'good' and prev_status != 'good':
-        storage.add_incident('info', device_row['name'], 'SMS',
-                              f"{device_row['name']} 리소스 사용률 정상 범위로 복구",
-                              device_id=device_row['id'], event_type='RESOURCE')
+    if incident_event:
+        kind, new_status = incident_event
+        if kind == 'escalate':
+            storage.add_incident(new_status, device_row['name'], 'SMS',
+                                  f"리소스 사용률 {'임계치 초과' if new_status=='crit' else '주의 구간 진입'} (CPU {cpu:.0f}% / MEM {mem:.0f}%)",
+                                  device_id=device_row['id'], event_type='RESOURCE')
+        else:
+            storage.add_incident('info', device_row['name'], 'SMS',
+                                  f"{device_row['name']} 리소스 사용률 정상 범위로 복구",
+                                  device_id=device_row['id'], event_type='RESOURCE')

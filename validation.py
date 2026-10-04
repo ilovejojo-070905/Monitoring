@@ -136,6 +136,52 @@ def validate_snmpv3_params(username, auth_protocol, auth_password, priv_protocol
     return None
 
 
+_THRESHOLD_METRICS = ('cpu', 'mem', 'disk')
+MAX_SUSTAINED_SEC = 4 * 3600  # 4 hours -- past this it's not really an "alert", it's a report
+
+
+def validate_thresholds(data):
+    """data: whatever the client sent for a threshold override (global,
+    group, or device-level) -- a dict that may contain any subset of
+    cpu/mem/disk (each {warn, crit}, 0-100, warn < crit) and sustainedSec
+    (0-MAX_SUSTAINED_SEC). Partial is fine at every scope: a device can
+    override just `cpu` and still inherit mem/disk from its group or the
+    global default -- see collector/thresholds.py's resolve_thresholds().
+    Returns a cleaned dict with only the recognized keys, or raises
+    ValueError with a Korean message. An empty/None input is valid (means
+    "no override at all") and returns {}."""
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError('임계치 설정 형식이 올바르지 않습니다')
+    out = {}
+    for metric in _THRESHOLD_METRICS:
+        if metric not in data or data[metric] is None:
+            continue
+        m = data[metric]
+        if not isinstance(m, dict) or 'warn' not in m or 'crit' not in m:
+            raise ValueError(f'{metric} 임계치는 경고(warn)/심각(crit) 값이 모두 필요합니다')
+        try:
+            warn_v = float(m['warn'])
+            crit_v = float(m['crit'])
+        except (TypeError, ValueError):
+            raise ValueError(f'{metric} 임계치는 숫자여야 합니다')
+        if not (0 <= warn_v <= 100 and 0 <= crit_v <= 100):
+            raise ValueError(f'{metric} 임계치는 0~100 사이여야 합니다')
+        if warn_v >= crit_v:
+            raise ValueError(f'{metric}의 경고 임계치는 심각 임계치보다 작아야 합니다')
+        out[metric] = {'warn': warn_v, 'crit': crit_v}
+    if 'sustainedSec' in data and data['sustainedSec'] is not None:
+        try:
+            sustained = int(data['sustainedSec'])
+        except (TypeError, ValueError):
+            raise ValueError('지속 시간은 숫자(초)여야 합니다')
+        if not (0 <= sustained <= MAX_SUSTAINED_SEC):
+            raise ValueError(f'지속 시간은 0~{MAX_SUSTAINED_SEC}초 사이여야 합니다')
+        out['sustainedSec'] = sustained
+    return out
+
+
 def clamp_int(v, lo, hi, default=None):
     try:
         n = int(v)

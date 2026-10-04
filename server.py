@@ -24,7 +24,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import storage
 import validation
 from applog import app_logger, safe_log_value
-from collector import state, scheduler, health, metrics
+from collector import state, scheduler, health, metrics, thresholds
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
 from collector import snmp_collector
@@ -371,7 +371,7 @@ def api_unlock_user(user_id):
 
 
 # ------------------------------------------------------------------ API --
-def serialize_device(d):
+def serialize_device(d, global_thresholds=None, groups_cache=None):
     entity = {k: v for k, v in state.LIVE.get(d['id'], {}).items() if not k.startswith('_')}
     f = {k: v for k, v in d['fields'].items() if k != 'community'}
     base = {
@@ -407,18 +407,26 @@ def serialize_device(d):
         base['agentReportedIp'] = d.get('agent_reported_ip')
         base['agentLastError'] = d.get('agent_last_error')
         base['agentLatestVersion'] = storage.AGENT_VERSION
+    # 2-2: the fully-resolved (device > group > global > fallback) thresholds
+    # this device is actually being evaluated against right now -- so the
+    # frontend's status bars/gauges can color by the same numbers the
+    # backend's incidents fire on, instead of each duplicating the old
+    # hardcoded 75/90/80/92/80/92 independently of whatever's configured.
+    base['resolvedThresholds'] = thresholds.resolve_thresholds(d, global_thresholds, groups_cache)
     return base
 
 
 @app.get('/api/state')
 @require_role('VIEWER')
 def api_state():
+    global_thresholds = thresholds.get_global_thresholds()
+    groups_cache = {g['name']: g for g in storage.load_device_groups()}
     with state.LOCK:
         devices = storage.load_devices()
         out = {'servers': [], 'dbs': [], 'nets': [], 'facs': []}
         key_map = {'server': 'servers', 'db': 'dbs', 'net': 'nets', 'fac': 'facs'}
         for d in devices:
-            out[key_map[d['category']]].append(serialize_device(d))
+            out[key_map[d['category']]].append(serialize_device(d, global_thresholds, groups_cache))
     conn = storage.get_db()
     incidents = conn.execute('SELECT * FROM incidents ORDER BY id DESC LIMIT 200').fetchall()
     conn.close()
@@ -568,6 +576,13 @@ def api_register_device():
             return jsonify({'error': str(e)}), 400
         if not fields['tags']:
             del fields['tags']
+    if 'thresholds' in fields:
+        try:
+            fields['thresholds'] = validation.validate_thresholds(fields['thresholds'])
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        if not fields['thresholds']:
+            del fields['thresholds']
     if mode == 'ping':
         # Registering a device that's already unreachable just guarantees an
         # immediate "위험" incident with nothing anyone can do about it from
@@ -705,6 +720,15 @@ def api_update_device(device_id):
             return jsonify({'error': str(e)}), 400
         if not fields['tags']:
             del fields['tags']
+    old_thresholds = (device_row.get('fields') or {}).get('thresholds')
+    if 'thresholds' in fields:
+        try:
+            fields['thresholds'] = validation.validate_thresholds(fields['thresholds'])
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        if not fields['thresholds']:
+            del fields['thresholds']
+    new_thresholds = fields.get('thresholds')
     for k, v in list(fields.items()):
         if isinstance(v, str) and len(v) > 200:
             fields[k] = v[:200]
@@ -730,6 +754,16 @@ def api_update_device(device_id):
                  (name, ip, json.dumps(fields), device_id))
     conn.commit()
     conn.close()
+    if new_thresholds != old_thresholds:
+        storage.record_threshold_change('device', device_id, session.get('user'), old_thresholds, new_thresholds)
+        # 2-2 completion criterion: a changed threshold must affect alert
+        # handling immediately, not just on this device's next "crossing" --
+        # clearing the sustain/prev-incident trackers here means the very
+        # next poll re-evaluates from a clean slate against the new values,
+        # instead of still counting time accrued under the old threshold or
+        # staying silent because the old thresholds already fired this
+        # incident once.
+        thresholds.clear_sustain_state(device_id)
     if community:
         storage.set_credential(device_id, 'snmp_community', community)
     if v3_username:
@@ -810,6 +844,7 @@ def api_list_groups():
             'name': name, 'description': meta['description'] if meta else None,
             'managed': name in catalog, 'deviceCount': len(members),
             'statusCounts': status_counts, 'openIncidents': open_incidents, 'totalIncidents': total_incidents,
+            'thresholds': meta['thresholds'] if meta else None,
         })
     conn.close()
     return jsonify({'groups': out})
@@ -865,6 +900,65 @@ def api_delete_group(name):
     storage.delete_device_group(name)
     audit('DELETE_GROUP', target=name)
     return jsonify({'ok': True})
+
+
+# ---------------------------------------------------------- 2-2 thresholds --
+@app.get('/api/thresholds/global')
+@require_role('VIEWER')
+def api_get_global_thresholds():
+    return jsonify(thresholds.get_global_thresholds())
+
+
+@app.put('/api/thresholds/global')
+@require_role('OPERATOR')
+def api_set_global_thresholds():
+    body = request.get_json(force=True)
+    try:
+        cleaned = validation.validate_thresholds(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    old = thresholds.get_global_thresholds()
+    thresholds.set_global_thresholds(cleaned)
+    storage.record_threshold_change('global', 'global', session.get('user'), old, thresholds.get_global_thresholds())
+    # Global default changes every device that has no device/group override
+    # for a given field, so there's no single device_id to target -- reset
+    # every device's sustain window the same way api_update_device does for
+    # one device, so the new default takes effect on the next poll instead
+    # of continuing to count under the old one.
+    for d in storage.load_devices():
+        thresholds.clear_sustain_state(d['id'])
+    audit('UPDATE_GLOBAL_THRESHOLDS')
+    return jsonify({'ok': True})
+
+
+@app.put('/api/groups/<string:name>/thresholds')
+@require_role('OPERATOR')
+def api_set_group_thresholds(name):
+    group = storage.get_device_group(name)
+    if not group:
+        return jsonify({'error': '그룹을 찾을 수 없습니다'}), 404
+    body = request.get_json(force=True)
+    try:
+        cleaned = validation.validate_thresholds(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    old = group.get('thresholds')
+    storage.set_device_group_thresholds(name, cleaned or None)
+    storage.record_threshold_change('group', name, session.get('user'), old, cleaned or None)
+    for d in storage.load_devices():
+        if (d.get('fields') or {}).get('group') == name:
+            thresholds.clear_sustain_state(d['id'])
+    audit('UPDATE_GROUP_THRESHOLDS', target=name)
+    return jsonify({'ok': True})
+
+
+@app.get('/api/thresholds/history')
+@require_role('VIEWER')
+def api_threshold_history():
+    scope = request.args.get('scope') or None
+    scope_id = request.args.get('scopeId') or None
+    limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
+    return jsonify({'history': storage.load_threshold_history(scope, scope_id, limit)})
 
 
 @app.post('/api/agent/report')
