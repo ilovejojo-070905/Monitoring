@@ -182,6 +182,58 @@ def validate_thresholds(data):
     return out
 
 
+_HHMM_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
+MAX_MAINTENANCE_REASON_LEN = 200
+
+
+def validate_maintenance_window(data):
+    """data: the raw create/update body for a maintenance window (2-3).
+    Returns a cleaned dict with exactly the fields that scope/kind call for,
+    or raises ValueError with a Korean message. scope_id's existence (the
+    device/group actually exists) is the caller's job -- this only validates
+    shape, same division of labor as every other validator here."""
+    if not isinstance(data, dict):
+        raise ValueError('점검창 설정 형식이 올바르지 않습니다')
+    scope = data.get('scope')
+    if scope not in ('device', 'group'):
+        raise ValueError('대상 종류는 device 또는 group이어야 합니다')
+    scope_id = (data.get('scopeId') or '').strip()
+    if not scope_id:
+        raise ValueError('점검 대상을 선택해주세요')
+    kind = data.get('kind')
+    if kind not in ('once', 'weekly'):
+        raise ValueError('반복 종류는 once 또는 weekly여야 합니다')
+    reason = (data.get('reason') or '').strip() or None
+    if reason and len(reason) > MAX_MAINTENANCE_REASON_LEN:
+        raise ValueError(f'사유는 {MAX_MAINTENANCE_REASON_LEN}자 이하여야 합니다')
+    out = {'scope': scope, 'scope_id': scope_id, 'kind': kind, 'reason': reason,
+           'start_at': None, 'end_at': None, 'weekday': None, 'start_time': None, 'end_time': None}
+    if kind == 'once':
+        try:
+            start_at = int(data.get('startAt'))
+            end_at = int(data.get('endAt'))
+        except (TypeError, ValueError):
+            raise ValueError('시작/종료 일시를 입력해주세요')
+        if start_at >= end_at:
+            raise ValueError('종료 일시는 시작 일시보다 뒤여야 합니다')
+        out['start_at'], out['end_at'] = start_at, end_at
+    else:
+        try:
+            weekday = int(data.get('weekday'))
+        except (TypeError, ValueError):
+            raise ValueError('요일을 선택해주세요')
+        if not (0 <= weekday <= 6):
+            raise ValueError('요일은 0(월)~6(일) 사이여야 합니다')
+        start_time = (data.get('startTime') or '').strip()
+        end_time = (data.get('endTime') or '').strip()
+        if not (_HHMM_RE.match(start_time) and _HHMM_RE.match(end_time)):
+            raise ValueError('시작/종료 시각은 HH:MM 형식이어야 합니다')
+        if start_time >= end_time:
+            raise ValueError('자정을 넘기는 점검창은 지원되지 않습니다 (종료 시각이 시작 시각보다 뒤여야 합니다)')
+        out['weekday'], out['start_time'], out['end_time'] = weekday, start_time, end_time
+    return out
+
+
 def clamp_int(v, lo, hi, default=None):
     try:
         n = int(v)

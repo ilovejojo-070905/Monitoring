@@ -14,7 +14,7 @@ import secrets
 import time
 import uuid
 from collections import defaultdict, deque
-from datetime import timedelta
+from datetime import timedelta, datetime
 from functools import wraps
 
 from flask import Flask, Response, jsonify, request, send_from_directory, session
@@ -24,7 +24,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import storage
 import validation
 from applog import app_logger, safe_log_value
-from collector import state, scheduler, health, metrics, thresholds
+from collector import state, scheduler, health, metrics, thresholds, maintenance
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
 from collector import snmp_collector
@@ -961,6 +961,82 @@ def api_threshold_history():
     return jsonify({'history': storage.load_threshold_history(scope, scope_id, limit)})
 
 
+# ---------------------------------------------------------- 2-3 maintenance windows --
+@app.get('/api/maintenance/windows')
+@require_role('VIEWER')
+def api_list_maintenance_windows():
+    now_dt = datetime.now()
+    out = []
+    for w in storage.load_maintenance_windows():
+        target_ids = maintenance.resolve_target_device_ids(w)
+        is_active, _, _ = maintenance.window_occurrence_bounds(w, now_dt) if w.get('enabled') else (False, None, None)
+        out.append({**w, 'targetDeviceCount': len(target_ids), 'activeNow': is_active})
+    return jsonify({'windows': out})
+
+
+@app.post('/api/maintenance/windows')
+@require_role('OPERATOR')
+def api_create_maintenance_window():
+    body = request.get_json(force=True)
+    try:
+        cleaned = validation.validate_maintenance_window(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if cleaned['scope'] == 'device':
+        if not storage.load_device(cleaned['scope_id']):
+            return jsonify({'error': '대상 장비를 찾을 수 없습니다'}), 404
+    else:
+        if not storage.get_device_group(cleaned['scope_id']):
+            return jsonify({'error': '대상 그룹을 찾을 수 없습니다'}), 404
+    window_id = storage.create_maintenance_window(
+        cleaned['scope'], cleaned['scope_id'], cleaned['kind'], cleaned['start_at'], cleaned['end_at'],
+        cleaned['weekday'], cleaned['start_time'], cleaned['end_time'], cleaned['reason'], session.get('user'))
+    audit('CREATE_MAINTENANCE_WINDOW', target=str(window_id), details=f"{cleaned['scope']}:{cleaned['scope_id']}")
+    return jsonify({'ok': True, 'id': window_id})
+
+
+@app.put('/api/maintenance/windows/<int:window_id>/enabled')
+@require_role('OPERATOR')
+def api_set_maintenance_window_enabled(window_id):
+    window = storage.get_maintenance_window(window_id)
+    if not window:
+        return jsonify({'error': 'not found'}), 404
+    body = request.get_json(force=True)
+    enabled = bool(body.get('enabled'))
+    storage.set_maintenance_window_enabled(window_id, enabled)
+    if not enabled:
+        # A disabled window must let go of any device it currently has in
+        # maintenance -- otherwise that device would be stuck "점검 중"
+        # forever, since tick() only ever looks at *enabled* windows to
+        # decide when to turn a device back off.
+        for d in storage.devices_owned_by_window(window_id):
+            storage.set_maintenance(d['id'], False, window_id=None, started_by='scheduler')
+    audit('SET_MAINTENANCE_WINDOW_ENABLED', target=str(window_id), details=f"enabled={enabled}")
+    return jsonify({'ok': True})
+
+
+@app.delete('/api/maintenance/windows/<int:window_id>')
+@require_role('OPERATOR')
+def api_delete_maintenance_window(window_id):
+    for d in storage.devices_owned_by_window(window_id):
+        storage.set_maintenance(d['id'], False, window_id=None, started_by='scheduler')
+    storage.delete_maintenance_window(window_id)
+    audit('DELETE_MAINTENANCE_WINDOW', target=str(window_id))
+    return jsonify({'ok': True})
+
+
+@app.get('/api/maintenance/log')
+@require_role('VIEWER')
+def api_maintenance_log():
+    device_id = request.args.get('deviceId') or None
+    limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
+    log = storage.load_maintenance_log(device_id, limit)
+    device_names = {d['id']: d['name'] for d in storage.load_devices()}
+    for row in log:
+        row['deviceName'] = device_names.get(row['device_id'], row['device_id'])
+    return jsonify({'log': log})
+
+
 @app.post('/api/agent/report')
 def api_agent_report():
     body = request.get_json(force=True)
@@ -1006,7 +1082,7 @@ def api_set_maintenance(device_id):
     start = body.get('start')
     end = body.get('end')
     reason = (body.get('reason') or '').strip() or None
-    storage.set_maintenance(device_id, enabled, start, end, reason)
+    storage.set_maintenance(device_id, enabled, start, end, reason, started_by=session.get('user'))
     audit('SET_MAINTENANCE', target=device_id, details=f"enabled={enabled}")
     return jsonify({'ok': True})
 

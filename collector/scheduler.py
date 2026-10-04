@@ -19,6 +19,7 @@ import storage
 from collector import state, health, metrics
 from collector import local_collector, ping_collector, snmp_collector, agent_collector
 from collector import flow_listener
+from collector import maintenance
 
 def _compute_max_workers():
     """Code review pass, finding #4: this was a flat, hardcoded 10
@@ -93,10 +94,10 @@ def _run_job(device_id):
         # open incident, never a flood of new rows).
         if entity.get('_collectorError'):
             entity['_collectorError'] = False
-            if not storage.in_maintenance(device_row):
-                storage.add_incident(
-                    'info', device_row['name'], storage.category_label(device_row['category']),
-                    f"{device_row['name']} 수집 오류 복구", device_id=device_id, event_type='COLLECTION_ERROR')
+            storage.add_incident(
+                'info', device_row['name'], storage.category_label(device_row['category']),
+                f"{device_row['name']} 수집 오류 복구", device_id=device_id, event_type='COLLECTION_ERROR',
+                maintenance=storage.in_maintenance(device_row))
     except Exception as e:
         health.record_tick_error(f"{device_id}: {e}")
         # Distinct from a clean "no response" result (that's the sampler's
@@ -117,11 +118,10 @@ def _run_job(device_id):
                 err_entity = state.LIVE.get(device_id)
                 if err_entity is not None:
                     err_entity['_collectorError'] = True
-            if not storage.in_maintenance(device_row):
-                storage.add_incident(
-                    'crit', device_row['name'], storage.category_label(device_row['category']),
-                    f"{device_row['name']} 수집 중 오류가 발생했습니다 ({str(e)[:120]})",
-                    device_id=device_id, event_type='COLLECTION_ERROR')
+            storage.add_incident(
+                'crit', device_row['name'], storage.category_label(device_row['category']),
+                f"{device_row['name']} 수집 중 오류가 발생했습니다 ({str(e)[:120]})",
+                device_id=device_id, event_type='COLLECTION_ERROR', maintenance=storage.in_maintenance(device_row))
         except Exception:
             pass  # never let bookkeeping itself take down the scheduler job
 
@@ -179,6 +179,12 @@ def start():
     # storage once a minute -- this scheduler's thread pool, not a new one,
     # same reasoning as every other periodic job here.
     _scheduler.add_job(flow_listener.flush, 'interval', seconds=60, id='flow_flush', replace_existing=True)
+    # 2-3: evaluate maintenance_windows against the clock every 60s, with an
+    # immediate first run (next_run_time=now) so a window that should already
+    # be active takes effect right after a restart instead of waiting a full
+    # minute -- same reasoning as add_device_job's own next_run_time.
+    _scheduler.add_job(maintenance.tick, 'interval', seconds=60, id='maintenance_tick',
+                        replace_existing=True, next_run_time=datetime.now())
 
 
 def shutdown():

@@ -1000,6 +1000,7 @@ async function syncState(){
     INCIDENTS = j.incidents.map(i=>({
       id:i.id, time:new Date(i.ts), severity:i.severity, source:i.source, category:i.category, message:i.message,
       status:i.status, deviceId:i.device_id, eventType:i.event_type, occurrenceCount:i.occurrence_count,
+      duringMaintenance: !!i.during_maintenance,
     }));
     if(j.serverInfo) SERVER_INFO = j.serverInfo;
     DEVICE_LLDP_LINKS = j.deviceLinks || [];
@@ -2341,7 +2342,7 @@ function renderIncidents(){
       <td class="mono">${i.time.toLocaleTimeString('ko-KR',{hour12:false})}</td>
       <td>${i.category}</td>
       <td class="name">${escapeHtml(i.source)}</td>
-      <td>${escapeHtml(i.message)}</td>
+      <td>${escapeHtml(i.message)}${i.duringMaintenance?' <span class="pill neutral" style="font-size:9px;padding:1px 6px" title="점검 중 발생 (알림은 억제되었으나 이벤트는 기록됨)">점검중</span>':''}</td>
       <td><span class="pill neutral">${i.status==='open'?'미해결':i.status==='ack'?'확인됨':'해결됨'}</span></td>
       <td>${i.status==='open' ? `<button class="btn" data-ack="${i.id}">확인</button>` : ''}</td>
     </tr>`).join('') || `<tr><td colspan="7"><div class="empty-note">해당 조건의 이벤트가 없습니다</div></td></tr>`;
@@ -2385,6 +2386,48 @@ function renderRegisterSkeleton(){
       </div>
       <div id="threshold-global-summary" class="kv-grid"></div>
       <div id="threshold-history-panel" style="display:none;margin-top:12px"></div>
+    </div>
+    <div class="card" id="maint-window-card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>점검창 자동화</h3><span class="sub">지정한 일정 동안 대상 장비·그룹을 자동으로 유지보수 상태로 전환합니다. 점검 중에도 실제 장애·데이터는 계속 수집되며, 알림만 억제됩니다</span></div>
+        <button type="button" class="btn" id="maint-log-btn" style="margin-left:auto">점검 이력</button>
+      </div>
+      <form id="maint-window-form" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+        <div class="form-grid">
+          <div class="field"><label>대상 종류</label>
+            <select id="mw-scope"><option value="device">장비</option><option value="group">그룹</option></select>
+          </div>
+          <div class="field"><label>대상</label>
+            <select id="mw-scope-id"></select>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>반복 종류</label>
+            <select id="mw-kind"><option value="once">일회성</option><option value="weekly">매주 반복</option></select>
+          </div>
+          <div class="field"><label>사유 (선택)</label><input type="text" id="mw-reason" placeholder="예: 정기 점검, 펌웨어 업데이트" maxlength="200"></div>
+        </div>
+        <div class="form-grid" id="mw-once-fields">
+          <div class="field"><label>시작 일시</label><input type="datetime-local" id="mw-start-at"></div>
+          <div class="field"><label>종료 일시</label><input type="datetime-local" id="mw-end-at"></div>
+        </div>
+        <div class="form-grid" id="mw-weekly-fields" style="display:none">
+          <div class="field"><label>요일</label>
+            <select id="mw-weekday">
+              <option value="0">월요일</option><option value="1">화요일</option><option value="2">수요일</option>
+              <option value="3">목요일</option><option value="4">금요일</option><option value="5">토요일</option><option value="6">일요일</option>
+            </select>
+          </div>
+          <div class="field"><label>시작 시각</label><input type="time" id="mw-start-time"></div>
+          <div class="field"><label>종료 시각</label><input type="time" id="mw-end-time"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button type="submit" class="btn primary">점검창 등록</button>
+          <span id="mw-error" style="color:var(--crit);font-size:11.5px"></span>
+        </div>
+      </form>
+      <div id="mw-list"></div>
+      <div id="maint-log-panel" style="display:none;margin-top:12px"></div>
     </div>
     <div class="card">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
@@ -2641,6 +2684,41 @@ function renderRegisterSkeleton(){
   updateFormVisibility();
   markSnmpUntested();
   $('#f-threshold-fields').innerHTML = thresholdFieldsHtml('f-th', {});
+  renderMaintWindowTargetOptions();
+  $('#mw-scope').addEventListener('change', renderMaintWindowTargetOptions);
+  $('#mw-kind').addEventListener('change', ()=>{
+    const weekly = $('#mw-kind').value === 'weekly';
+    $('#mw-once-fields').style.display = weekly ? 'none' : '';
+    $('#mw-weekly-fields').style.display = weekly ? '' : 'none';
+  });
+  $('#maint-window-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const errEl = $('#mw-error');
+    errEl.textContent = '';
+    const scope = $('#mw-scope').value;
+    const scopeId = $('#mw-scope-id').value;
+    if(!scopeId){ errEl.textContent = '대상을 선택해주세요'; return; }
+    const kind = $('#mw-kind').value;
+    const body = {scope, scopeId, kind, reason: $('#mw-reason').value.trim()};
+    if(kind === 'once'){
+      const startVal = $('#mw-start-at').value, endVal = $('#mw-end-at').value;
+      if(!startVal || !endVal){ errEl.textContent = '시작/종료 일시를 입력해주세요'; return; }
+      body.startAt = new Date(startVal).getTime();
+      body.endAt = new Date(endVal).getTime();
+    } else {
+      body.weekday = parseInt($('#mw-weekday').value);
+      body.startTime = $('#mw-start-time').value;
+      body.endTime = $('#mw-end-time').value;
+      if(!body.startTime || !body.endTime){ errEl.textContent = '시작/종료 시각을 입력해주세요'; return; }
+    }
+    const r = await apiFetch('/api/maintenance/windows', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error || '등록 실패'; return; }
+    $('#maint-window-form').reset();
+    $('#mw-kind').dispatchEvent(new Event('change'));
+    renderMaintWindowsList();
+  });
+  $('#maint-log-btn').addEventListener('click', wireMaintenanceLogPanel);
   $('#threshold-global-edit-btn').addEventListener('click', ()=>{
     openThresholdEditModal({
       scope:'global', title:'전역 기본 임계치 수정',
@@ -2978,6 +3056,8 @@ function renderRegister(){
   groupList.innerHTML = distinctGroups.map(g=>`<option value="${escapeHtml(g)}">`).join('');
   renderGroupsList();
   renderGlobalThresholdsSummary();
+  renderMaintWindowsList();
+  renderMaintWindowTargetOptions();
 }
 
 /* ================= USERS (ADMIN only -- server enforces this regardless) ================= */
@@ -3324,6 +3404,100 @@ function wireThresholdHistoryPanel(){
         <td>${escapeHtml(h.changed_by||'-')}</td>
         <td style="font-size:10px;color:var(--text-faint)">${escapeHtml(JSON.stringify(h.old_value||{}))}</td>
         <td style="font-size:10px;color:var(--text-dim)">${escapeHtml(JSON.stringify(h.new_value||{}))}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  });
+}
+
+/* ================= 2-3 maintenance window scheduling ================= */
+function renderMaintWindowTargetOptions(){
+  const scopeEl = $('#mw-scope'), sel = $('#mw-scope-id');
+  if(!scopeEl || !sel) return;
+  const scope = scopeEl.value;
+  const prevValue = sel.value;
+  if(scope === 'device'){
+    const all = [...SERVERS, ...DBS, ...NETS, ...FACS];
+    sel.innerHTML = all.map(d=>`<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)}</option>`).join('') || '<option value="">(등록된 장비 없음)</option>';
+  } else {
+    const groups = [...new Set([...SERVERS,...DBS,...NETS,...FACS].map(e=>e.group).filter(Boolean))].sort();
+    sel.innerHTML = groups.map(g=>`<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('') || '<option value="">(등록된 그룹 없음)</option>';
+  }
+  // Rebuilding <select> options resets the selection -- restore whatever
+  // was picked before if it's still a valid option, so a periodic refresh
+  // (new device/group appearing while this view is open) doesn't silently
+  // swap out from under someone mid-form the way it would for #mw-scope
+  // itself changing (that's a deliberate reset, this call is not).
+  if([...sel.options].some(o=>o.value===prevValue)) sel.value = prevValue;
+}
+const MAINT_WEEKDAY_LABEL = ['월','화','수','목','금','토','일'];
+function maintScheduleText(w){
+  if(w.kind === 'once') return `${fmtWhen(w.start_at)} ~ ${fmtWhen(w.end_at)}`;
+  return `매주 ${MAINT_WEEKDAY_LABEL[w.weekday]}요일 ${w.start_time}~${w.end_time}`;
+}
+async function renderMaintWindowsList(){
+  const listEl = $('#mw-list');
+  if(!listEl) return;
+  try{
+    const r = await apiFetch('/api/maintenance/windows');
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || '불러오기 실패');
+    if(!j.windows.length){
+      listEl.innerHTML = '<div class="empty-note">등록된 점검창이 없습니다.</div>';
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>대상</th><th>종류</th><th>일정</th><th>사유</th><th>상태</th><th></th></tr></thead>
+        <tbody>
+          ${j.windows.map(w=>`
+            <tr>
+              <td class="name">${w.scope==='group'?'그룹: ':'장비: '}${escapeHtml(w.scope_id)}${w.targetDeviceCount!=null?` <span style="color:var(--text-faint);font-size:10.5px">(${w.targetDeviceCount}대)</span>`:''}</td>
+              <td>${w.kind==='once'?'일회성':'매주 반복'}</td>
+              <td style="font-size:11.5px">${escapeHtml(maintScheduleText(w))}</td>
+              <td style="font-size:11.5px;color:var(--text-dim)">${escapeHtml(w.reason||'-')}</td>
+              <td>${w.enabled ? (w.activeNow ? '<span class="pill warn" style="font-size:9px">점검 중</span>' : '<span class="pill good" style="font-size:9px">대기</span>') : '<span class="pill neutral" style="font-size:9px">비활성</span>'}</td>
+              <td style="display:flex;gap:6px">
+                <button type="button" class="btn" data-mw-toggle="${w.id}" data-enabled="${w.enabled?1:0}">${w.enabled?'비활성화':'활성화'}</button>
+                <button type="button" class="btn" data-mw-del="${w.id}">삭제</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+    $$('[data-mw-toggle]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const enable = b.dataset.enabled !== '1';
+      await apiFetch('/api/maintenance/windows/'+b.dataset.mwToggle+'/enabled', {
+        method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: enable}),
+      });
+      renderMaintWindowsList();
+    }));
+    $$('[data-mw-del]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const ok = await showConfirm('이 점검창을 삭제할까요? 현재 이 점검창으로 유지보수 중인 장비는 즉시 유지보수가 해제됩니다.', {title:'점검창 삭제', okText:'삭제'});
+      if(!ok) return;
+      await apiFetch('/api/maintenance/windows/'+b.dataset.mwDel, {method:'DELETE'});
+      renderMaintWindowsList();
+    }));
+  }catch(err){
+    listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+  }
+}
+function wireMaintenanceLogPanel(){
+  const panel = $('#maint-log-panel');
+  if(!panel) return;
+  if(panel.style.display !== 'none'){ panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  panel.innerHTML = '<div class="empty-note">불러오는 중...</div>';
+  apiFetch('/api/maintenance/log?limit=50').then(async r=>{
+    const j = await r.json();
+    if(!r.ok){ panel.innerHTML = `<div class="empty-note">${escapeHtml(j.error||'불러오기 실패')}</div>`; return; }
+    if(!j.log.length){ panel.innerHTML = '<div class="empty-note">점검 이력이 없습니다</div>'; return; }
+    panel.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+      <thead><tr><th>장비</th><th>시작</th><th>종료</th><th>사유</th><th>시작 주체</th></tr></thead>
+      <tbody>${j.log.map(l=>`<tr>
+        <td class="name">${escapeHtml(l.deviceName)}</td>
+        <td style="font-size:11px;white-space:nowrap">${fmtWhen(l.started_at)}</td>
+        <td style="font-size:11px;white-space:nowrap">${l.ended_at?fmtWhen(l.ended_at):'<span style="color:var(--warn)">진행 중</span>'}</td>
+        <td style="font-size:11.5px;color:var(--text-dim)">${escapeHtml(l.reason||'-')}</td>
+        <td style="font-size:11.5px">${l.window_id ? '자동 (점검창)' : escapeHtml(l.started_by||'수동')}</td>
       </tr>`).join('')}</tbody>
     </table></div>`;
   });

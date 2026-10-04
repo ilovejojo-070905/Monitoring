@@ -72,6 +72,14 @@ _NEW_DEVICE_COLUMNS = [
     ('maintenance_start', 'INTEGER DEFAULT NULL'),
     ('maintenance_end', 'INTEGER DEFAULT NULL'),
     ('maintenance_reason', 'TEXT DEFAULT NULL'),
+    # 2-3: which maintenance_windows row (if any) is currently responsible
+    # for this device's maintenance_enabled=1 -- NULL means either not in
+    # maintenance, or in maintenance from the manual drawer toggle rather
+    # than a schedule. Lets collector/maintenance.py's tick() tell "a window
+    # put this device into maintenance, and should take it back out once the
+    # window ends" apart from "an operator turned this on by hand, leave it
+    # alone" without a separate ownership/priority system.
+    ('maintenance_window_id', 'INTEGER DEFAULT NULL'),
     # Phase 7: SNMP vendor profile (directive section 18) -- 'generic' keeps
     # today's behavior (HOST-RESOURCES-MIB, falling back to Cisco OIDs), so
     # every already-registered SNMP device is unaffected until set otherwise.
@@ -94,6 +102,11 @@ _NEW_INCIDENT_COLUMNS = [
     ('acknowledged_by', 'TEXT DEFAULT NULL'),
     ('acknowledged_at', 'INTEGER DEFAULT NULL'),
     ('occurrence_count', 'INTEGER DEFAULT 1'),
+    # 2-3: true when this incident's row was written while the device was
+    # under maintenance -- the row still exists either way (see
+    # add_incident()'s docstring), this just lets the UI show a badge
+    # instead of hiding it.
+    ('during_maintenance', 'INTEGER DEFAULT 0'),
 ]
 
 # Security hardening Phase B (sections 2/3/5/21-23): login lockout state and
@@ -361,6 +374,41 @@ def init_db():
         new_value TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_threshold_history_scope ON threshold_history(scope, scope_id, changed_at)')
+    # 2-3: schedule definitions ("일회성" -- start_at/end_at a single absolute
+    # ms range, or "weekly" -- weekday 0=Mon..6=Sun + 'HH:MM' start/end time
+    # recomputed every occurrence). scope_id is a device id or a group name
+    # depending on scope, resolved to member devices at evaluation time the
+    # same way device_groups membership is resolved everywhere else in this
+    # app (by fields.group, not a stored roster).
+    conn.execute('''CREATE TABLE IF NOT EXISTS maintenance_windows(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        start_at INTEGER,
+        end_at INTEGER,
+        weekday INTEGER,
+        start_time TEXT,
+        end_time TEXT,
+        reason TEXT,
+        enabled INTEGER DEFAULT 1,
+        created_by TEXT,
+        created_at INTEGER NOT NULL
+    )''')
+    # 점검 이력: every time a device actually entered/left maintenance,
+    # whether from a window (window_id set) or the manual drawer toggle
+    # (window_id NULL) -- "점검 이력 기록". Separate from the incidents table,
+    # which (since the 2-3 fix) keeps recording real failures throughout.
+    conn.execute('''CREATE TABLE IF NOT EXISTS maintenance_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        window_id INTEGER,
+        reason TEXT,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        started_by TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_maintenance_log_device ON maintenance_log(device_id, started_at)')
     conn.commit()
     conn.close()
     migrate_db()
@@ -627,7 +675,7 @@ def compute_collection_state(device_row, warn_at=1, crit_at=2):
     return 'crit' if failures >= crit_at else 'warn' if failures >= warn_at else 'good'
 
 
-def add_incident(severity, source, category, message, device_id=None, event_type=None, _no_alert=False):
+def add_incident(severity, source, category, message, device_id=None, event_type=None, _no_alert=False, maintenance=False):
     """Records an event.
 
     Phase 2 upgrade: when device_id+event_type are given, this folds repeated
@@ -650,6 +698,18 @@ def add_incident(severity, source, category, message, device_id=None, event_type
     flapping at the same severity doesn't spam an inbox once per poll.
     _no_alert is only for the alert engine's own failure-notice message, to
     avoid alerting about "alert failed" in a loop if SMTP is broken.
+
+    2-3 fix: maintenance used to mean every caller skipped this function
+    entirely (`if not storage.in_maintenance(...): add_incident(...)`), which
+    conflated "don't page anyone about this" with "this never happened" --
+    a real failure during a maintenance window left literally no record
+    anywhere, contradicting the ticket's own "점검 중 실제 장애 발생 시 이벤트
+    기록 유지" requirement. Now every caller always calls this (passing
+    maintenance=storage.in_maintenance(device_row) instead of guarding the
+    call), and only the alert dispatch is skipped here -- the incident row
+    itself, dedup, and occurrence counting all behave exactly as outside
+    maintenance, just tagged during_maintenance=1 so the UI can tell the two
+    apart without hiding either.
     """
     now = int(time.time() * 1000)
     is_new_or_escalated = False
@@ -662,22 +722,22 @@ def add_incident(severity, source, category, message, device_id=None, event_type
             if existing:
                 is_new_or_escalated = existing['severity'] != severity
                 conn.execute(
-                    'UPDATE incidents SET severity=?, message=?, last_occurred_at=?, occurrence_count=occurrence_count+1 WHERE id=?',
-                    (severity, message, now, existing['id']))
+                    'UPDATE incidents SET severity=?, message=?, last_occurred_at=?, occurrence_count=occurrence_count+1, during_maintenance=? WHERE id=?',
+                    (severity, message, now, 1 if maintenance else 0, existing['id']))
             else:
                 is_new_or_escalated = True
                 conn.execute(
                     'INSERT INTO incidents(ts,severity,source,category,message,status,device_id,event_type,'
-                    'first_occurred_at,last_occurred_at,occurrence_count) VALUES (?,?,?,?,?,?,?,?,?,?,1)',
-                    (now, severity, source, category, message, 'open', device_id, event_type, now, now))
+                    'first_occurred_at,last_occurred_at,occurrence_count,during_maintenance) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)',
+                    (now, severity, source, category, message, 'open', device_id, event_type, now, now, 1 if maintenance else 0))
         else:
             status = 'resolved' if severity == 'info' else 'open'
             is_new_or_escalated = status == 'open'
             conn.execute(
                 'INSERT INTO incidents(ts,severity,source,category,message,status,device_id,event_type,'
-                'first_occurred_at,last_occurred_at,resolved_at,occurrence_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,1)',
+                'first_occurred_at,last_occurred_at,resolved_at,occurrence_count,during_maintenance) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?)',
                 (now, severity, source, category, message, status, device_id, event_type,
-                 now, now, now if status == 'resolved' else None))
+                 now, now, now if status == 'resolved' else None, 1 if maintenance else 0))
             if device_id and event_type and severity == 'info':
                 conn.execute(
                     "UPDATE incidents SET status='resolved', resolved_at=? WHERE device_id=? AND event_type=? AND status='open'",
@@ -686,7 +746,11 @@ def add_incident(severity, source, category, message, device_id=None, event_type
     finally:
         conn.close()
 
-    if is_new_or_escalated and not _no_alert:
+    # Alert suppression (not detection) is what maintenance mode actually
+    # means -- see the docstring above. The row above was written exactly as
+    # it would be outside maintenance; only the page/email/webhook is held
+    # back here.
+    if is_new_or_escalated and not _no_alert and not maintenance:
         _dispatch_alert(severity, source, message)
 
 
@@ -701,10 +765,10 @@ def ack_incident(incident_id, acknowledged_by=None):
 
 
 def in_maintenance(device_row):
-    """True if this device's poll results should be silenced from add_incident
-    right now. Polling itself must NOT be skipped -- only event creation --
-    so that recovery during a maintenance window is still observable once the
-    window ends (directive section 15)."""
+    """True if this device's incidents should go out tagged during_maintenance
+    (and their alert held back) right now. Polling and incident *recording*
+    are never skipped because of this -- see add_incident()'s docstring; this
+    flag only ever reaches a suppression decision, never a detection one."""
     if not device_row.get('maintenance_enabled'):
         return False
     now = int(time.time() * 1000)
@@ -717,13 +781,106 @@ def in_maintenance(device_row):
     return True
 
 
-def set_maintenance(device_id, enabled, start=None, end=None, reason=None):
+def set_maintenance(device_id, enabled, start=None, end=None, reason=None, window_id=None, started_by=None):
+    """The single place devices.maintenance_* actually changes -- used both
+    by the manual drawer toggle (window_id=None) and by collector/
+    maintenance.py's scheduler tick (window_id=that window's id). Always
+    clears maintenance_window_id on enabled=False (and on a manual
+    enabled=True, since window_id=None there) so a device's current
+    maintenance_window_id reliably answers "is a schedule, not a person,
+    responsible for this right now" -- see the column's own comment above
+    _NEW_DEVICE_COLUMNS for why that distinction exists.
+
+    2-3: every call now also writes a maintenance_log row (enabled=True opens
+    one, enabled=False closes the most recent still-open one for this
+    device) -- "점검 이력 기록", covering manual toggles the same as scheduled
+    windows rather than only the latter.
+    """
     conn = get_db()
     conn.execute(
-        'UPDATE devices SET maintenance_enabled=?, maintenance_start=?, maintenance_end=?, maintenance_reason=? WHERE id=?',
-        (1 if enabled else 0, start, end, reason, device_id))
+        'UPDATE devices SET maintenance_enabled=?, maintenance_start=?, maintenance_end=?, maintenance_reason=?, maintenance_window_id=? WHERE id=?',
+        (1 if enabled else 0, start, end, reason, window_id, device_id))
+    now = int(time.time() * 1000)
+    if enabled:
+        conn.execute(
+            'INSERT INTO maintenance_log(device_id,window_id,reason,started_at,started_by) VALUES (?,?,?,?,?)',
+            (device_id, window_id, reason, now, started_by))
+    else:
+        conn.execute(
+            'UPDATE maintenance_log SET ended_at=? WHERE id=(SELECT id FROM maintenance_log WHERE device_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1)',
+            (now, device_id))
     conn.commit()
     conn.close()
+
+
+def load_maintenance_log(device_id=None, limit=50):
+    conn = get_db()
+    q = 'SELECT * FROM maintenance_log'
+    params = []
+    if device_id:
+        q += ' WHERE device_id=?'
+        params.append(device_id)
+    q += ' ORDER BY started_at DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------------- 2-3 --
+# 점검창 자동화: schedule definitions that drive devices.maintenance_* above
+# automatically (collector/maintenance.py's tick()), on top of the existing
+# manual per-device toggle rather than replacing it.
+
+def create_maintenance_window(scope, scope_id, kind, start_at, end_at, weekday, start_time, end_time, reason, created_by):
+    conn = get_db()
+    now = int(time.time() * 1000)
+    cur = conn.execute(
+        'INSERT INTO maintenance_windows(scope,scope_id,kind,start_at,end_at,weekday,start_time,end_time,reason,enabled,created_by,created_at) '
+        'VALUES (?,?,?,?,?,?,?,?,?,1,?,?)',
+        (scope, scope_id, kind, start_at, end_at, weekday, start_time, end_time, reason, created_by, now))
+    window_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return window_id
+
+
+def load_maintenance_windows():
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM maintenance_windows ORDER BY created_at DESC').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_maintenance_window(window_id):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM maintenance_windows WHERE id=?', (window_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def set_maintenance_window_enabled(window_id, enabled):
+    conn = get_db()
+    conn.execute('UPDATE maintenance_windows SET enabled=? WHERE id=?', (1 if enabled else 0, window_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_maintenance_window(window_id):
+    conn = get_db()
+    conn.execute('DELETE FROM maintenance_windows WHERE id=?', (window_id,))
+    conn.commit()
+    conn.close()
+
+
+def devices_owned_by_window(window_id):
+    """Devices currently in maintenance because of this specific window --
+    used when deleting/disabling a window so it doesn't leave a device stuck
+    'in maintenance' forever with nothing left to ever turn it back off."""
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM devices WHERE maintenance_window_id=?', (window_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def category_label(cat):

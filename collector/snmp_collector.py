@@ -254,10 +254,10 @@ def sample_snmp(entity, device_row):
     if not result['reachable']:
         with state.LOCK:
             entity['status'] = status
-        if prev_status == 'good' and status != 'good' and not storage.in_maintenance(device_row):
+        if prev_status == 'good' and status != 'good':
             storage.add_incident(status, device_row['name'], storage.category_label(category),
                                   f"{device_row['name']} SNMP 응답 없음 (커뮤니티/버전을 확인하세요, 연속 {failures}회)",
-                                  device_id=device_row['id'], event_type='REACHABILITY')
+                                  device_id=device_row['id'], event_type='REACHABILITY', maintenance=storage.in_maintenance(device_row))
         return
 
     with state.LOCK:
@@ -270,10 +270,10 @@ def sample_snmp(entity, device_row):
                 entity['uptime'] = round(int(ticks) / 100 / 86400, 2)
         except Exception:
             pass
-    if prev_status != 'good' and not storage.in_maintenance(device_row):
+    if prev_status != 'good':
         storage.add_incident('info', device_row['name'], storage.category_label(category),
                               f"{device_row['name']} SNMP 응답 정상 복구",
-                              device_id=device_row['id'], event_type='REACHABILITY')
+                              device_id=device_row['id'], event_type='REACHABILITY', maintenance=storage.in_maintenance(device_row))
 
     if category == 'net' and 'oper' in result:
         try:
@@ -376,13 +376,14 @@ def sample_snmp(entity, device_row):
             device_row['id'], cpu_val, mem_val, None, device_thresholds)
         with state.LOCK:
             entity['status'] = thresholds.worse(entity['status'], resource_status)
-        if incident_event and not storage.in_maintenance(device_row):
+        if incident_event:
             kind, new_status = incident_event
+            maint = storage.in_maintenance(device_row)
             if kind == 'escalate':
                 storage.add_incident(new_status, device_row['name'], storage.category_label(category),
                                       f"리소스 사용률 {'임계치 초과' if new_status == 'crit' else '주의 구간 진입'} (CPU {cpu_val or 0:.0f}% / MEM {mem_val or 0:.0f}%)",
-                                      device_id=device_row['id'], event_type='RESOURCE')
+                                      device_id=device_row['id'], event_type='RESOURCE', maintenance=maint)
             else:
                 storage.add_incident('info', device_row['name'], storage.category_label(category),
                                       f"{device_row['name']} 리소스 사용률 정상 범위로 복구",
-                                      device_id=device_row['id'], event_type='RESOURCE')
+                                      device_id=device_row['id'], event_type='RESOURCE', maintenance=maint)

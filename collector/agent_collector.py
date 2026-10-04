@@ -43,9 +43,9 @@ def check_freshness(entity, device_row):
                 entity['status'] = 'crit' if age > WARN_WINDOW_SEC else 'warn'
                 entity['reachable'] = False
         is_online_now = entity['online']
-    if was_online and not is_online_now and not storage.in_maintenance(device_row):
+    if was_online and not is_online_now:
         storage.add_incident('warn', device_row['name'], 'SMS', f"{device_row['name']} 에이전트 응답 없음 (통신 두절)",
-                              device_id=device_id, event_type='REACHABILITY')
+                              device_id=device_id, event_type='REACHABILITY', maintenance=storage.in_maintenance(device_row))
     # Bookkeeping for the 5-state collection status (연속 실패 횟수/마지막 수집
     # 시간 등): the actual online/offline classification above is unchanged
     # (still time-window based, since agent mode is push- not poll-based),
@@ -100,18 +100,17 @@ def record_report(entity, device_row, body, remote_addr=None):
         remote_addr,
         str(body.get('lastError') or '')[:300] or None,
     )
-    if storage.in_maintenance(device_row):
-        return
+    maint = storage.in_maintenance(device_row)
     if not was_online:
         storage.add_incident('info', device_row['name'], 'SMS', f"{device_row['name']} 에이전트 통신 정상 복구",
-                              device_id=device_row['id'], event_type='REACHABILITY')
+                              device_id=device_row['id'], event_type='REACHABILITY', maintenance=maint)
     if incident_event:
         kind, new_status = incident_event
         if kind == 'escalate':
             storage.add_incident(new_status, device_row['name'], 'SMS',
                                   f"리소스 사용률 {'임계치 초과' if new_status=='crit' else '주의 구간 진입'} (CPU {cpu:.0f}% / MEM {mem:.0f}%)",
-                                  device_id=device_row['id'], event_type='RESOURCE')
+                                  device_id=device_row['id'], event_type='RESOURCE', maintenance=maint)
         else:
             storage.add_incident('info', device_row['name'], 'SMS',
                                   f"{device_row['name']} 리소스 사용률 정상 범위로 복구",
-                                  device_id=device_row['id'], event_type='RESOURCE')
+                                  device_id=device_row['id'], event_type='RESOURCE', maintenance=maint)

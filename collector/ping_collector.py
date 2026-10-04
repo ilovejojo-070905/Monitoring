@@ -106,14 +106,13 @@ def sample_ping(entity, device_row):
         now_ms,
         device_row.get('last_failure_at') if reachable else now_ms)
 
-    if storage.in_maintenance(device_row):
-        return
     rank = {'good': 0, 'warn': 1, 'crit': 2}
+    maint = storage.in_maintenance(device_row)
     if rank[status] > rank[prev_status]:
         storage.add_incident(status, device_row['name'], storage.category_label(device_row['category']),
                               f"{device_row['name']} 응답 없음 (Ping/포트 확인 실패, 연속 {failures}회)",
-                              device_id=device_row['id'], event_type='REACHABILITY')
+                              device_id=device_row['id'], event_type='REACHABILITY', maintenance=maint)
     elif prev_status != 'good' and status == 'good':
         storage.add_incident('info', device_row['name'], storage.category_label(device_row['category']),
                               f"{device_row['name']} 응답 정상 복구",
-                              device_id=device_row['id'], event_type='REACHABILITY')
+                              device_id=device_row['id'], event_type='REACHABILITY', maintenance=maint)

@@ -156,15 +156,14 @@ def sample_local(entity, device_row):
     # "미수집" forever for the one device that's actually the most reliable.
     now_ms = int(time.time() * 1000)
     storage.update_failure_state(device_row['id'], 0, None, now_ms, now_ms, device_row.get('last_failure_at'))
-    if storage.in_maintenance(device_row):
-        return
     if incident_event:
+        maint = storage.in_maintenance(device_row)
         kind, new_status = incident_event
         if kind == 'escalate':
             storage.add_incident(new_status, device_row['name'], 'SMS',
                                   f"리소스 사용률 {'임계치 초과' if new_status=='crit' else '주의 구간 진입'} (CPU {cpu:.0f}% / MEM {mem:.0f}%)",
-                                  device_id=device_row['id'], event_type='RESOURCE')
+                                  device_id=device_row['id'], event_type='RESOURCE', maintenance=maint)
         else:
             storage.add_incident('info', device_row['name'], 'SMS',
                                   f"{device_row['name']} 리소스 사용률 정상 범위로 복구",
-                                  device_id=device_row['id'], event_type='RESOURCE')
+                                  device_id=device_row['id'], event_type='RESOURCE', maintenance=maint)
