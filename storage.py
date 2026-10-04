@@ -304,6 +304,30 @@ def init_db():
         last_seen_at INTEGER NOT NULL,
         record_count INTEGER NOT NULL DEFAULT 0
     )''')
+    # 2-6: network discovery scan history -- a scan's results used to only
+    # ever live in the HTTP response and vanish the moment it was read. This
+    # persists what was scanned, when, by whom, and what was found (one row
+    # per scan + one row per live host in that scan), so "탐지 이력" is an
+    # actual log, not just whatever's still on screen from the last scan.
+    conn.execute('''CREATE TABLE IF NOT EXISTS discovery_scans(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        range_text TEXT NOT NULL,
+        requested_by TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER NOT NULL,
+        host_count INTEGER NOT NULL,
+        found_count INTEGER NOT NULL
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS discovery_scan_results(
+        scan_id INTEGER NOT NULL,
+        ip TEXT NOT NULL,
+        hostname TEXT,
+        latency_ms REAL,
+        guessed_type TEXT,
+        already_registered INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (scan_id, ip)
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_discovery_scans_started ON discovery_scans(started_at)')
     conn.commit()
     conn.close()
     migrate_db()
@@ -1002,6 +1026,74 @@ def run_flow_retention():
         conn.execute('DELETE FROM flow_top_pairs_1m WHERE bucket_ts < ?', (cutoff,))
         conn.execute('DELETE FROM flow_exporters WHERE last_seen_at < ?', (cutoff,))
         conn.commit()
+    finally:
+        conn.close()
+
+
+# 2-6: discovery scan history. 90 days is plenty for "did I already scan
+# this range recently" context without keeping it forever.
+DISCOVERY_SCAN_RETENTION_MS = 90 * 24 * 3600 * 1000
+
+
+def save_discovery_scan(range_text, requested_by, started_at, finished_at, host_count, results):
+    """results: the same list api_discovery_scan already builds for the HTTP
+    response ({ip, hostname, latencyMs, guessedType, alreadyRegistered}) --
+    persisted as-is rather than re-derived, so the history shows exactly
+    what the user saw at the time. Returns the new scan's id."""
+    conn = get_db()
+    cur = conn.execute(
+        'INSERT INTO discovery_scans(range_text,requested_by,started_at,finished_at,host_count,found_count) '
+        'VALUES (?,?,?,?,?,?)',
+        (range_text, requested_by, started_at, finished_at, host_count, len(results)))
+    scan_id = cur.lastrowid
+    if results:
+        conn.executemany(
+            'INSERT INTO discovery_scan_results(scan_id,ip,hostname,latency_ms,guessed_type,already_registered) '
+            'VALUES (?,?,?,?,?,?)',
+            [(scan_id, r['ip'], r.get('hostname'), r.get('latencyMs'), r.get('guessedType'),
+              1 if r.get('alreadyRegistered') else 0) for r in results])
+    conn.commit()
+    conn.close()
+    return scan_id
+
+
+def load_discovery_scans(limit=20):
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT id,range_text,requested_by,started_at,finished_at,host_count,found_count '
+        'FROM discovery_scans ORDER BY started_at DESC LIMIT ?', (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def load_discovery_scan_detail(scan_id):
+    conn = get_db()
+    scan = conn.execute('SELECT * FROM discovery_scans WHERE id=?', (scan_id,)).fetchone()
+    if not scan:
+        conn.close()
+        return None
+    results = conn.execute(
+        'SELECT ip,hostname,latency_ms,guessed_type,already_registered FROM discovery_scan_results '
+        'WHERE scan_id=? ORDER BY ip', (scan_id,)
+    ).fetchall()
+    conn.close()
+    out = dict(scan)
+    out['results'] = [dict(r) for r in results]
+    return out
+
+
+def run_discovery_retention():
+    cutoff = int(time.time() * 1000) - DISCOVERY_SCAN_RETENTION_MS
+    conn = get_db()
+    try:
+        old_ids = [r['id'] for r in conn.execute(
+            'SELECT id FROM discovery_scans WHERE started_at < ?', (cutoff,)).fetchall()]
+        if old_ids:
+            placeholders = ','.join('?' * len(old_ids))
+            conn.execute(f'DELETE FROM discovery_scan_results WHERE scan_id IN ({placeholders})', old_ids)
+            conn.execute(f'DELETE FROM discovery_scans WHERE id IN ({placeholders})', old_ids)
+            conn.commit()
     finally:
         conn.close()
 

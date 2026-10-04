@@ -2270,7 +2270,10 @@ function renderRegisterSkeleton(){
   el.innerHTML = `
     <div id="reg-edit-overlay"></div>
     <div class="card">
-      <div class="card-head"><div><h3>네트워크 자동 스캔</h3><span class="sub">IP 대역을 지정하면 살아있는 장비를 찾아 등록 후보로 보여줍니다</span></div></div>
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>네트워크 자동 스캔</h3><span class="sub">IP 대역을 지정하면 살아있는 장비를 찾아 등록 후보로 보여줍니다</span></div>
+        <button type="button" class="btn" id="scan-history-btn" style="margin-left:auto;white-space:nowrap">탐지 이력</button>
+      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
         <div class="field" style="flex:1;min-width:220px">
           <label>IP 대역</label>
@@ -2279,6 +2282,7 @@ function renderRegisterSkeleton(){
         <button type="button" class="btn primary" id="scan-start-btn">스캔 시작</button>
       </div>
       <div id="scan-error" style="color:var(--crit);font-size:11.5px;margin-top:8px"></div>
+      <div id="scan-history-panel" style="display:none;margin-top:12px"></div>
       <div id="scan-results" style="margin-top:12px"></div>
     </div>
     <div class="grid grid-3">
@@ -2515,11 +2519,45 @@ function renderRegisterSkeleton(){
   updateFormVisibility();
   markSnmpUntested();
 
+  function scanResultsTableHtml(results){
+    if(!results.length) return `<div class="empty-note">응답하는 장비를 찾지 못했습니다.</div>`;
+    return `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>IP</th><th>호스트명</th><th>응답시간</th><th>추정 장비 종류</th><th></th></tr></thead>
+        <tbody>
+          ${results.map(d=>`
+            <tr>
+              <td class="mono">${escapeHtml(d.ip)}</td>
+              <td>${escapeHtml(d.hostname||'-')}</td>
+              <td class="mono">${typeof d.latencyMs==='number' ? fmt0(d.latencyMs)+' ms' : '-'}</td>
+              <td>${d.guessedType ? escapeHtml(d.guessedType) : '<span style="color:var(--text-faint)">-</span>'}</td>
+              <td>${d.alreadyRegistered
+                ? `<span class="pill" style="font-size:11px">이미 등록됨</span>`
+                : `<button type="button" class="btn" data-fill-ip="${escapeHtml(d.ip)}" data-fill-name="${escapeHtml(d.hostname||d.ip)}">등록 폼에 채우기</button>`}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>
+      <div style="font-size:11px;color:var(--text-faint);margin-top:6px">${results.length}대 발견</div>
+    `;
+  }
+  function wireFillButtons(container){
+    $$('[data-fill-ip]', container).forEach(b=> b.addEventListener('click', ()=>{
+      exitEditMode();
+      $('#f-name').value = b.dataset.fillName;
+      $('#f-ip').value = b.dataset.fillIp;
+      regMode = 'ping';
+      $$('#reg-mode-chips .chip-btn').forEach(x=> x.classList.toggle('active', x.dataset.mode==='ping'));
+      updateFormVisibility();
+      $('#reg-form-card').scrollIntoView({behavior:'smooth', block:'start'});
+      $('#f-name').focus();
+    }));
+  }
   $('#scan-start-btn').addEventListener('click', async ()=>{
     const range = $('#scan-range').value.trim();
     const errEl = $('#scan-error');
     const resultsEl = $('#scan-results');
     errEl.textContent = '';
+    $('#scan-history-panel').style.display = 'none';
     if(!range){ errEl.textContent = '스캔할 IP 대역을 입력해주세요'; return; }
     const btn = $('#scan-start-btn');
     btn.disabled = true; btn.textContent = '스캔 중...';
@@ -2531,42 +2569,61 @@ function renderRegisterSkeleton(){
       });
       const j = await r.json();
       if(!r.ok) throw new Error(j.error || '스캔에 실패했습니다');
-      if(!j.results.length){
-        resultsEl.innerHTML = `<div class="empty-note">응답하는 장비를 찾지 못했습니다.</div>`;
-        return;
-      }
-      resultsEl.innerHTML = `
-        <div class="table-wrap"><table class="data reg-device-table">
-          <thead><tr><th>IP</th><th>호스트명</th><th>응답시간</th><th></th></tr></thead>
-          <tbody>
-            ${j.results.map(d=>`
-              <tr>
-                <td class="mono">${escapeHtml(d.ip)}</td>
-                <td>${escapeHtml(d.hostname||'-')}</td>
-                <td class="mono">${typeof d.latencyMs==='number' ? d.latencyMs+' ms' : '-'}</td>
-                <td>${d.alreadyRegistered
-                  ? `<span class="pill" style="font-size:11px">이미 등록됨</span>`
-                  : `<button type="button" class="btn" data-fill-ip="${escapeHtml(d.ip)}" data-fill-name="${escapeHtml(d.hostname||d.ip)}">등록 폼에 채우기</button>`}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table></div>
-        <div style="font-size:11px;color:var(--text-faint);margin-top:6px">${j.results.length}대 발견</div>
-      `;
-      $$('#scan-results [data-fill-ip]').forEach(b=> b.addEventListener('click', ()=>{
-        exitEditMode();
-        $('#f-name').value = b.dataset.fillName;
-        $('#f-ip').value = b.dataset.fillIp;
-        regMode = 'ping';
-        $$('#reg-mode-chips .chip-btn').forEach(x=> x.classList.toggle('active', x.dataset.mode==='ping'));
-        updateFormVisibility();
-        $('#reg-form-card').scrollIntoView({behavior:'smooth', block:'start'});
-        $('#f-name').focus();
-      }));
+      resultsEl.innerHTML = scanResultsTableHtml(j.results);
+      wireFillButtons(resultsEl);
     }catch(err){
       errEl.textContent = err.message;
       resultsEl.innerHTML = '';
     }finally{
       btn.disabled = false; btn.textContent = '스캔 시작';
+    }
+  });
+  $('#scan-history-btn').addEventListener('click', async ()=>{
+    const panel = $('#scan-history-panel');
+    if(panel.style.display !== 'none'){ panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    panel.innerHTML = `<div class="empty-note">불러오는 중...</div>`;
+    try{
+      const r = await apiFetch('/api/discovery/scans');
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error || '불러오기 실패');
+      if(!j.scans.length){ panel.innerHTML = `<div class="empty-note">탐지 이력이 없습니다.</div>`; return; }
+      panel.innerHTML = `
+        <div class="table-wrap"><table class="data reg-device-table">
+          <thead><tr><th>시각</th><th>대역</th><th>요청자</th><th>대상/발견</th><th></th></tr></thead>
+          <tbody>
+            ${j.scans.map(s=>`
+              <tr>
+                <td class="mono">${new Date(s.started_at).toLocaleString('ko-KR')}</td>
+                <td class="mono">${escapeHtml(s.range_text)}</td>
+                <td>${escapeHtml(s.requested_by||'-')}</td>
+                <td class="mono">${s.host_count} / ${s.found_count}</td>
+                <td><button type="button" class="btn" data-view-scan="${s.id}">결과 보기</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table></div>
+      `;
+      $$('[data-view-scan]', panel).forEach(b=> b.addEventListener('click', async ()=>{
+        const resultsEl = $('#scan-results');
+        resultsEl.innerHTML = `<div class="empty-note">불러오는 중...</div>`;
+        const r2 = await apiFetch(`/api/discovery/scans/${b.dataset.viewScan}`);
+        const detail = await r2.json();
+        if(!r2.ok){ resultsEl.innerHTML = `<div class="empty-note">${escapeHtml(detail.error||'불러오기 실패')}</div>`; return; }
+        // DB 조회(ORDER BY ip)는 문자열 정렬이라 "250"이 "30"보다 앞에
+        // 오는 식으로 어긋난다 -- 스캔 직후 응답(discovery.scan)과 같은
+        // 옥텟 기준 숫자 정렬로 맞춘다.
+        const mapped = detail.results.map(x=>({ip:x.ip, hostname:x.hostname, latencyMs:x.latency_ms,
+          guessedType:x.guessed_type, alreadyRegistered:!!x.already_registered}))
+          .sort((a,b)=> a.ip.split('.').map(Number).reduce((n,p,i)=>n+p*Math.pow(1000,3-i),0)
+                       - b.ip.split('.').map(Number).reduce((n,p,i)=>n+p*Math.pow(1000,3-i),0));
+        resultsEl.innerHTML = `<div style="font-size:11.5px;color:var(--text-dim);margin-bottom:6px">
+          ${new Date(detail.started_at).toLocaleString('ko-KR')} · ${escapeHtml(detail.range_text)} 스캔 결과</div>`
+          + scanResultsTableHtml(mapped);
+        wireFillButtons(resultsEl);
+        resultsEl.scrollIntoView({behavior:'smooth', block:'start'});
+      }));
+    }catch(err){
+      panel.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
     }
   });
 

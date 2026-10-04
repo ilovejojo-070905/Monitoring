@@ -443,7 +443,9 @@ def api_system_health():
 def api_discovery_scan():
     body = request.get_json(force=True)
     range_text = (body.get('range') or '').strip()
+    started_at = int(time.time() * 1000)
     try:
+        host_count = len(discovery.parse_range(range_text))
         results = discovery.scan(range_text)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
@@ -453,8 +455,26 @@ def api_discovery_scan():
     existing_ips = {d['ip'] for d in storage.load_devices() if d.get('ip')}
     for r in results:
         r['alreadyRegistered'] = r['ip'] in existing_ips
+    finished_at = int(time.time() * 1000)
+    scan_id = storage.save_discovery_scan(range_text, session.get('user'), started_at, finished_at,
+                                           host_count, results)
     audit('NETWORK_SCAN', target=range_text, details=f'{len(results)}대 발견')
-    return jsonify({'results': results})
+    return jsonify({'scanId': scan_id, 'results': results})
+
+
+@app.get('/api/discovery/scans')
+@require_role('OPERATOR')
+def api_discovery_scans():
+    return jsonify({'scans': storage.load_discovery_scans()})
+
+
+@app.get('/api/discovery/scans/<int:scan_id>')
+@require_role('OPERATOR')
+def api_discovery_scan_detail(scan_id):
+    detail = storage.load_discovery_scan_detail(scan_id)
+    if not detail:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(detail)
 
 
 @app.post('/api/devices/test-snmp')
