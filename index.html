@@ -474,6 +474,23 @@
     <button type="submit" style="padding:11px;border-radius:8px;border:none;background:var(--accent-gradient);color:#fff;font-weight:600;box-shadow:0 4px 18px rgba(124,92,255,.4);">비밀번호 변경</button>
   </form>
 </div>
+<div id="totpVerifyOverlay" style="position:fixed;inset:0;z-index:201;display:none;align-items:center;justify-content:center;background:rgba(4,6,14,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);">
+  <form id="totpVerifyForm" style="width:340px;max-width:90vw;background:var(--surface);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--border);border-radius:var(--radius);padding:32px;display:flex;flex-direction:column;gap:14px;box-shadow:0 30px 80px rgba(0,0,0,.5),var(--glow-accent);">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;">
+      <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-gradient);box-shadow:var(--glow-accent),0 0 0 1px rgba(255,255,255,.12) inset;display:flex;align-items:center;justify-content:center;flex:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="19" height="19"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M11 18h2"/></svg>
+      </div>
+      <b style="font-size:16px;color:var(--text);">2단계 인증</b>
+    </div>
+    <div id="totpVerifyHint" style="font-size:12.5px;color:var(--text-dim);line-height:1.5;">인증 앱에 표시된 6자리 코드를 입력하세요.</div>
+    <label style="font-size:12px;color:var(--text-dim);">
+      <input id="totpVerifyCode" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" style="margin-top:4px;width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-family:inherit;font-size:20px;letter-spacing:6px;text-align:center;box-sizing:border-box;">
+    </label>
+    <div id="totpVerifyError" style="color:var(--crit);font-size:12px;min-height:16px;"></div>
+    <button type="submit" style="padding:11px;border-radius:8px;border:none;background:var(--accent-gradient);color:#fff;font-weight:600;box-shadow:0 4px 18px rgba(124,92,255,.4);">확인</button>
+    <button type="button" id="totpVerifyUseRecoveryBtn" style="background:none;border:none;color:var(--text-dim);font-size:11.5px;text-decoration:underline;cursor:pointer;padding:0;">인증 앱을 사용할 수 없나요? 복구 코드 사용</button>
+  </form>
+</div>
 <div class="app-shell">
   <aside class="sidebar" id="sidebar">
     <div class="brand">
@@ -518,6 +535,10 @@
     <button class="nav-item" data-view="incidents">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.9 18.5A1.6 1.6 0 0 0 3.3 21h17.4a1.6 1.6 0 0 0 1.4-2.5L13.7 3.9a1.6 1.6 0 0 0-2.8 0Z"/></svg>
       이벤트 / 장애 <span class="count" id="nav-count-inc">-</span>
+    </button>
+    <button class="nav-item" data-view="security">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      보안 (2FA / API 토큰)
     </button>
     </div></div>
 
@@ -595,6 +616,7 @@
     <section class="view" data-view="register" id="view-register"></section>
 
     <!-- ============ USERS ============ -->
+    <section class="view" data-view="security" id="view-security"></section>
     <section class="view" data-view="channels" id="view-channels"></section>
     <section class="view" data-view="users" id="view-users"></section>
 
@@ -750,6 +772,66 @@ async function checkAuth(){
   }catch(e){ return null; }
 }
 
+/* 5-1: the second step of a 2FA-protected login -- /api/auth/login comes
+   back with {needsTotp:true} instead of a real session (see its own
+   comment) when the account has 2FA enabled, and this is the only thing
+   that can turn that pending state into session['user'] actually being
+   set. Mirrors promptForcedPasswordChange()'s shape: resolves with the
+   server's JSON body on success. */
+function promptTotpVerify(){
+  return new Promise((resolve)=>{
+    $('#totpVerifyError').textContent = '';
+    $('#totpVerifyCode').value = '';
+    let useRecovery = false;
+    function applyMode(){
+      if(useRecovery){
+        $('#totpVerifyHint').textContent = '등록 시 발급받은 복구 코드를 입력하세요 (예: ABCDE-12345).';
+        $('#totpVerifyCode').placeholder = 'XXXXX-XXXXX';
+        $('#totpVerifyCode').maxLength = 11;
+        $('#totpVerifyUseRecoveryBtn').textContent = '← 인증 앱 코드로 돌아가기';
+      } else {
+        $('#totpVerifyHint').textContent = '인증 앱에 표시된 6자리 코드를 입력하세요.';
+        $('#totpVerifyCode').placeholder = '000000';
+        $('#totpVerifyCode').maxLength = 6;
+        $('#totpVerifyUseRecoveryBtn').textContent = '인증 앱을 사용할 수 없나요? 복구 코드 사용';
+      }
+      $('#totpVerifyCode').value = '';
+      $('#totpVerifyError').textContent = '';
+    }
+    applyMode();
+    $('#totpVerifyOverlay').style.display = 'flex';
+    function onToggle(){ useRecovery = !useRecovery; applyMode(); }
+    $('#totpVerifyUseRecoveryBtn').addEventListener('click', onToggle);
+    $('#totpVerifyForm').addEventListener('submit', async function onSubmit(e){
+      e.preventDefault();
+      $('#totpVerifyError').textContent = '';
+      const val = $('#totpVerifyCode').value.trim();
+      const body = useRecovery ? {recoveryCode: val} : {code: val};
+      try{
+        const r = await fetch('/api/auth/totp-verify', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+        });
+        const j = await r.json();
+        if(!r.ok) throw new Error(j.error || '인증 실패');
+        $('#totpVerifyForm').removeEventListener('submit', onSubmit);
+        $('#totpVerifyUseRecoveryBtn').removeEventListener('click', onToggle);
+        $('#totpVerifyOverlay').style.display = 'none';
+        resolve(j);
+      }catch(err){
+        $('#totpVerifyError').textContent = err.message;
+      }
+    });
+  });
+}
+
+function _completeLogin(j){
+  CSRF_TOKEN = j.csrfToken; CURRENT_ROLE = j.role; CURRENT_USER = j.username;
+  $('#loginOverlay').style.display = 'none';
+  $('#loginPassword').value = '';
+  $('#foot-user').textContent = j.username + (j.role!=='ADMIN' ? ` (${j.role})` : '');
+  applyRoleUI();
+}
+
 let _reauthPromise = null;
 function reAuth(){
   if(_reauthPromise) return _reauthPromise;
@@ -766,8 +848,11 @@ function reAuth(){
           method:'POST', headers:{'Content-Type':'application/json'},
           body: JSON.stringify({username:u, password:p}),
         });
-        const j = await r.json();
+        let j = await r.json();
         if(!r.ok) throw new Error(j.error || '로그인 실패');
+        if(j.needsTotp){
+          j = await promptTotpVerify();
+        }
         if(j.mustChangePassword){
           // Login itself succeeded (the server already set a valid session
           // cookie), but the account is still on the installer's default
@@ -781,12 +866,8 @@ function reAuth(){
           $('#loginError').textContent = changed ? '비밀번호가 변경되었습니다. 새 비밀번호로 다시 로그인해주세요.' : '';
           return;
         }
-        CSRF_TOKEN = j.csrfToken; CURRENT_ROLE = j.role; CURRENT_USER = j.username;
+        _completeLogin(j);
         $('#loginForm').removeEventListener('submit', onSubmit);
-        $('#loginOverlay').style.display = 'none';
-        $('#loginPassword').value = '';
-        $('#foot-user').textContent = j.username + (j.role!=='ADMIN' ? ` (${j.role})` : '');
-        applyRoleUI();
         _reauthPromise = null;
         resolve();
       }catch(err){
@@ -876,6 +957,21 @@ async function apiFetch(url, opts){
   if(r.status === 401){
     await reAuth();
     throw new Error('세션이 만료되어 다시 로그인했습니다. 다시 시도해주세요.');
+  }
+  // 5-1 "관리자 계정 2FA 적용 정책": require_role() 403s every OPERATOR+
+  // action for an ADMIN session that hasn't enrolled 2FA yet (read-only
+  // views still work, which is why this isn't caught earlier as a login
+  // failure). Surface it as a clear, specific message and jump straight to
+  // the enrollment card rather than a generic "forbidden".
+  if(r.status === 403){
+    try{
+      const peek = await r.clone().json();
+      if(peek && peek.error === 'totp_enrollment_required'){
+        alert('관리자 계정은 2단계 인증(2FA) 설정이 필요합니다. 보안 화면에서 먼저 설정해주세요.');
+        const nav = document.querySelector('[data-view="security"]');
+        if(nav) nav.click();
+      }
+    }catch(e){}
   }
   return r;
 }
@@ -3067,6 +3163,256 @@ function renderRegister(){
   renderMaintWindowTargetOptions();
 }
 
+/* ================= 5-1/5-2 보안: 2FA + API 토큰 ================= */
+let securityLoaded = false;
+function renderSecuritySkeleton(){
+  const el = $('#view-security');
+  el.innerHTML = `
+    <div class="card" id="totp-card">
+      <div class="card-head"><div><h3>2단계 인증 (2FA)</h3><span class="sub">인증 앱(Google Authenticator, Authy 등)의 TOTP 코드로 로그인을 한 번 더 확인합니다. 관리자(ADMIN) 계정은 설정 전까지 조회 외의 작업이 제한됩니다.</span></div></div>
+      <div id="totp-body"></div>
+    </div>
+    <div class="card" id="token-card">
+      <div class="card-head"><div><h3>API 토큰</h3><span class="sub">발급 시 토큰 원문이 한 번만 표시됩니다. 분실 시 재발급하세요. 요청 시 <span class="mono">Authorization: Bearer &lt;토큰&gt;</span> 헤더를 사용합니다.</span></div></div>
+      <form id="token-create-form" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        <div class="field" style="flex:1;min-width:140px"><label>이름 (용도)</label><input type="text" id="tok-name" placeholder="예: 모니터링 대시보드 연동" maxlength="80" required></div>
+        <div class="field" style="width:140px"><label>권한 범위</label>
+          <select id="tok-scope"><option value="VIEWER">VIEWER (조회)</option><option value="OPERATOR">OPERATOR (조회+변경)</option></select>
+        </div>
+        <div class="field" style="width:140px"><label>만료일</label>
+          <select id="tok-expires">
+            <option value="30">30일</option><option value="90" selected>90일</option><option value="365">1년</option><option value="">만료 없음</option>
+          </select>
+        </div>
+        <button type="submit" class="btn primary">토큰 발급</button>
+      </form>
+      <div id="token-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
+      <div id="token-new-box" style="display:none;margin-bottom:12px;padding:12px;border-radius:8px;border:1px solid var(--accent);background:var(--accent-soft)"></div>
+      <div id="token-list"></div>
+      <div id="token-usage-panel" style="display:none;margin-top:12px"></div>
+    </div>
+  `;
+  wireSecurityHandlers();
+}
+function totpFieldWrap(labelText, inputHtml){
+  return `<div class="field"><label>${labelText}</label>${inputHtml}</div>`;
+}
+async function renderTotpBody(){
+  const body = $('#totp-body');
+  if(!body) return;
+  const r = await apiFetch('/api/auth/totp/status');
+  const st = await r.json();
+  if(st.enabled){
+    body.innerHTML = `
+      <div class="kv-grid" style="margin-bottom:12px">
+        <div class="kv"><span>상태</span><span class="pill good" style="width:fit-content"><span class="dot"></span>사용 중</span></div>
+        <div class="kv"><span>남은 복구 코드</span><b id="totp-recovery-count">${st.recoveryCodesRemaining}개</b></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        ${totpFieldWrap('인증 코드 (아래 작업에 공통 사용)', '<input type="text" id="totp-action-code" inputmode="numeric" maxlength="6" placeholder="000000" style="width:120px">')}
+        <button type="button" class="btn" id="totp-regen-btn">복구 코드 재발급</button>
+        <button type="button" class="btn" id="totp-disable-btn" style="color:var(--crit)">2FA 비활성화</button>
+      </div>
+      <div id="totp-action-error" style="color:var(--crit);font-size:11.5px;margin-top:8px"></div>
+      <div id="totp-recovery-box" style="display:none;margin-top:12px"></div>
+    `;
+    $('#totp-regen-btn').addEventListener('click', async ()=>{
+      const code = $('#totp-action-code').value.trim();
+      const errEl = $('#totp-action-error');
+      errEl.textContent = '';
+      const ok = await showConfirm('기존 복구 코드가 모두 무효화되고 새 코드가 발급됩니다. 계속할까요?', {title:'복구 코드 재발급', okText:'재발급'});
+      if(!ok) return;
+      const r2 = await apiFetch('/api/auth/totp/recovery-codes/regenerate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code})});
+      const j2 = await r2.json();
+      if(!r2.ok){ errEl.textContent = j2.error||'재발급 실패'; return; }
+      // Deliberately NOT a full renderTotpBody() re-render here -- that
+      // would replace #totp-recovery-box (and the codes just shown in it)
+      // out from under the user the instant its own fetch resolved. A full
+      // re-render only happens on /enroll/confirm below, where the box is
+      // guaranteed to exist fresh in the post-render DOM instead of racing
+      // against it.
+      showRecoveryCodes(j2.recoveryCodes, '#totp-recovery-box');
+      const countEl = $('#totp-recovery-count');
+      if(countEl) countEl.textContent = j2.recoveryCodes.length + '개';
+    });
+    $('#totp-disable-btn').addEventListener('click', async ()=>{
+      const code = $('#totp-action-code').value.trim();
+      const errEl = $('#totp-action-error');
+      errEl.textContent = '';
+      const ok = await showConfirm('2FA를 비활성화할까요? 다음 로그인부터 비밀번호만으로 로그인됩니다.', {title:'2FA 비활성화', okText:'비활성화'});
+      if(!ok) return;
+      const r2 = await apiFetch('/api/auth/totp/disable', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code})});
+      const j2 = await r2.json();
+      if(!r2.ok){ errEl.textContent = j2.error||'비활성화 실패'; return; }
+      renderTotpBody();
+    });
+  } else {
+    body.innerHTML = `
+      <div class="kv-grid" style="margin-bottom:12px">
+        <div class="kv"><span>상태</span><span class="pill neutral" style="width:fit-content">사용 안 함</span></div>
+      </div>
+      <button type="button" class="btn primary" id="totp-start-btn">2FA 설정 시작</button>
+      <div id="totp-enroll-box" style="margin-top:14px"></div>
+    `;
+    $('#totp-start-btn').addEventListener('click', async ()=>{
+      const r2 = await apiFetch('/api/auth/totp/enroll/start', {method:'POST'});
+      const j2 = await r2.json();
+      if(!r2.ok){ return; }
+      $('#totp-enroll-box').innerHTML = `
+        <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+          <div style="width:180px;height:180px;background:#fff;border-radius:8px;padding:8px;flex:none">${j2.qrSvg}</div>
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">인증 앱으로 QR을 스캔하거나, 아래 키를 직접 입력하세요.</div>
+            <div class="mono" style="font-size:13px;background:var(--surface-2);padding:8px;border-radius:6px;word-break:break-all;margin-bottom:12px">${escapeHtml(j2.secret)}</div>
+            <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+              ${totpFieldWrap('앱에 표시된 6자리 코드', '<input type="text" id="totp-confirm-code" inputmode="numeric" maxlength="6" placeholder="000000" style="width:120px">')}
+              <button type="button" class="btn primary" id="totp-confirm-btn">확인하고 활성화</button>
+            </div>
+            <div id="totp-confirm-error" style="color:var(--crit);font-size:11.5px;margin-top:8px"></div>
+          </div>
+        </div>`;
+      $('#totp-confirm-btn').addEventListener('click', async ()=>{
+        const code = $('#totp-confirm-code').value.trim();
+        const errEl = $('#totp-confirm-error');
+        errEl.textContent = '';
+        const r3 = await apiFetch('/api/auth/totp/enroll/confirm', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code})});
+        const j3 = await r3.json();
+        if(!r3.ok){ errEl.textContent = j3.error||'확인 실패'; return; }
+        // Must await the re-render before showing codes -- it rebuilds
+        // #totp-body from the "not enrolled" layout to the "enrolled" one,
+        // and only the latter has #totp-recovery-box at all. Showing codes
+        // first (or racing it via setTimeout) targets a box that doesn't
+        // exist yet in the DOM and silently shows nothing.
+        await renderTotpBody();
+        showRecoveryCodes(j3.recoveryCodes, '#totp-recovery-box');
+      });
+    });
+  }
+}
+function showRecoveryCodes(codes, selector){
+  const box = $(selector);
+  if(!box) return;
+  box.style.display = '';
+  box.innerHTML = `
+    <div style="font-size:12.5px;color:var(--text);font-weight:600;margin-bottom:6px">복구 코드 (지금만 표시됩니다 -- 안전한 곳에 보관하세요)</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">인증 앱을 사용할 수 없을 때 코드 1개당 한 번씩 로그인에 사용할 수 있습니다.</div>
+    <div class="mono" style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;background:var(--surface-2);padding:10px;border-radius:6px;font-size:13px">
+      ${codes.map(c=>`<div>${escapeHtml(c)}</div>`).join('')}
+    </div>`;
+}
+async function renderTokenList(){
+  const listEl = $('#token-list');
+  if(!listEl) return;
+  try{
+    const r = await apiFetch('/api/tokens');
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || '불러오기 실패');
+    if(!j.tokens.length){
+      listEl.innerHTML = '<div class="empty-note">발급된 API 토큰이 없습니다.</div>';
+      return;
+    }
+    const now = Date.now();
+    listEl.innerHTML = `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>이름</th><th>범위</th><th>생성일</th><th>만료</th><th>마지막 사용</th><th>상태</th><th></th></tr></thead>
+        <tbody>
+          ${j.tokens.map(t=>{
+            const revoked = !!t.revoked_at;
+            const expired = t.expires_at && t.expires_at < now;
+            const statusHtml = revoked ? '<span class="pill neutral" style="font-size:9px">폐기됨</span>'
+              : expired ? '<span class="pill warn" style="font-size:9px">만료됨</span>'
+              : '<span class="pill good" style="font-size:9px">활성</span>';
+            return `
+            <tr>
+              <td class="name">${escapeHtml(t.name)}${t.owner_username?` <span style="color:var(--text-faint);font-size:10px">(${escapeHtml(t.owner_username)})</span>`:''}</td>
+              <td class="mono">${t.scope}</td>
+              <td style="font-size:11px;white-space:nowrap">${fmtWhen(t.created_at)}</td>
+              <td style="font-size:11px;white-space:nowrap">${t.expires_at?fmtWhen(t.expires_at):'없음'}</td>
+              <td style="font-size:11px;white-space:nowrap">${t.last_used_at?fmtWhen(t.last_used_at):'사용 안 됨'}</td>
+              <td>${statusHtml}</td>
+              <td style="display:flex;gap:6px">
+                <button type="button" class="btn" data-tok-usage="${t.id}">이력</button>
+                ${revoked ? '' : `<button type="button" class="btn" data-tok-rotate="${t.id}">재발급</button><button type="button" class="btn" data-tok-revoke="${t.id}">폐기</button>`}
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>`;
+    $$('[data-tok-revoke]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const ok = await showConfirm('이 토큰을 폐기할까요? 이 토큰을 사용하는 연동은 즉시 동작하지 않게 됩니다.', {title:'토큰 폐기', okText:'폐기'});
+      if(!ok) return;
+      await apiFetch('/api/tokens/'+b.dataset.tokRevoke, {method:'DELETE'});
+      renderTokenList();
+    }));
+    $$('[data-tok-rotate]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const ok = await showConfirm('기존 토큰을 폐기하고 같은 이름/범위로 새 토큰을 발급할까요?', {title:'토큰 재발급', okText:'재발급'});
+      if(!ok) return;
+      const r2 = await apiFetch('/api/tokens/'+b.dataset.tokRotate+'/rotate', {method:'POST'});
+      const j2 = await r2.json();
+      if(!r2.ok){ alert(j2.error||'재발급 실패'); return; }
+      showNewToken(j2.token);
+      renderTokenList();
+    }));
+    $$('[data-tok-usage]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const panel = $('#token-usage-panel');
+      if(panel.style.display !== 'none' && panel.dataset.tokenId === b.dataset.tokUsage){ panel.style.display = 'none'; return; }
+      panel.dataset.tokenId = b.dataset.tokUsage;
+      panel.style.display = '';
+      panel.innerHTML = '<div class="empty-note">불러오는 중...</div>';
+      const r2 = await apiFetch('/api/tokens/'+b.dataset.tokUsage+'/usage');
+      const j2 = await r2.json();
+      if(!r2.ok){ panel.innerHTML = `<div class="empty-note">${escapeHtml(j2.error||'불러오기 실패')}</div>`; return; }
+      if(!j2.usage.length){ panel.innerHTML = '<div class="empty-note">호출 이력이 없습니다</div>'; return; }
+      panel.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>시각</th><th>메서드</th><th>경로</th><th>상태</th><th>IP</th></tr></thead>
+        <tbody>${j2.usage.map(u=>`<tr>
+          <td style="font-size:11px;white-space:nowrap">${fmtWhen(u.ts)}</td>
+          <td class="mono">${escapeHtml(u.method)}</td>
+          <td class="mono" style="font-size:11px">${escapeHtml(u.path)}</td>
+          <td class="mono">${u.status_code}</td>
+          <td class="mono" style="font-size:11px">${escapeHtml(u.source_ip||'-')}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+    }));
+  }catch(err){
+    listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+  }
+}
+function showNewToken(token){
+  const box = $('#token-new-box');
+  box.style.display = '';
+  box.innerHTML = `
+    <div style="font-size:12.5px;font-weight:600;margin-bottom:6px">토큰이 발급되었습니다 -- 지금만 표시됩니다</div>
+    <div class="mono" style="font-size:12.5px;background:var(--surface-2);padding:8px;border-radius:6px;word-break:break-all;margin-bottom:6px">${escapeHtml(token)}</div>
+    <div style="font-size:11px;color:var(--text-dim)">이 창을 벗어나면 다시 볼 수 없습니다. 분실 시 재발급하세요.</div>`;
+}
+function wireSecurityHandlers(){
+  $('#token-create-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const errEl = $('#token-error');
+    errEl.textContent = '';
+    $('#token-new-box').style.display = 'none';
+    const body = {
+      name: $('#tok-name').value.trim(), scope: $('#tok-scope').value,
+      expiresDays: $('#tok-expires').value ? parseInt($('#tok-expires').value) : null,
+    };
+    const r = await apiFetch('/api/tokens', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error||'발급 실패'; return; }
+    $('#tok-name').value = '';
+    showNewToken(j.token);
+    renderTokenList();
+  });
+}
+function renderSecurity(){
+  // Settings page, same "load once" rule as renderChannels() -- a periodic
+  // re-render would wipe an in-progress QR/code-confirm or token-create form.
+  if(securityLoaded) return;
+  securityLoaded = true;
+  renderTotpBody();
+  renderTokenList();
+}
+
 /* ================= 2-4 알림 채널 ================= */
 let channelsLoaded = false;
 function channelCardHtml(prefix, title, sub, bodyHtml, testable){
@@ -3417,7 +3763,7 @@ function renderUsersSkeleton(){
     <div class="card">
       <div class="card-head"><div><h3>계정 목록</h3><span class="sub" id="user-count-sub"></span></div></div>
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>아이디</th><th>역할</th><th>생성일</th><th>마지막 로그인</th><th>상태</th><th></th></tr></thead>
+        <thead><tr><th>아이디</th><th>역할</th><th>생성일</th><th>마지막 로그인</th><th>상태</th><th>2FA</th><th></th></tr></thead>
         <tbody id="user-tbody"></tbody>
       </table></div>
     </div>
@@ -3463,14 +3809,16 @@ async function renderUsers(){
       <td class="mono">${u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
       <td class="mono">${u.last_login_at ? new Date(u.last_login_at).toLocaleString('ko-KR') : '-'}</td>
       <td>${statusHtml}</td>
+      <td>${u.totp_enabled ? '<span class="pill good" style="font-size:9px">사용 중</span>' : (u.role==='ADMIN' ? '<span class="pill crit" style="font-size:9px">미설정</span>' : '<span class="pill neutral" style="font-size:9px">사용 안 함</span>')}</td>
       <td style="display:flex;gap:6px;flex-wrap:wrap">
         ${canManage ? `<button type="button" class="btn" data-edituser="${u.id}" data-role="${u.role}" data-username="${escapeHtml(u.username)}">수정</button>` : ''}
         ${canManage && locked ? `<button type="button" class="btn" data-unlock="${u.id}">잠금 해제</button>` : ''}
+        ${canManage && u.totp_enabled ? `<button type="button" class="btn" data-totpreset="${u.id}">2FA 초기화</button>` : ''}
         ${canManage && u.username!==CURRENT_USER ? `<button type="button" class="btn" data-toggleactive="${u.id}" data-active="${u.is_active?1:0}">${inactive?'활성화':'비활성화'}</button>` : ''}
         ${canManage && u.username!==CURRENT_USER ? `<button type="button" class="btn" data-deluser="${u.id}">삭제</button>` : ''}
       </td>
     </tr>`;
-  }).join('') || `<tr><td colspan="6"><div class="empty-note">계정이 없습니다</div></td></tr>`;
+  }).join('') || `<tr><td colspan="7"><div class="empty-note">계정이 없습니다</div></td></tr>`;
   $$('#user-tbody [data-deluser]').forEach(b=> b.addEventListener('click', async ()=>{
     if(!(await showConfirm('이 계정을 삭제할까요?', {title:'계정 삭제', okText:'삭제'}))) return;
     const r = await apiFetch('/api/users/'+b.dataset.deluser, {method:'DELETE'});
@@ -3480,6 +3828,14 @@ async function renderUsers(){
   }));
   $$('#user-tbody [data-unlock]').forEach(b=> b.addEventListener('click', async ()=>{
     await apiFetch('/api/users/'+b.dataset.unlock+'/unlock', {method:'POST'});
+    renderUsers();
+  }));
+  $$('#user-tbody [data-totpreset]').forEach(b=> b.addEventListener('click', async ()=>{
+    const ok = await showConfirm('이 계정의 2FA를 초기화할까요? 기존 인증 앱 등록과 복구 코드가 모두 무효화되고, 현재 로그인된 세션도 함께 종료됩니다. 분실/교체된 기기 때문일 때만 사용하세요.', {title:'2FA 초기화', okText:'초기화'});
+    if(!ok) return;
+    const r = await apiFetch('/api/users/'+b.dataset.totpreset+'/totp/reset', {method:'POST'});
+    const j = await r.json();
+    if(!r.ok){ alert(j.error||'초기화 실패'); return; }
     renderUsers();
   }));
   $$('#user-tbody [data-toggleactive]').forEach(b=> b.addEventListener('click', async ()=>{
@@ -4173,6 +4529,7 @@ const VIEWS = {
   facility: {skeleton:renderFacilitySkeleton, render:renderFacility, title:'전산실 설비 관리 (FMS)', sub:'UPS · 항온항습기 · 전원 설비 모니터링'},
   incidents: {skeleton:renderIncidentsSkeleton, render:renderIncidents, title:'이벤트 / 장애 관리', sub:'전체 영역 통합 이벤트 로그 및 조치 이력'},
   register: {skeleton:renderRegisterSkeleton, render:renderRegister, title:'장비 등록', sub:'신규 서버 · DB · 네트워크 · 설비 등록 및 관리'},
+  security: {skeleton:renderSecuritySkeleton, render:renderSecurity, title:'보안', sub:'2단계 인증(2FA)과 API 토큰 관리'},
   channels: {skeleton:renderChannelsSkeleton, render:renderChannels, title:'알림 채널', sub:'이메일·Slack·Teams·카카오톡·SMS 알림 채널 설정'},
   users: {skeleton:renderUsersSkeleton, render:renderUsers, title:'사용자 관리', sub:'로그인 계정 및 권한 관리 (ADMIN)'},
 };

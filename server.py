@@ -17,12 +17,13 @@ from collections import defaultdict, deque
 from datetime import timedelta, datetime
 from functools import wraps
 
-from flask import Flask, Response, jsonify, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, request, send_from_directory, session
 from waitress import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import storage
 import validation
+import totp
 from applog import app_logger, safe_log_value
 from collector import state, scheduler, health, metrics, thresholds, maintenance
 from collector import agent_collector, ping_collector
@@ -144,8 +145,28 @@ def _ip_rate_limited(ip):
     return False
 
 
+def _current_username():
+    """The acting identity for this request, regardless of auth method --
+    a browser session's username, or (5-2) an API token's owning user when
+    this request authenticated via Authorization: Bearer instead. Every
+    call site that used to read session.get('user')/session['user'] purely
+    to answer "who did this" (audit attribution, ownership checks) should
+    go through this instead, so those fields/checks stay correct for a
+    token-authenticated request rather than silently seeing None or
+    crashing on a direct session['user'] subscript."""
+    return session.get('user') or getattr(g, 'api_token_row', {}).get('owner_username')
+
+
+def _current_role():
+    """Same idea as _current_username() but for the acting role/scope --
+    an API token's scope is rank-compared via the exact same storage.
+    ROLE_RANK table a session role is, so this is the one place code that
+    needs "what rank is this request allowed to act as" should read from."""
+    return session.get('role') or getattr(g, 'api_token_row', {}).get('scope')
+
+
 def audit(action, target=None, details=None):
-    storage.write_audit(session.get('user'), action, target, details, request.remote_addr)
+    storage.write_audit(_current_username(), action, target, details, request.remote_addr)
 
 
 def _diff_str(before, after, keys):
@@ -163,15 +184,42 @@ def _diff_str(before, after, keys):
     return ', '.join(parts)
 
 
+def _handle_token_auth(fn, token, min_role, args, kwargs):
+    """5-2: the Authorization: Bearer branch of require_role() -- a
+    completely separate code path from the session branch below (per
+    "관리자 세션과 API 토큰 인증을 분리"), with its own scope check instead of
+    session['role'], no CSRF check (a bearer token carries no ambient
+    browser credential for a forged cross-site request to ride along on,
+    unlike a cookie), and its own usage log instead of the CSRF/session
+    audit events."""
+    token_row = storage.find_api_token(token)
+    if not token_row:
+        return jsonify({'error': 'invalid_token'}), 401
+    if storage.ROLE_RANK.get(token_row['scope'], -1) < storage.ROLE_RANK.get(min_role, 0):
+        storage.write_audit(token_row['owner_username'], 'API_TOKEN_FORBIDDEN', target=request.path,
+                             details=f"scope={token_row['scope']} needs {min_role}", source_ip=request.remote_addr)
+        return jsonify({'error': 'forbidden'}), 403
+    g.api_token_row = token_row
+    storage.touch_api_token_last_used(token_row['id'])
+    resp = fn(*args, **kwargs)
+    status_code = resp[1] if isinstance(resp, tuple) else getattr(resp, 'status_code', 200)
+    storage.record_api_token_usage(token_row['id'], request.method, request.path, status_code, request.remote_addr)
+    return resp
+
+
 def require_role(min_role='VIEWER'):
     """Replaces the old login_required for every protected route: checks the
     user is logged in, that their session hasn't been invalidated by a
     logout/password-change elsewhere (session_version), that their role meets
     the route's minimum, and -- for state-changing methods -- that a valid
-    CSRF token was sent."""
+    CSRF token was sent. Also accepts an Authorization: Bearer <api-token>
+    in place of a session entirely (5-2) -- see _handle_token_auth above."""
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
+            auth_header = request.headers.get('Authorization', '')
+            if auth_header.startswith('Bearer '):
+                return _handle_token_auth(fn, auth_header[7:].strip(), min_role, args, kwargs)
             username = session.get('user')
             if not username:
                 return jsonify({'error': 'unauthorized'}), 401
@@ -182,6 +230,17 @@ def require_role(min_role='VIEWER'):
             if storage.ROLE_RANK.get(session.get('role'), -1) < storage.ROLE_RANK.get(min_role, 0):
                 audit('AUTHORIZATION_FAILURE', target=request.path, details=f"role={session.get('role')} needs {min_role}")
                 return jsonify({'error': 'forbidden'}), 403
+            # 5-1 "관리자 계정 2FA 적용 정책": every OPERATOR+-ranked route is
+            # blocked for an ADMIN session until 2FA is enrolled -- VIEWER-
+            # ranked routes stay open, which is what actually lets them
+            # reach every /api/auth/totp/* endpoint (all VIEWER-ranked) to
+            # enroll in the first place, log out, or change their password,
+            # with no separate exemption list to keep in sync as routes
+            # change.
+            if session.get('role') == 'ADMIN' and min_role != 'VIEWER':
+                user_row = storage.get_user_by_username(username)
+                if user_row and not user_row['totp_enabled']:
+                    return jsonify({'error': 'totp_enrollment_required'}), 403
             if request.method in CSRF_METHODS:
                 token = request.headers.get('X-CSRF-Token')
                 if not token or token != session.get('csrf'):
@@ -211,6 +270,20 @@ def api_login():
         storage.write_audit(username or None, 'LOGIN_FAILED', source_ip=ip)
         return jsonify({'error': '아이디 또는 비밀번호가 올바르지 않습니다'}), 401
     session.clear()  # session-fixation defense: never reuse whatever session existed pre-login
+    if result['totp_enabled']:
+        # 5-1: password is correct, but the real session (session['user'],
+        # ['role'], the CSRF token) is NOT established yet -- require_role
+        # keys entirely off session['user'] being set, so leaving it unset
+        # here is what actually blocks every protected route until the
+        # second factor is verified, not just a frontend-side gate. A
+        # short-lived 'pending' marker is all the session carries in the
+        # meantime; /api/auth/totp-verify is the only thing that can turn
+        # it into a real login.
+        session['pending_2fa_user_id'] = result['user_id']
+        session['pending_2fa_username'] = result['username']
+        session['pending_2fa_exp'] = int(time.time()) + 300
+        session.permanent = True
+        return jsonify({'ok': True, 'needsTotp': True})
     csrf_token = secrets.token_hex(16)
     session['user'] = result['username']
     session['role'] = result['role']
@@ -220,6 +293,59 @@ def api_login():
     storage.write_audit(result['username'], 'LOGIN', source_ip=ip)
     return jsonify({'ok': True, 'username': result['username'], 'role': result['role'], 'csrfToken': csrf_token,
                      'mustChangePassword': result.get('must_change_password', False)})
+
+
+@app.post('/api/auth/totp-verify')
+def api_totp_verify():
+    """Completes a login that /api/auth/login left pending because the
+    account has 2FA enabled (see above) -- the ONLY path that can turn a
+    'pending_2fa_*' session into session['user'] actually being set."""
+    ip = request.remote_addr
+    pending_id = session.get('pending_2fa_user_id')
+    pending_exp = session.get('pending_2fa_exp')
+    if not pending_id or not pending_exp or time.time() > pending_exp:
+        session.clear()
+        return jsonify({'error': '로그인 세션이 만료되었습니다. 다시 로그인해주세요'}), 401
+    user = storage.get_user_by_id(pending_id)
+    if not user or not user['is_active']:
+        session.clear()
+        return jsonify({'error': '로그인할 수 없는 계정입니다'}), 401
+    lockout = storage.totp_lockout_state(pending_id)
+    now_ms = int(time.time() * 1000)
+    if lockout['totp_locked_until'] and lockout['totp_locked_until'] > now_ms:
+        return jsonify({'error': '인증 코드 입력 횟수를 초과했습니다. 10분 후 다시 시도해주세요'}), 423
+    body = request.get_json(force=True)
+    code = (body.get('code') or '').strip()
+    recovery_code = (body.get('recoveryCode') or '').strip()
+    ok = False
+    used_recovery = False
+    if recovery_code:
+        ok = storage.consume_recovery_code(pending_id, recovery_code)
+        used_recovery = ok
+    elif code:
+        secret = storage.get_credential(f'user:{pending_id}', 'totp_secret')
+        ok = bool(secret) and totp.verify_totp(secret, code)
+    if not ok:
+        locked_until = storage.record_totp_failure(pending_id)
+        storage.write_audit(user['username'], 'TOTP_FAILED', source_ip=ip)
+        if locked_until:
+            return jsonify({'error': '인증 코드 입력 횟수를 초과했습니다. 10분 후 다시 시도해주세요'}), 423
+        return jsonify({'error': '인증 코드가 올바르지 않습니다'}), 401
+    storage.clear_totp_failures(pending_id)
+    session.clear()
+    csrf_token = secrets.token_hex(16)
+    session['user'] = user['username']
+    session['role'] = user['role']
+    session['sv'] = user['session_version']
+    session['csrf'] = csrf_token
+    session.permanent = True
+    storage.write_audit(user['username'], 'LOGIN (TOTP)' if not used_recovery else 'LOGIN (recovery code)', source_ip=ip)
+    resp = {'ok': True, 'username': user['username'], 'role': user['role'], 'csrfToken': csrf_token,
+            'mustChangePassword': bool(user['must_change_password'])}
+    if used_recovery:
+        storage.write_audit(user['username'], 'RECOVERY_CODE_USED', source_ip=ip)
+        resp['recoveryCodesRemaining'] = storage.count_unused_recovery_codes(pending_id)
+    return jsonify(resp)
 
 
 @app.post('/api/auth/logout')
@@ -251,11 +377,104 @@ def api_change_password():
     new_password = body.get('newPassword') or ''
     if len(new_password) < 8:
         return jsonify({'error': '새 비밀번호는 8자 이상이어야 합니다'}), 400
-    if not storage.change_password(session['user'], current_password, new_password):
+    if not storage.change_password(_current_username(), current_password, new_password):
         return jsonify({'error': '현재 비밀번호가 올바르지 않습니다'}), 401
     audit('CHANGE_PASSWORD')
     session.clear()  # the password change already bumped session_version; drop our own copy too
     return jsonify({'ok': True})
+
+
+# --------------------------------------------------------- 5-1 2FA (self) --
+def _qr_svg(data):
+    import qrcode
+    import qrcode.image.svg
+    img = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage)
+    import io
+    buf = io.BytesIO()
+    img.save(buf)
+    return buf.getvalue().decode('utf-8')
+
+
+@app.post('/api/auth/totp/enroll/start')
+@require_role('VIEWER')
+def api_totp_enroll_start():
+    """Any logged-in user can enroll themselves (2FA is opt-in for VIEWER/
+    OPERATOR, mandatory in effect for ADMIN via the require_role gate
+    above). Generates a NEW secret and stages it under a distinct
+    credential key ('totp_secret_pending', not 'totp_secret') -- it only
+    becomes the account's real secret once /confirm verifies a live code
+    against it, so a QR nobody ever scanned can't half-enable 2FA."""
+    user = storage.get_user_by_username(_current_username())
+    secret = totp.generate_secret()
+    storage.set_credential(f"user:{user['id']}", 'totp_secret_pending', secret)
+    uri = totp.provisioning_uri(secret, user['username'])
+    return jsonify({'secret': secret, 'otpauthUri': uri, 'qrSvg': _qr_svg(uri)})
+
+
+@app.post('/api/auth/totp/enroll/confirm')
+@require_role('VIEWER')
+def api_totp_enroll_confirm():
+    body = request.get_json(force=True)
+    code = (body.get('code') or '').strip()
+    user = storage.get_user_by_username(_current_username())
+    pending_secret = storage.get_credential(f"user:{user['id']}", 'totp_secret_pending')
+    if not pending_secret:
+        return jsonify({'error': '먼저 QR 코드를 등록해주세요'}), 400
+    if not totp.verify_totp(pending_secret, code):
+        return jsonify({'error': '인증 코드가 올바르지 않습니다. 앱의 시간이 정확한지 확인해주세요'}), 400
+    storage.set_credential(f"user:{user['id']}", 'totp_secret', pending_secret)
+    storage.delete_credential(f"user:{user['id']}", 'totp_secret_pending')
+    storage.set_user_totp_enabled(user['id'], True)
+    recovery_codes = storage.generate_recovery_codes(user['id'])
+    audit('TOTP_ENROLLED')
+    # recovery_codes is returned exactly this once -- storage only ever
+    # keeps their hash, same one-time-reveal contract as an API token.
+    return jsonify({'ok': True, 'recoveryCodes': recovery_codes})
+
+
+@app.post('/api/auth/totp/disable')
+@require_role('VIEWER')
+def api_totp_disable():
+    """Self-service disable requires a live code, not just an active
+    session -- otherwise a hijacked session (the exact threat 2FA exists to
+    reduce) could silently turn its own protection back off."""
+    body = request.get_json(force=True)
+    code = (body.get('code') or '').strip()
+    user = storage.get_user_by_username(_current_username())
+    secret = storage.get_credential(f"user:{user['id']}", 'totp_secret')
+    if not secret or not totp.verify_totp(secret, code):
+        return jsonify({'error': '인증 코드가 올바르지 않습니다'}), 400
+    storage.disable_totp(user['id'])
+    audit('TOTP_DISABLED')
+    return jsonify({'ok': True})
+
+
+@app.post('/api/auth/totp/recovery-codes/regenerate')
+@require_role('VIEWER')
+def api_totp_regenerate_recovery_codes():
+    """Invalidates every existing recovery code and issues a fresh set --
+    for when a user has used most of theirs, or suspects a written-down
+    copy was exposed. Requires a live code for the same reason /disable
+    does."""
+    body = request.get_json(force=True)
+    code = (body.get('code') or '').strip()
+    user = storage.get_user_by_username(_current_username())
+    secret = storage.get_credential(f"user:{user['id']}", 'totp_secret')
+    if not user['totp_enabled'] or not secret:
+        return jsonify({'error': '2FA가 활성화되어 있지 않습니다'}), 400
+    if not totp.verify_totp(secret, code):
+        return jsonify({'error': '인증 코드가 올바르지 않습니다'}), 400
+    codes = storage.generate_recovery_codes(user['id'])
+    audit('TOTP_RECOVERY_CODES_REGENERATED')
+    return jsonify({'ok': True, 'recoveryCodes': codes})
+
+
+@app.get('/api/auth/totp/status')
+@require_role('VIEWER')
+def api_totp_status():
+    user = storage.get_user_by_username(_current_username())
+    return jsonify({'enabled': bool(user['totp_enabled']),
+                     'recoveryCodesRemaining': storage.count_unused_recovery_codes(user['id']) if user['totp_enabled'] else 0})
 
 
 def _operator_blocked_on_admin_target(target_role):
@@ -264,7 +483,7 @@ def _operator_blocked_on_admin_target(target_role):
     only be touched by an ADMIN. Without this, "operators can manage users"
     would let a non-admin delete/demote the admin or promote themselves,
     which is a straight privilege-escalation path, not a convenience."""
-    return session.get('role') != 'ADMIN' and target_role == 'ADMIN'
+    return _current_role() != 'ADMIN' and target_role == 'ADMIN'
 
 
 @app.get('/api/users')
@@ -300,7 +519,7 @@ def api_delete_user(user_id):
     target = storage.get_user_by_id(user_id)
     if not target:
         return jsonify({'error': 'not found'}), 404
-    if target['username'] == session.get('user'):
+    if target['username'] == _current_username():
         return jsonify({'error': '자기 자신은 삭제할 수 없습니다'}), 400
     if _operator_blocked_on_admin_target(target['role']):
         return jsonify({'error': '운영자는 관리자(ADMIN) 계정을 변경할 수 없습니다'}), 403
@@ -336,7 +555,7 @@ def api_update_user(user_id):
     if new_password and len(new_password) < 8:
         return jsonify({'error': '새 비밀번호는 8자 이상이어야 합니다'}), 400
     if active is False:
-        if target['username'] == session.get('user'):
+        if target['username'] == _current_username():
             return jsonify({'error': '자기 자신은 비활성화할 수 없습니다'}), 400
         if target['role'] == 'ADMIN' and storage.count_active_admins() <= 1:
             return jsonify({'error': '마지막 활성 관리자 계정은 비활성화할 수 없습니다'}), 400
@@ -368,6 +587,124 @@ def api_unlock_user(user_id):
     storage.unlock_user(target['username'])
     audit('ACCOUNT_UNLOCKED', target=target['username'])
     return jsonify({'ok': True})
+
+
+@app.post('/api/users/<int:user_id>/totp/reset')
+@require_role('OPERATOR')
+def api_admin_reset_totp(user_id):
+    """5-1 "인증 초기화 절차": for a lost/wiped device, not a routine
+    toggle -- wipes the target's secret and recovery codes entirely (they
+    re-enroll from scratch next login) and bumps session_version to kick
+    any session that might already be compromised right along with it,
+    same reasoning as a forced password reset. Same admin-protection rule
+    as every other per-user action here: an OPERATOR can reset a VIEWER/
+    OPERATOR's 2FA, only an ADMIN can reset another ADMIN's."""
+    target = storage.get_user_by_id(user_id)
+    if not target:
+        return jsonify({'error': 'not found'}), 404
+    if _operator_blocked_on_admin_target(target['role']):
+        return jsonify({'error': '운영자는 관리자(ADMIN) 계정을 변경할 수 없습니다'}), 403
+    storage.disable_totp(user_id)
+    storage.bump_session_version(target['username'])
+    audit('TOTP_RESET', target=target['username'])
+    return jsonify({'ok': True})
+
+
+# ------------------------------------------------------- 5-2 API 토큰 --
+@app.get('/api/tokens')
+@require_role('VIEWER')
+def api_list_tokens():
+    # Each user manages their own tokens; an ADMIN can additionally pass
+    # ?all=1 for an account-wide view (oversight, matching how /api/users
+    # is itself OPERATOR+-only) -- an ordinary user never sees another
+    # user's tokens (not even their names), only their own.
+    if _current_role() == 'ADMIN' and request.args.get('all') == '1':
+        return jsonify({'tokens': storage.list_api_tokens()})
+    user = storage.get_user_by_username(_current_username())
+    return jsonify({'tokens': storage.list_api_tokens(user['id'])})
+
+
+@app.post('/api/tokens')
+@require_role('VIEWER')
+def api_create_token():
+    body = request.get_json(force=True)
+    name = (body.get('name') or '').strip()
+    scope = (body.get('scope') or 'VIEWER').upper()
+    if not name or len(name) > 80:
+        return jsonify({'error': '토큰 이름을 입력해주세요 (80자 이하)'}), 400
+    # 최소 권한 원칙: a token's scope can never exceed ADMIN (tokens are for
+    # programmatic/API access, not full account administration -- see this
+    # route's module comment) nor exceed the creating user's own current
+    # role, so a VIEWER can't mint themselves an OPERATOR-scoped token.
+    if scope not in ('VIEWER', 'OPERATOR'):
+        return jsonify({'error': '토큰 권한 범위는 VIEWER 또는 OPERATOR여야 합니다 (ADMIN 범위 토큰은 발급할 수 없습니다)'}), 400
+    if storage.ROLE_RANK.get(scope, 0) > storage.ROLE_RANK.get(_current_role(), 0):
+        return jsonify({'error': '자신의 권한보다 높은 범위의 토큰은 발급할 수 없습니다'}), 403
+    expires_days = body.get('expiresDays')
+    expires_at = None
+    if expires_days not in (None, ''):
+        expires_days = validation.clamp_int(expires_days, 1, 3650, None)
+        if expires_days is None:
+            return jsonify({'error': '만료일은 1~3650일 사이여야 합니다'}), 400
+        expires_at = int(time.time() * 1000) + expires_days * 86400 * 1000
+    user = storage.get_user_by_username(_current_username())
+    token_id, token = storage.create_api_token(user['id'], name, scope, expires_at)
+    audit('API_TOKEN_CREATED', target=str(token_id), details=f"{name} scope={scope}")
+    # The plaintext token is returned exactly once, here -- storage only
+    # ever keeps hash_token(token). There is no endpoint that can show it
+    # again; losing it means revoking and issuing a new one.
+    return jsonify({'ok': True, 'id': token_id, 'token': token})
+
+
+@app.delete('/api/tokens/<int:token_id>')
+@require_role('VIEWER')
+def api_revoke_api_token(token_id):
+    row = storage.get_api_token(token_id)
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    user = storage.get_user_by_username(_current_username())
+    if row['user_id'] != user['id'] and _current_role() != 'ADMIN':
+        return jsonify({'error': 'forbidden'}), 403
+    storage.revoke_api_token(token_id)
+    audit('API_TOKEN_REVOKED', target=str(token_id), details=row['name'])
+    return jsonify({'ok': True})
+
+
+@app.post('/api/tokens/<int:token_id>/rotate')
+@require_role('VIEWER')
+def api_rotate_token(token_id):
+    """토큰 재발급 및 회전 정책: revokes the old token and issues a brand-new
+    one under the same name/scope/expiry-from-now -- the standard "rotate"
+    UX (old one stops working the instant the new one is shown), rather
+    than a window where both are simultaneously valid."""
+    row = storage.get_api_token(token_id)
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    user = storage.get_user_by_username(_current_username())
+    if row['user_id'] != user['id'] and _current_role() != 'ADMIN':
+        return jsonify({'error': 'forbidden'}), 403
+    if row['revoked_at']:
+        return jsonify({'error': '이미 폐기된 토큰입니다'}), 400
+    storage.revoke_api_token(token_id)
+    new_expires_at = None
+    if row['expires_at']:
+        new_expires_at = int(time.time() * 1000) + (row['expires_at'] - row['created_at'])
+    new_id, new_token = storage.create_api_token(row['user_id'], row['name'], row['scope'], new_expires_at)
+    audit('API_TOKEN_ROTATED', target=f"{token_id}->{new_id}", details=row['name'])
+    return jsonify({'ok': True, 'id': new_id, 'token': new_token})
+
+
+@app.get('/api/tokens/<int:token_id>/usage')
+@require_role('VIEWER')
+def api_token_usage(token_id):
+    row = storage.get_api_token(token_id)
+    if not row:
+        return jsonify({'error': 'not found'}), 404
+    user = storage.get_user_by_username(_current_username())
+    if row['user_id'] != user['id'] and _current_role() != 'ADMIN':
+        return jsonify({'error': 'forbidden'}), 403
+    limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
+    return jsonify({'usage': storage.load_api_token_usage(token_id, limit)})
 
 
 # ------------------------------------------------------------------ API --
@@ -464,7 +801,7 @@ def api_discovery_scan():
     for r in results:
         r['alreadyRegistered'] = r['ip'] in existing_ips
     finished_at = int(time.time() * 1000)
-    scan_id = storage.save_discovery_scan(range_text, session.get('user'), started_at, finished_at,
+    scan_id = storage.save_discovery_scan(range_text, _current_username(), started_at, finished_at,
                                            host_count, results)
     audit('NETWORK_SCAN', target=range_text, details=f'{len(results)}대 발견')
     return jsonify({'scanId': scan_id, 'results': results})
@@ -755,7 +1092,7 @@ def api_update_device(device_id):
     conn.commit()
     conn.close()
     if new_thresholds != old_thresholds:
-        storage.record_threshold_change('device', device_id, session.get('user'), old_thresholds, new_thresholds)
+        storage.record_threshold_change('device', device_id, _current_username(), old_thresholds, new_thresholds)
         # 2-2 completion criterion: a changed threshold must affect alert
         # handling immediately, not just on this device's next "crossing" --
         # clearing the sustain/prev-incident trackers here means the very
@@ -919,7 +1256,7 @@ def api_set_global_thresholds():
         return jsonify({'error': str(e)}), 400
     old = thresholds.get_global_thresholds()
     thresholds.set_global_thresholds(cleaned)
-    storage.record_threshold_change('global', 'global', session.get('user'), old, thresholds.get_global_thresholds())
+    storage.record_threshold_change('global', 'global', _current_username(), old, thresholds.get_global_thresholds())
     # Global default changes every device that has no device/group override
     # for a given field, so there's no single device_id to target -- reset
     # every device's sustain window the same way api_update_device does for
@@ -944,7 +1281,7 @@ def api_set_group_thresholds(name):
         return jsonify({'error': str(e)}), 400
     old = group.get('thresholds')
     storage.set_device_group_thresholds(name, cleaned or None)
-    storage.record_threshold_change('group', name, session.get('user'), old, cleaned or None)
+    storage.record_threshold_change('group', name, _current_username(), old, cleaned or None)
     for d in storage.load_devices():
         if (d.get('fields') or {}).get('group') == name:
             thresholds.clear_sustain_state(d['id'])
@@ -990,7 +1327,7 @@ def api_create_maintenance_window():
             return jsonify({'error': '대상 그룹을 찾을 수 없습니다'}), 404
     window_id = storage.create_maintenance_window(
         cleaned['scope'], cleaned['scope_id'], cleaned['kind'], cleaned['start_at'], cleaned['end_at'],
-        cleaned['weekday'], cleaned['start_time'], cleaned['end_time'], cleaned['reason'], session.get('user'))
+        cleaned['weekday'], cleaned['start_time'], cleaned['end_time'], cleaned['reason'], _current_username())
     audit('CREATE_MAINTENANCE_WINDOW', target=str(window_id), details=f"{cleaned['scope']}:{cleaned['scope_id']}")
     return jsonify({'ok': True, 'id': window_id})
 
@@ -1133,7 +1470,7 @@ def api_agent_report():
 @require_role('OPERATOR')
 def api_ack_incident(incident_id):
     body = request.get_json(silent=True) or {}
-    acknowledged_by = (body.get('by') or '').strip() or session.get('user')
+    acknowledged_by = (body.get('by') or '').strip() or _current_username()
     storage.ack_incident(incident_id, acknowledged_by)
     audit('ACK_INCIDENT', target=str(incident_id))
     return jsonify({'ok': True})
@@ -1150,7 +1487,7 @@ def api_set_maintenance(device_id):
     start = body.get('start')
     end = body.get('end')
     reason = (body.get('reason') or '').strip() or None
-    storage.set_maintenance(device_id, enabled, start, end, reason, started_by=session.get('user'))
+    storage.set_maintenance(device_id, enabled, start, end, reason, started_by=_current_username())
     audit('SET_MAINTENANCE', target=device_id, details=f"enabled={enabled}")
     return jsonify({'ok': True})
 

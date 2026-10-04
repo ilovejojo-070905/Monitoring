@@ -127,6 +127,21 @@ _NEW_USER_COLUMNS = [
     # time limit, for an account that shouldn't be able to log in at all
     # right now, e.g. someone who's left the team).
     ('is_active', 'INTEGER DEFAULT 1'),
+    # 5-1 2FA: the TOTP secret itself is NOT a column here -- it's stored
+    # encrypted in the existing `credentials` table (keyed 'user:<id>' /
+    # 'totp_secret', same mechanism as SMTP/webhook secrets) since it needs
+    # to come back in plaintext on every verify, unlike everything below
+    # which only ever needs a yes/no or a timestamp.
+    ('totp_enabled', 'INTEGER DEFAULT 0'),
+    ('totp_enrolled_at', 'INTEGER DEFAULT NULL'),
+    # Separate rate-limit counters from failed_attempts/locked_until above --
+    # a correct password already proves *something*, so brute-forcing the
+    # 6-digit TOTP step afterward is a distinct attack with its own budget
+    # (1,000,000 possibilities per 30s window vs. an unbounded password
+    # space) and deserves its own lockout clock rather than sharing one that
+    # a successful password login already reset to 0.
+    ('totp_failed_attempts', 'INTEGER DEFAULT 0'),
+    ('totp_locked_until', 'INTEGER DEFAULT NULL'),
 ]
 
 # 2-2: group-level default thresholds (JSON text, NULL = "no override --
@@ -444,6 +459,49 @@ def init_db():
         error TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_escalation_log_incident ON escalation_log(incident_id, notified_at)')
+    # 5-1: recovery codes, one-way hashed exactly like hash_token() below --
+    # see generate_recovery_codes()'s docstring.
+    conn.execute('''CREATE TABLE IF NOT EXISTS totp_recovery_codes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        code_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        used_at INTEGER
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_totp_recovery_user ON totp_recovery_codes(user_id)')
+    # 5-2: per-user API tokens. token_hash is the only form of the token
+    # ever stored (hash_token(), same pattern as devices.token_hash) -- the
+    # plaintext is generated, returned once in the create response, and
+    # never persisted or logged anywhere. `scope` is a role name
+    # (VIEWER/OPERATOR) compared via the same ROLE_RANK table require_role()
+    # already uses for sessions, so a token is rank-checked identically to
+    # a session without needing a parallel permission system.
+    conn.execute('''CREATE TABLE IF NOT EXISTS api_tokens(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        scope TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER,
+        last_used_at INTEGER,
+        revoked_at INTEGER
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id)')
+    # Lightweight call log, deliberately separate from audit_log -- a busy
+    # API integration could call this far more often than any human-driven
+    # audit event, and api_run_retention() below caps it the same way
+    # metrics_raw gets rolled up/purged rather than kept forever.
+    conn.execute('''CREATE TABLE IF NOT EXISTS api_token_usage(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_id INTEGER NOT NULL,
+        method TEXT NOT NULL,
+        path TEXT NOT NULL,
+        status_code INTEGER,
+        ts INTEGER NOT NULL,
+        source_ip TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token ON api_token_usage(token_id, ts)')
     conn.commit()
     conn.close()
     migrate_db()
@@ -1101,8 +1159,9 @@ def verify_login(username, password):
     conn.commit()
     session_version = row['session_version'] or 0
     conn.close()
-    return {'status': 'ok', 'username': row['username'], 'role': row['role'], 'session_version': session_version,
-            'must_change_password': bool(row['must_change_password'])}
+    return {'status': 'ok', 'user_id': row['id'], 'username': row['username'], 'role': row['role'],
+            'session_version': session_version, 'must_change_password': bool(row['must_change_password']),
+            'totp_enabled': bool(row['totp_enabled'])}
 
 
 def get_session_version(username):
@@ -1145,6 +1204,249 @@ def get_must_change_password(username):
     return bool(row['must_change_password']) if row else False
 
 
+# ------------------------------------------------------------------- 5-1 --
+# 2FA (TOTP). The secret itself lives in the `credentials` table (encrypted,
+# keyed 'user:<id>'/'totp_secret' during enrollment, 'totp_secret_pending'
+# while a QR has been shown but not yet confirmed with a code -- see
+# server.py's enroll/confirm endpoints) rather than a users column, reusing
+# the exact mechanism already used for SMTP/webhook secrets. Everything
+# here is the bookkeeping around that: enabled flag, lockout, recovery
+# codes.
+
+TOTP_MAX_FAILED_ATTEMPTS = 5
+TOTP_LOCK_MINUTES = 10
+
+
+def get_user_totp_enabled(user_id):
+    conn = get_db()
+    row = conn.execute('SELECT totp_enabled FROM users WHERE id=?', (user_id,)).fetchone()
+    conn.close()
+    return bool(row['totp_enabled']) if row else False
+
+
+def set_user_totp_enabled(user_id, enabled):
+    conn = get_db()
+    conn.execute(
+        'UPDATE users SET totp_enabled=?, totp_enrolled_at=? WHERE id=?',
+        (1 if enabled else 0, int(time.time() * 1000) if enabled else None, user_id))
+    conn.commit()
+    conn.close()
+
+
+def totp_lockout_state(user_id):
+    conn = get_db()
+    row = conn.execute('SELECT totp_failed_attempts, totp_locked_until FROM users WHERE id=?', (user_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else {'totp_failed_attempts': 0, 'totp_locked_until': None}
+
+
+def record_totp_failure(user_id):
+    """Same shape as verify_login()'s password lockout -- separate counter,
+    see _NEW_USER_COLUMNS' comment on why TOTP gets its own budget."""
+    conn = get_db()
+    row = conn.execute('SELECT totp_failed_attempts FROM users WHERE id=?', (user_id,)).fetchone()
+    attempts = ((row['totp_failed_attempts'] or 0) if row else 0) + 1
+    now = int(time.time() * 1000)
+    newly_locked = attempts >= TOTP_MAX_FAILED_ATTEMPTS
+    locked_until = now + TOTP_LOCK_MINUTES * 60 * 1000 if newly_locked else None
+    conn.execute(
+        'UPDATE users SET totp_failed_attempts=?, totp_locked_until=? WHERE id=?',
+        (0 if newly_locked else attempts, locked_until, user_id))
+    conn.commit()
+    conn.close()
+    return locked_until
+
+
+def clear_totp_failures(user_id):
+    conn = get_db()
+    conn.execute('UPDATE users SET totp_failed_attempts=0, totp_locked_until=NULL WHERE id=?', (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def disable_totp(user_id):
+    """Used by both self-service disable and an admin-initiated reset
+    (server.py's /api/users/<id>/totp/reset) -- wipes the secret, every
+    recovery code, and the enabled flag so the next enrollment starts
+    completely clean rather than layering a new secret over stale state."""
+    delete_credential(f'user:{user_id}', 'totp_secret')
+    delete_credential(f'user:{user_id}', 'totp_secret_pending')
+    conn = get_db()
+    conn.execute('DELETE FROM totp_recovery_codes WHERE user_id=?', (user_id,))
+    conn.execute(
+        'UPDATE users SET totp_enabled=0, totp_enrolled_at=NULL, totp_failed_attempts=0, totp_locked_until=NULL WHERE id=?',
+        (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def generate_recovery_codes(user_id, count=10):
+    """Returns the PLAINTEXT codes (shown to the user exactly once, same
+    policy as an API token) -- only their SHA-256 hash is stored, same
+    one-way pattern as hash_token()/device agent tokens, since a recovery
+    code is also full-entropy random with nothing for a slow KDF to protect.
+    Replaces any existing unused codes outright (re-generating implies the
+    old set should no longer work)."""
+    conn = get_db()
+    conn.execute('DELETE FROM totp_recovery_codes WHERE user_id=?', (user_id,))
+    now = int(time.time() * 1000)
+    codes = []
+    for _ in range(count):
+        # Grouped like XXXX-XXXX for readability when written down --
+        # secrets.token_hex(5) is 10 hex chars, split 5/5.
+        raw = secrets.token_hex(5).upper()
+        code = f'{raw[:5]}-{raw[5:]}'
+        codes.append(code)
+        conn.execute(
+            'INSERT INTO totp_recovery_codes(user_id,code_hash,created_at) VALUES (?,?,?)',
+            (user_id, hash_token(code), now))
+    conn.commit()
+    conn.close()
+    return codes
+
+
+def count_unused_recovery_codes(user_id):
+    conn = get_db()
+    n = conn.execute('SELECT COUNT(*) c FROM totp_recovery_codes WHERE user_id=? AND used_at IS NULL', (user_id,)).fetchone()['c']
+    conn.close()
+    return n
+
+
+def consume_recovery_code(user_id, code):
+    """Atomically checks-and-burns a recovery code -- returns True exactly
+    once per code. Matches by hash, same as an API token/device token, so
+    the plaintext code is never compared or stored anywhere after this."""
+    conn = get_db()
+    code_hash = hash_token((code or '').strip().upper())
+    row = conn.execute(
+        'SELECT id FROM totp_recovery_codes WHERE user_id=? AND code_hash=? AND used_at IS NULL',
+        (user_id, code_hash)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    conn.execute('UPDATE totp_recovery_codes SET used_at=? WHERE id=?', (int(time.time() * 1000), row['id']))
+    conn.commit()
+    conn.close()
+    return True
+
+
+# ------------------------------------------------------------------- 5-2 --
+# API tokens. See api_tokens' CREATE TABLE comment in init_db() for the
+# storage shape/reasoning; these are the CRUD + verification functions.
+
+def create_api_token(user_id, name, scope, expires_at):
+    """Returns (token_id, plaintext_token) -- the plaintext is never stored
+    or returned again after this call, same one-time-reveal contract as
+    recovery codes and the original device-agent token."""
+    token = secrets.token_urlsafe(32)
+    conn = get_db()
+    now = int(time.time() * 1000)
+    cur = conn.execute(
+        'INSERT INTO api_tokens(user_id,name,token_hash,scope,created_at,expires_at) VALUES (?,?,?,?,?,?)',
+        (user_id, name, hash_token(token), scope, now, expires_at))
+    token_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return token_id, token
+
+
+def find_api_token(token):
+    """Looks up a token by its hash for request authentication -- returns
+    None for anything that doesn't verify (unknown, revoked, expired) so
+    the caller (require_role()) doesn't have to re-derive those checks.
+    Joins in the owning username/role for audit logging and for capping a
+    token's scope at its owner's current role (a demoted user's
+    already-issued OPERATOR token shouldn't silently keep OPERATOR access)."""
+    conn = get_db()
+    row = conn.execute(
+        'SELECT api_tokens.*, users.username AS owner_username, users.role AS owner_role, users.is_active AS owner_active '
+        'FROM api_tokens JOIN users ON users.id = api_tokens.user_id WHERE token_hash=?',
+        (hash_token(token),)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    row = dict(row)
+    if row['revoked_at']:
+        return None
+    if row['expires_at'] and row['expires_at'] < int(time.time() * 1000):
+        return None
+    if not row['owner_active']:
+        return None
+    if ROLE_RANK.get(row['scope'], 0) > ROLE_RANK.get(row['owner_role'], 0):
+        row['scope'] = row['owner_role']
+    return row
+
+
+def touch_api_token_last_used(token_id):
+    conn = get_db()
+    conn.execute('UPDATE api_tokens SET last_used_at=? WHERE id=?', (int(time.time() * 1000), token_id))
+    conn.commit()
+    conn.close()
+
+
+def list_api_tokens(user_id=None):
+    conn = get_db()
+    q = ('SELECT api_tokens.id,api_tokens.user_id,api_tokens.name,api_tokens.scope,api_tokens.created_at,'
+         'api_tokens.expires_at,api_tokens.last_used_at,api_tokens.revoked_at,users.username AS owner_username '
+         'FROM api_tokens JOIN users ON users.id = api_tokens.user_id')
+    params = []
+    if user_id is not None:
+        q += ' WHERE api_tokens.user_id=?'
+        params.append(user_id)
+    q += ' ORDER BY api_tokens.created_at DESC'
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_api_token(token_id):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM api_tokens WHERE id=?', (token_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def revoke_api_token(token_id):
+    conn = get_db()
+    conn.execute('UPDATE api_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL', (int(time.time() * 1000), token_id))
+    conn.commit()
+    conn.close()
+
+
+def record_api_token_usage(token_id, method, path, status_code, source_ip):
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO api_token_usage(token_id,method,path,status_code,ts,source_ip) VALUES (?,?,?,?,?,?)',
+        (token_id, method, path, status_code, int(time.time() * 1000), source_ip))
+    conn.commit()
+    conn.close()
+
+
+def load_api_token_usage(token_id=None, limit=50):
+    conn = get_db()
+    q = 'SELECT * FROM api_token_usage'
+    params = []
+    if token_id is not None:
+        q += ' WHERE token_id=?'
+        params.append(token_id)
+    q += ' ORDER BY ts DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+API_TOKEN_USAGE_RETENTION_DAYS = 30
+
+
+def run_api_token_usage_retention():
+    cutoff = int(time.time() * 1000) - API_TOKEN_USAGE_RETENTION_DAYS * 86400 * 1000
+    conn = get_db()
+    conn.execute('DELETE FROM api_token_usage WHERE ts < ?', (cutoff,))
+    conn.commit()
+    conn.close()
+
+
 def create_user(username, password, role):
     if role not in ROLES:
         raise ValueError('invalid role')
@@ -1162,7 +1464,7 @@ def create_user(username, password, role):
 def list_users():
     conn = get_db()
     rows = conn.execute(
-        'SELECT id,username,role,created_at,last_login_at,locked_until,is_active FROM users ORDER BY id'
+        'SELECT id,username,role,created_at,last_login_at,locked_until,is_active,totp_enabled FROM users ORDER BY id'
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1189,6 +1491,13 @@ def set_user_active(user_id, active):
 def get_user_by_id(user_id):
     conn = get_db()
     row = conn.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_user_by_username(username):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
     conn.close()
     return dict(row) if row else None
 
@@ -1269,6 +1578,16 @@ def set_credential(device_id, cred_type, secret):
         'INSERT INTO credentials(device_id,type,secret) VALUES (?,?,?) '
         'ON CONFLICT(device_id,type) DO UPDATE SET secret=excluded.secret',
         (device_id, cred_type, secrets_crypto.encrypt(secret)))
+    conn.commit()
+    conn.close()
+
+
+def delete_credential(device_id, cred_type):
+    """Single-key delete, unlike delete_credentials() (plural) which wipes
+    every credential for a device_id -- needed for 5-1's enrollment flow to
+    discard a pending/unused TOTP secret without touching anything else."""
+    conn = get_db()
+    conn.execute('DELETE FROM credentials WHERE device_id=? AND type=?', (device_id, cred_type))
     conn.commit()
     conn.close()
 

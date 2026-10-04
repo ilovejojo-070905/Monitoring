@@ -149,6 +149,7 @@ def _run_retention_job():
         storage.run_incident_retention()
         storage.run_flow_retention()
         storage.run_discovery_retention()
+        storage.run_api_token_usage_retention()
         health.record_tick_success()
     except Exception as e:
         health.record_tick_error(f"retention: {e}")
