@@ -1751,26 +1751,111 @@ def set_smtp_config(host, port, username, password=None, use_tls=True, alert_to=
         set_credential(SMTP_SYSTEM_ID, 'smtp_password', password)
 
 
+# 2-4: Slack/Teams are both plain incoming-webhook POSTs -- one URL *is* the
+# destination, unlike email's separate host/port/credentials vs. alert_to.
+# Reuses the same settings+credentials split as SMTP (the URL is treated as
+# a credential, same as the SMTP password, since a leaked webhook URL lets
+# anyone post into that channel) under the same synthetic SMTP_SYSTEM_ID row
+# -- one extra credential key per channel, not a new table.
+def get_webhook_config(prefix):
+    """prefix: 'slack' or 'teams'. Returns {url, min_severity} if enabled and
+    a URL is set, else None -- same "fully configured or not used" contract
+    as get_smtp_config()."""
+    if get_setting(f'{prefix}_enabled') != '1':
+        return None
+    url = get_credential(SMTP_SYSTEM_ID, f'{prefix}_webhook_url')
+    if not url:
+        return None
+    return {'url': url, 'min_severity': get_setting(f'{prefix}_min_severity', 'crit')}
+
+
+def get_webhook_config_public(prefix):
+    return {
+        'enabled': get_setting(f'{prefix}_enabled') == '1',
+        'minSeverity': get_setting(f'{prefix}_min_severity', 'crit'),
+        'urlSet': bool(get_credential(SMTP_SYSTEM_ID, f'{prefix}_webhook_url')),
+    }
+
+
+def set_webhook_config(prefix, url=None, enabled=True, min_severity='crit'):
+    set_setting(f'{prefix}_enabled', '1' if enabled else '0')
+    set_setting(f'{prefix}_min_severity', min_severity)
+    if url:  # blank on an update means "keep the existing one", same as the SMTP password
+        set_credential(SMTP_SYSTEM_ID, f'{prefix}_webhook_url', url)
+
+
+# 2-4: Kakao 알림톡/SMS are deliberately NOT wired into _dispatch_alert below
+# -- per the ticket's own instruction not to assume a plain-webhook
+# integration works for Kakao, and the research behind this: Kakao's actual
+# "알림톡" product requires a registered 카카오톡 채널 (business account), a
+# sender profile that passes Kakao's own review, and pre-approved message
+# *templates* (free-text isn't allowed) -- normally reached through a
+# certified CPaaS reseller (NHN Toast, Aligo, Solapi, ...) via their own
+# paid API, not a simple incoming webhook. SMS has the same shape of gap: a
+# paid gateway account, an API key, and (in Korea) a pre-registered sender
+# number. Neither is something this app can provision on its own, so these
+# two only ever persist settings -- see get_kakao_config_public/
+# get_sms_config_public and their matching setters. The UI is explicit about
+# this rather than offering a "테스트" button that would silently do nothing.
+def get_kakao_config_public():
+    return {
+        'enabled': get_setting('kakao_enabled') == '1',
+        'senderKey': get_setting('kakao_sender_key') or '',
+        'templateCode': get_setting('kakao_template_code') or '',
+    }
+
+
+def set_kakao_config(enabled, sender_key, template_code):
+    set_setting('kakao_enabled', '1' if enabled else '0')
+    set_setting('kakao_sender_key', (sender_key or '').strip())
+    set_setting('kakao_template_code', (template_code or '').strip())
+
+
+def get_sms_config_public():
+    return {
+        'enabled': get_setting('sms_enabled') == '1',
+        'provider': get_setting('sms_provider') or '',
+        'senderNumber': get_setting('sms_sender_number') or '',
+        'apiKeySet': bool(get_credential(SMTP_SYSTEM_ID, 'sms_api_key')),
+    }
+
+
+def set_sms_config(enabled, provider, sender_number, api_key=None):
+    set_setting('sms_enabled', '1' if enabled else '0')
+    set_setting('sms_provider', (provider or '').strip())
+    set_setting('sms_sender_number', (sender_number or '').strip())
+    if api_key:
+        set_credential(SMTP_SYSTEM_ID, 'sms_api_key', api_key)
+
+
 def _get_alert_channels():
     """Every currently-configured outbound alert channel. Each entry is
     (name, AlertChannel instance, destination, this channel's own min-severity
-    floor). Adding a new one later (Teams, Slack, ...) is: write an
-    alerts/<x>_channel.py implementing alerts.base.AlertChannel, add a
-    get_<x>_config()/set_<x>_config() pair next to get_smtp_config() above
-    for its settings, and append one line here -- _dispatch_alert itself
-    never has to change.
+    floor). Adding a new one later is: write an alerts/<x>_channel.py
+    implementing alerts.base.AlertChannel, add a get_<x>_config()/
+    set_<x>_config() pair next to get_smtp_config() above for its settings,
+    and append one line here -- _dispatch_alert itself never has to change.
 
     The web channel isn't listed here because it doesn't need dispatching:
     every incident is already a DB row the instant add_incident() writes it,
     and the dashboard's existing 2.2s poll (index.html's syncState) picks it
     up and raises a toast for anything new/escalated/recovered. This list is
-    only for channels that need an explicit outbound push."""
+    only for channels that need an explicit outbound push. Kakao/SMS are
+    intentionally absent -- see the comment above their settings functions."""
     channels = []
     smtp_cfg = get_smtp_config()
     if smtp_cfg:
         from alerts.email_channel import EmailChannel
         channel = EmailChannel(smtp_cfg['host'], smtp_cfg['port'], smtp_cfg['username'], smtp_cfg['password'], smtp_cfg['use_tls'])
         channels.append(('email', channel, smtp_cfg['alert_to'], smtp_cfg['min_severity']))
+    slack_cfg = get_webhook_config('slack')
+    if slack_cfg:
+        from alerts.slack_channel import SlackChannel
+        channels.append(('slack', SlackChannel(), slack_cfg['url'], slack_cfg['min_severity']))
+    teams_cfg = get_webhook_config('teams')
+    if teams_cfg:
+        from alerts.teams_channel import TeamsChannel
+        channels.append(('teams', TeamsChannel(), teams_cfg['url'], teams_cfg['min_severity']))
     return channels
 
 

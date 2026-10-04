@@ -1267,6 +1267,101 @@ def api_test_smtp():
     return jsonify({'ok': True})
 
 
+# ---------------------------------------------------------- 2-4 알림 채널 --
+def _webhook_settings_endpoints(prefix, channel_label, channel_cls_path):
+    """Slack and Teams are configured/tested identically (one webhook URL +
+    enabled + minSeverity) -- this registers the 3 routes for one prefix
+    instead of writing the same handler twice."""
+
+    def get_settings():
+        return jsonify(storage.get_webhook_config_public(prefix))
+
+    def set_settings():
+        body = request.get_json(force=True)
+        url = (body.get('url') or '').strip() or None
+        if url and not validation.is_valid_webhook_url(url):
+            return jsonify({'error': 'Webhook URL은 https:// 로 시작하는 올바른 주소여야 합니다'}), 400
+        if not url and not storage.get_webhook_config_public(prefix)['urlSet']:
+            return jsonify({'error': 'Webhook URL을 입력해주세요'}), 400
+        if body.get('minSeverity') not in (None, 'warn', 'crit'):
+            return jsonify({'error': 'minSeverity는 warn 또는 crit이어야 합니다'}), 400
+        storage.set_webhook_config(prefix, url=url, enabled=bool(body.get('enabled', True)),
+                                    min_severity=body.get('minSeverity') or 'crit')
+        audit(f'SET_{prefix.upper()}_SETTINGS')
+        return jsonify({'ok': True})
+
+    def test_send():
+        cfg = storage.get_webhook_config(prefix)
+        if not cfg:
+            return jsonify({'error': f'{channel_label} 설정이 완료되지 않았거나 비활성화 상태입니다'}), 400
+        module_name, cls_name = channel_cls_path.rsplit('.', 1)
+        import importlib
+        channel_cls = getattr(importlib.import_module(module_name), cls_name)
+        ok, err = channel_cls().send(cfg['url'], '[InfraSight] 테스트 알림',
+                                      'InfraSight 알림 설정이 정상적으로 동작합니다.')
+        audit(f'TEST_{prefix.upper()}', details='ok' if ok else f'failed: {err}')
+        if not ok:
+            return jsonify({'error': f'{channel_label} 발송에 실패했습니다. 감사 로그에서 자세한 내용을 확인하세요.'}), 502
+        return jsonify({'ok': True})
+
+    # Flask derives each endpoint's name from the view function's __name__ by
+    # default -- since get_settings/set_settings/test_send are redefined
+    # fresh (but identically named) on every call to this helper, an
+    # explicit endpoint= per route is required or the second call (teams)
+    # would collide with the first (slack) and Flask would refuse to start.
+    app.get(f'/api/settings/{prefix}', endpoint=f'{prefix}_get_settings')(require_role('OPERATOR')(get_settings))
+    app.put(f'/api/settings/{prefix}', endpoint=f'{prefix}_set_settings')(require_role('OPERATOR')(set_settings))
+    app.post(f'/api/settings/{prefix}/test', endpoint=f'{prefix}_test_send')(require_role('OPERATOR')(test_send))
+
+
+_webhook_settings_endpoints('slack', 'Slack', 'alerts.slack_channel.SlackChannel')
+_webhook_settings_endpoints('teams', 'Teams', 'alerts.teams_channel.TeamsChannel')
+
+
+@app.get('/api/settings/kakao')
+@require_role('OPERATOR')
+def api_get_kakao_settings():
+    return jsonify(storage.get_kakao_config_public())
+
+
+@app.put('/api/settings/kakao')
+@require_role('OPERATOR')
+def api_set_kakao_settings():
+    # 카카오 알림톡은 webhook 한 번으로 끝나는 연동이 아니라 카카오톡 채널(비즈니스
+    # 계정) 개설, 발신 프로필 심사, 사전 승인된 템플릿이 모두 필요한 공식 API/CPaaS
+    # 연동이다 (storage.get_kakao_config_public 주석 참고) -- 이 엔드포인트는 그
+    # 값들을 저장만 하며, 실제 발송 경로는 아직 구현되어 있지 않다.
+    body = request.get_json(force=True)
+    sender_key = (body.get('senderKey') or '').strip()
+    template_code = (body.get('templateCode') or '').strip()
+    if len(sender_key) > 100 or len(template_code) > 100:
+        return jsonify({'error': '발신 프로필 키/템플릿 코드는 100자 이하여야 합니다'}), 400
+    storage.set_kakao_config(bool(body.get('enabled', False)), sender_key, template_code)
+    audit('SET_KAKAO_SETTINGS')
+    return jsonify({'ok': True})
+
+
+@app.get('/api/settings/sms')
+@require_role('OPERATOR')
+def api_get_sms_settings():
+    return jsonify(storage.get_sms_config_public())
+
+
+@app.put('/api/settings/sms')
+@require_role('OPERATOR')
+def api_set_sms_settings():
+    # SMS도 Kakao와 같은 이유로 구조만 제공한다: 실제 발송에는 유료 SMS 게이트웨이
+    # 계정(API 키)과, 국내 기준 사전 등록된 발신번호가 필요하다.
+    body = request.get_json(force=True)
+    provider = (body.get('provider') or '').strip()
+    sender_number = (body.get('senderNumber') or '').strip()
+    if len(provider) > 60 or len(sender_number) > 20:
+        return jsonify({'error': '입력값이 너무 깁니다'}), 400
+    storage.set_sms_config(bool(body.get('enabled', False)), provider, sender_number, body.get('apiKey') or None)
+    audit('SET_SMS_SETTINGS')
+    return jsonify({'ok': True})
+
+
 @app.post('/api/system/backup')
 @require_role('ADMIN')
 def api_trigger_backup():

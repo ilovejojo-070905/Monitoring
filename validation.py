@@ -182,6 +182,16 @@ def validate_thresholds(data):
     return out
 
 
+_HTTPS_URL_RE = re.compile(r'^https://\S+$')
+MAX_WEBHOOK_URL_LEN = 500
+
+
+def is_valid_webhook_url(s):
+    """2-4: Slack/Teams incoming webhooks are always https:// -- no need for
+    a general URL parser, just reject anything that couldn't be one."""
+    return bool(s) and len(s) <= MAX_WEBHOOK_URL_LEN and bool(_HTTPS_URL_RE.match(s))
+
+
 _HHMM_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
 MAX_MAINTENANCE_REASON_LEN = 200
 

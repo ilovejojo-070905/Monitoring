@@ -527,6 +527,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>
       장비 등록
     </button>
+    <button class="nav-item" data-view="channels" id="nav-channels" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      알림 채널
+    </button>
     <button class="nav-item" data-view="users" id="nav-users" style="display:none">
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.2c1.7.5 3 2.1 3 4s-1.3 3.5-3 4"/><path d="M20 20c0-2.6-1.7-4.8-4-5.6"/></svg>
       사용자 관리
@@ -591,6 +595,7 @@
     <section class="view" data-view="register" id="view-register"></section>
 
     <!-- ============ USERS ============ -->
+    <section class="view" data-view="channels" id="view-channels"></section>
     <section class="view" data-view="users" id="view-users"></section>
 
   </main>
@@ -894,6 +899,8 @@ function applyRoleUI(){
   if(usersNav) usersNav.style.display = isOperatorPlus ? '' : 'none';
   const registerNav = $('#nav-register');
   if(registerNav) registerNav.style.display = isOperatorPlus ? '' : 'none';
+  const channelsNav = $('#nav-channels');
+  if(channelsNav) channelsNav.style.display = isOperatorPlus ? '' : 'none';
   // 1-4 완료 기준: 조회자는 "관리" 그룹에 들어갈 항목이 하나도 없으므로
   // 빈 분류 라벨만 남지 않도록 그룹 전체를 숨긴다.
   const adminGroupLabel = document.querySelector('.nav-group-label[data-group="navgrp-admin"]');
@@ -3060,6 +3067,204 @@ function renderRegister(){
   renderMaintWindowTargetOptions();
 }
 
+/* ================= 2-4 알림 채널 ================= */
+let channelsLoaded = false;
+function channelCardHtml(prefix, title, sub, bodyHtml, testable){
+  return `
+    <div class="card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>${title}</h3><span class="sub">${sub}</span></div>
+        <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
+          <input type="checkbox" id="ch-${prefix}-enabled"> 사용
+        </label>
+      </div>
+      <div class="form-grid">${bodyHtml}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+        <button type="button" class="btn primary" id="ch-${prefix}-save">저장</button>
+        ${testable ? `<button type="button" class="btn" id="ch-${prefix}-test">테스트 발송</button>` : ''}
+        <span id="ch-${prefix}-status" style="font-size:11.5px"></span>
+      </div>
+    </div>`;
+}
+function minSeveritySelectHtml(prefix){
+  return `<div class="field"><label>발송 기준</label>
+    <select id="ch-${prefix}-minseverity"><option value="warn">주의 이상</option><option value="crit">위험만</option></select>
+  </div>`;
+}
+function renderChannelsSkeleton(){
+  const el = $('#view-channels');
+  el.innerHTML = `
+    ${channelCardHtml('smtp', '이메일 (SMTP)', '새/악화된 장애 발생 시 이메일로 알립니다', `
+      <div class="field"><label>SMTP 호스트</label><input type="text" id="ch-smtp-host" placeholder="예: smtp.gmail.com"></div>
+      <div class="field"><label>포트</label><input type="number" id="ch-smtp-port" placeholder="587"></div>
+      <div class="field"><label>사용자명 (발신 계정)</label><input type="text" id="ch-smtp-username"></div>
+      <div class="field"><label>비밀번호</label><input type="password" id="ch-smtp-password" placeholder="변경하려면 입력 (비워두면 기존 값 유지)"></div>
+      <div class="field"><label>수신 이메일</label><input type="text" id="ch-smtp-alertto" placeholder="비워두면 사용자명과 동일"></div>
+      ${minSeveritySelectHtml('smtp')}
+      <div class="field"><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="ch-smtp-usetls" style="width:auto"> TLS 사용</label></div>
+    `, true)}
+    ${channelCardHtml('slack', 'Slack', 'Slack 채널의 Incoming Webhook으로 알립니다', `
+      <div class="field" style="grid-column:1/-1"><label>Webhook URL</label><input type="text" id="ch-slack-url" placeholder="https://hooks.slack.com/services/... (변경하려면 입력)"></div>
+      ${minSeveritySelectHtml('slack')}
+    `, true)}
+    ${channelCardHtml('teams', 'Microsoft Teams', 'Teams 채널의 Incoming Webhook(커넥터)으로 알립니다', `
+      <div class="field" style="grid-column:1/-1"><label>Webhook URL</label><input type="text" id="ch-teams-url" placeholder="https://....webhook.office.com/... (변경하려면 입력)"></div>
+      ${minSeveritySelectHtml('teams')}
+    `, true)}
+    <div class="card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>카카오톡 (알림톡)</h3><span class="sub">연동 구조만 제공 -- 설정값은 저장되지만 실제 발송은 아직 지원되지 않습니다</span></div>
+        <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
+          <input type="checkbox" id="ch-kakao-enabled"> 사용 (준비 중)
+        </label>
+      </div>
+      <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 10px">
+        카카오톡 알림톡은 단순 Webhook으로 연동되지 않습니다. ① 카카오톡 채널(비즈니스 계정) 개설 및 발신 프로필 심사, ②
+        자유 텍스트가 아닌 사전 승인된 메시지 템플릿, ③ 보통 공식 비즈니스 API 또는 인증된 알림톡 중개사(CPaaS: NHN Toast,
+        알리고, 솔라피 등)를 통한 유료 연동이 필요합니다. 아래 값은 추후 연동을 위한 설정 보관용입니다.
+      </p>
+      <div class="form-grid">
+        <div class="field"><label>발신 프로필 키 (선택)</label><input type="text" id="ch-kakao-senderkey" maxlength="100"></div>
+        <div class="field"><label>알림톡 템플릿 코드 (선택)</label><input type="text" id="ch-kakao-templatecode" maxlength="100"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+        <button type="button" class="btn primary" id="ch-kakao-save">저장</button>
+        <span id="ch-kakao-status" style="font-size:11.5px"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>SMS</h3><span class="sub">연동 구조만 제공 -- 설정값은 저장되지만 실제 발송은 아직 지원되지 않습니다</span></div>
+        <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
+          <input type="checkbox" id="ch-sms-enabled"> 사용 (준비 중)
+        </label>
+      </div>
+      <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 10px">
+        SMS 발송에는 유료 SMS 게이트웨이 계정(API 키)과, 국내 기준 사전 등록된 발신번호가 필요합니다. 아래 값은 추후 연동을
+        위한 설정 보관용입니다.
+      </p>
+      <div class="form-grid">
+        <div class="field"><label>발송 사업자 (선택)</label><input type="text" id="ch-sms-provider" placeholder="예: 알리고, 솔라피" maxlength="60"></div>
+        <div class="field"><label>발신 번호 (선택)</label><input type="text" id="ch-sms-sendernumber" placeholder="예: 0212345678" maxlength="20"></div>
+        <div class="field"><label>API 키 (선택)</label><input type="password" id="ch-sms-apikey" placeholder="변경하려면 입력 (비워두면 기존 값 유지)"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+        <button type="button" class="btn primary" id="ch-sms-save">저장</button>
+        <span id="ch-sms-status" style="font-size:11.5px"></span>
+      </div>
+    </div>
+  `;
+  wireChannelHandlers();
+}
+function wireChannelHandlers(){
+  const setStatus = (prefix, text, ok)=>{
+    const el = $('#ch-'+prefix+'-status');
+    if(el){ el.textContent = text; el.style.color = ok ? 'var(--good)' : 'var(--crit)'; }
+  };
+  $('#ch-smtp-save').addEventListener('click', async ()=>{
+    setStatus('smtp', '', true);
+    const body = {
+      host: $('#ch-smtp-host').value.trim(), port: parseInt($('#ch-smtp-port').value) || null,
+      username: $('#ch-smtp-username').value.trim(), password: $('#ch-smtp-password').value || null,
+      alertTo: $('#ch-smtp-alertto').value.trim(), minSeverity: $('#ch-smtp-minseverity').value,
+      useTls: $('#ch-smtp-usetls').checked, enabled: $('#ch-smtp-enabled').checked,
+    };
+    const r = await apiFetch('/api/settings/smtp', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ setStatus('smtp', j.error||'저장 실패', false); return; }
+    setStatus('smtp', '저장되었습니다', true);
+    $('#ch-smtp-password').value = '';
+    loadChannelSettings();
+  });
+  $('#ch-smtp-test').addEventListener('click', async ()=>{
+    setStatus('smtp', '발송 중...', true);
+    const r = await apiFetch('/api/settings/smtp/test', {method:'POST'});
+    const j = await r.json();
+    setStatus('smtp', r.ok ? '테스트 발송 성공' : (j.error||'발송 실패'), r.ok);
+  });
+  for(const prefix of ['slack','teams']){
+    $('#ch-'+prefix+'-save').addEventListener('click', async ()=>{
+      setStatus(prefix, '', true);
+      const body = {
+        url: $('#ch-'+prefix+'-url').value.trim() || null,
+        minSeverity: $('#ch-'+prefix+'-minseverity').value,
+        enabled: $('#ch-'+prefix+'-enabled').checked,
+      };
+      const r = await apiFetch('/api/settings/'+prefix, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      const j = await r.json();
+      if(!r.ok){ setStatus(prefix, j.error||'저장 실패', false); return; }
+      setStatus(prefix, '저장되었습니다', true);
+      $('#ch-'+prefix+'-url').value = '';
+      loadChannelSettings();
+    });
+    $('#ch-'+prefix+'-test').addEventListener('click', async ()=>{
+      setStatus(prefix, '발송 중...', true);
+      const r = await apiFetch('/api/settings/'+prefix+'/test', {method:'POST'});
+      const j = await r.json();
+      setStatus(prefix, r.ok ? '테스트 발송 성공' : (j.error||'발송 실패'), r.ok);
+    });
+  }
+  $('#ch-kakao-save').addEventListener('click', async ()=>{
+    const body = {
+      enabled: $('#ch-kakao-enabled').checked,
+      senderKey: $('#ch-kakao-senderkey').value.trim(),
+      templateCode: $('#ch-kakao-templatecode').value.trim(),
+    };
+    const r = await apiFetch('/api/settings/kakao', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    setStatus('kakao', r.ok ? '저장되었습니다' : (j.error||'저장 실패'), r.ok);
+  });
+  $('#ch-sms-save').addEventListener('click', async ()=>{
+    const body = {
+      enabled: $('#ch-sms-enabled').checked, provider: $('#ch-sms-provider').value.trim(),
+      senderNumber: $('#ch-sms-sendernumber').value.trim(), apiKey: $('#ch-sms-apikey').value || null,
+    };
+    const r = await apiFetch('/api/settings/sms', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ setStatus('sms', j.error||'저장 실패', false); return; }
+    setStatus('sms', '저장되었습니다', true);
+    $('#ch-sms-apikey').value = '';
+  });
+}
+async function loadChannelSettings(){
+  const [smtpR, slackR, teamsR, kakaoR, smsR] = await Promise.all([
+    apiFetch('/api/settings/smtp'), apiFetch('/api/settings/slack'), apiFetch('/api/settings/teams'),
+    apiFetch('/api/settings/kakao'), apiFetch('/api/settings/sms'),
+  ]);
+  const [smtp, slack, teams, kakao, sms] = await Promise.all([smtpR.json(), slackR.json(), teamsR.json(), kakaoR.json(), smsR.json()]);
+  $('#ch-smtp-enabled').checked = smtp.enabled;
+  $('#ch-smtp-host').value = smtp.host || '';
+  $('#ch-smtp-port').value = smtp.port || '';
+  $('#ch-smtp-username').value = smtp.username || '';
+  $('#ch-smtp-password').placeholder = smtp.passwordSet ? '변경하려면 입력 (비워두면 기존 값 유지)' : '비밀번호 입력';
+  $('#ch-smtp-alertto').value = smtp.alertTo || '';
+  $('#ch-smtp-minseverity').value = smtp.minSeverity || 'crit';
+  $('#ch-smtp-usetls').checked = smtp.useTls;
+  for(const [prefix, cfg] of [['slack',slack],['teams',teams]]){
+    $('#ch-'+prefix+'-enabled').checked = cfg.enabled;
+    $('#ch-'+prefix+'-url').placeholder = cfg.urlSet ? '설정됨 -- 변경하려면 새 URL 입력' : 'https://... (webhook URL 입력)';
+    $('#ch-'+prefix+'-minseverity').value = cfg.minSeverity || 'crit';
+  }
+  $('#ch-kakao-enabled').checked = kakao.enabled;
+  $('#ch-kakao-senderkey').value = kakao.senderKey || '';
+  $('#ch-kakao-templatecode').value = kakao.templateCode || '';
+  $('#ch-sms-enabled').checked = sms.enabled;
+  $('#ch-sms-provider').value = sms.provider || '';
+  $('#ch-sms-sendernumber').value = sms.senderNumber || '';
+  $('#ch-sms-apikey').placeholder = sms.apiKeySet ? '변경하려면 입력 (비워두면 기존 값 유지)' : 'API 키 입력';
+}
+function renderChannels(){
+  // Settings page, not live monitoring data -- unlike every other view's
+  // render(), this one must NOT re-run on every 2.2s poll tick while the
+  // view is open, or it would silently wipe out whatever an operator is
+  // mid-typing (same class of bug the global-threshold card's edit button
+  // hit earlier: a periodic refresh colliding with in-progress form input).
+  // Loading once per page-load is enough for a settings screen.
+  if(channelsLoaded) return;
+  channelsLoaded = true;
+  loadChannelSettings();
+}
+
 /* ================= USERS (ADMIN only -- server enforces this regardless) ================= */
 const ROLE_LABEL = {ADMIN:'관리자', OPERATOR:'운영자', VIEWER:'조회자'};
 function renderUsersSkeleton(){
@@ -3843,6 +4048,7 @@ const VIEWS = {
   facility: {skeleton:renderFacilitySkeleton, render:renderFacility, title:'전산실 설비 관리 (FMS)', sub:'UPS · 항온항습기 · 전원 설비 모니터링'},
   incidents: {skeleton:renderIncidentsSkeleton, render:renderIncidents, title:'이벤트 / 장애 관리', sub:'전체 영역 통합 이벤트 로그 및 조치 이력'},
   register: {skeleton:renderRegisterSkeleton, render:renderRegister, title:'장비 등록', sub:'신규 서버 · DB · 네트워크 · 설비 등록 및 관리'},
+  channels: {skeleton:renderChannelsSkeleton, render:renderChannels, title:'알림 채널', sub:'이메일·Slack·Teams·카카오톡·SMS 알림 채널 설정'},
   users: {skeleton:renderUsersSkeleton, render:renderUsers, title:'사용자 관리', sub:'로그인 계정 및 권한 관리 (ADMIN)'},
 };
 let currentView = 'overview';
