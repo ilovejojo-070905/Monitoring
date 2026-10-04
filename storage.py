@@ -409,6 +409,41 @@ def init_db():
         started_by TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_maintenance_log_device ON maintenance_log(device_id, started_at)')
+    # 2-5: 알림 에스컬레이션. escalation_tiers is the configured contact chain
+    # (1차/2차/3차...); escalation_state tracks, per OPEN incident, how far
+    # through that chain it's gotten so a repeat scheduler tick never
+    # re-notifies a tier that already got this exact incident ("동일 장애의
+    # 반복 에스컬레이션 방지") and never notifies past the end of the list.
+    # escalation_log is purely for visibility ("확인 여부 기록"-adjacent --
+    # distinct from the incident's own acknowledged_by/acknowledged_at,
+    # which is the real "담당자가 실제로 확인했다" signal this ticket cares
+    # about; a logged notify here only proves an email was *sent*).
+    conn.execute('''CREATE TABLE IF NOT EXISTS escalation_tiers(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tier_order INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        timeout_minutes INTEGER NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        created_at INTEGER NOT NULL
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS escalation_state(
+        incident_id INTEGER PRIMARY KEY,
+        current_tier INTEGER NOT NULL DEFAULT 0,
+        last_notified_at INTEGER,
+        completed INTEGER DEFAULT 0
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS escalation_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        incident_id INTEGER NOT NULL,
+        tier_order INTEGER NOT NULL,
+        contact_name TEXT,
+        email TEXT,
+        notified_at INTEGER NOT NULL,
+        ok INTEGER NOT NULL,
+        error TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_escalation_log_incident ON escalation_log(incident_id, notified_at)')
     conn.commit()
     conn.close()
     migrate_db()
@@ -762,6 +797,118 @@ def ack_incident(incident_id, acknowledged_by=None):
         (acknowledged_by, now, incident_id))
     conn.commit()
     conn.close()
+
+
+# ------------------------------------------------------------------- 2-5 --
+# 알림 에스컬레이션: configured contact tiers + per-incident progress through
+# them. Notification delivery itself (collector/escalation.py's tick()) only
+# ever uses the email channel -- see that module's docstring for why a named
+# 담당자 maps naturally to a personal email address where Slack/Teams (team
+# channels, not individuals) don't.
+
+def get_escalation_settings_public():
+    return {
+        'enabled': get_setting('escalation_enabled') == '1',
+        'minSeverity': get_setting('escalation_min_severity', 'crit'),
+    }
+
+
+def set_escalation_settings(enabled, min_severity):
+    set_setting('escalation_enabled', '1' if enabled else '0')
+    set_setting('escalation_min_severity', min_severity)
+
+
+def create_escalation_tier(name, email, timeout_minutes):
+    conn = get_db()
+    row = conn.execute('SELECT COALESCE(MAX(tier_order),0)+1 AS n FROM escalation_tiers').fetchone()
+    tier_order = row['n']
+    now = int(time.time() * 1000)
+    cur = conn.execute(
+        'INSERT INTO escalation_tiers(tier_order,name,email,timeout_minutes,enabled,created_at) VALUES (?,?,?,?,1,?)',
+        (tier_order, name, email, timeout_minutes, now))
+    tier_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return tier_id
+
+
+def load_escalation_tiers():
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM escalation_tiers ORDER BY tier_order').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_escalation_tier(tier_id, name=None, email=None, timeout_minutes=None, enabled=None):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM escalation_tiers WHERE id=?', (tier_id,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    d = dict(row)
+    conn.execute(
+        'UPDATE escalation_tiers SET name=?, email=?, timeout_minutes=?, enabled=? WHERE id=?',
+        (name if name is not None else d['name'], email if email is not None else d['email'],
+         timeout_minutes if timeout_minutes is not None else d['timeout_minutes'],
+         1 if enabled else 0 if enabled is not None else d['enabled'], tier_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_escalation_tier(tier_id):
+    conn = get_db()
+    conn.execute('DELETE FROM escalation_tiers WHERE id=?', (tier_id,))
+    conn.commit()
+    conn.close()
+
+
+def load_open_incidents():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM incidents WHERE status='open'").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_escalation_state(incident_id):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM escalation_state WHERE incident_id=?', (incident_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def upsert_escalation_state(incident_id, current_tier, last_notified_at, completed):
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO escalation_state(incident_id,current_tier,last_notified_at,completed) VALUES (?,?,?,?) '
+        'ON CONFLICT(incident_id) DO UPDATE SET current_tier=excluded.current_tier, '
+        'last_notified_at=excluded.last_notified_at, completed=excluded.completed',
+        (incident_id, current_tier, last_notified_at, 1 if completed else 0))
+    conn.commit()
+    conn.close()
+
+
+def record_escalation_notify(incident_id, tier_order, contact_name, email, ok, error):
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO escalation_log(incident_id,tier_order,contact_name,email,notified_at,ok,error) VALUES (?,?,?,?,?,?,?)',
+        (incident_id, tier_order, contact_name, email, int(time.time() * 1000), 1 if ok else 0, error))
+    conn.commit()
+    conn.close()
+
+
+def load_escalation_log(incident_id=None, limit=50):
+    conn = get_db()
+    q = 'SELECT * FROM escalation_log'
+    params = []
+    if incident_id is not None:
+        q += ' WHERE incident_id=?'
+        params.append(incident_id)
+    q += ' ORDER BY notified_at DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def in_maintenance(device_row):

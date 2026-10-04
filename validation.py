@@ -244,6 +244,29 @@ def validate_maintenance_window(data):
     return out
 
 
+MAX_ESCALATION_TIMEOUT_MIN = 24 * 60  # 24 hours -- past this it's not really "escalation" anymore
+
+
+def validate_escalation_tier(data):
+    """data: a tier create/update body (2-5) -- {name, email, timeoutMinutes}.
+    Returns (name, email, timeout_minutes) or raises ValueError."""
+    if not isinstance(data, dict):
+        raise ValueError('담당자 설정 형식이 올바르지 않습니다')
+    name = (data.get('name') or '').strip()
+    if not name or len(name) > 60:
+        raise ValueError('담당자 이름을 입력해주세요 (60자 이하)')
+    email = (data.get('email') or '').strip()
+    if not is_valid_email(email):
+        raise ValueError('담당자 이메일 형식이 올바르지 않습니다')
+    try:
+        timeout_minutes = int(data.get('timeoutMinutes'))
+    except (TypeError, ValueError):
+        raise ValueError('미확인 시 다음 담당자에게 전달하기까지의 시간(분)을 입력해주세요')
+    if not (1 <= timeout_minutes <= MAX_ESCALATION_TIMEOUT_MIN):
+        raise ValueError(f'시간은 1~{MAX_ESCALATION_TIMEOUT_MIN}분 사이여야 합니다')
+    return name, email, timeout_minutes
+
+
 def clamp_int(v, lo, hi, default=None):
     try:
         n = int(v)

@@ -20,6 +20,7 @@ from collector import state, health, metrics
 from collector import local_collector, ping_collector, snmp_collector, agent_collector
 from collector import flow_listener
 from collector import maintenance
+from collector import escalation
 
 def _compute_max_workers():
     """Code review pass, finding #4: this was a flat, hardcoded 10
@@ -184,6 +185,10 @@ def start():
     # be active takes effect right after a restart instead of waiting a full
     # minute -- same reasoning as add_device_job's own next_run_time.
     _scheduler.add_job(maintenance.tick, 'interval', seconds=60, id='maintenance_tick',
+                        replace_existing=True, next_run_time=datetime.now())
+    # 2-5: same cadence/pattern as maintenance.tick -- checks every open
+    # incident against the configured escalation chain each run.
+    _scheduler.add_job(escalation.tick, 'interval', seconds=60, id='escalation_tick',
                         replace_existing=True, next_run_time=datetime.now())
 
 

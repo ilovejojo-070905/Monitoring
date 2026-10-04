@@ -3153,8 +3153,37 @@ function renderChannelsSkeleton(){
         <span id="ch-sms-status" style="font-size:11.5px"></span>
       </div>
     </div>
+    <div class="card" id="escalation-card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>알림 에스컬레이션</h3><span class="sub">담당자가 설정 시간 내에 장애를 확인(이벤트/장애 화면의 확인 버튼)하지 않으면 다음 담당자에게 이메일로 자동 전달합니다. 이메일 발송 성공과 담당자의 실제 확인은 별개입니다 -- 확인 전까지는 이메일이 보내졌어도 계속 다음 단계로 넘어갑니다. SMTP 채널이 설정되어 있어야 동작합니다.</span></div>
+        <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
+          <input type="checkbox" id="esc-enabled"> 사용
+        </label>
+      </div>
+      <div class="form-grid" style="margin-bottom:10px">
+        <div class="field"><label>에스컬레이션 발송 기준</label>
+          <select id="esc-minseverity"><option value="warn">주의 이상</option><option value="crit">위험만</option></select>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <button type="button" class="btn primary" id="esc-settings-save">설정 저장</button>
+        <span id="esc-settings-status" style="font-size:11.5px"></span>
+      </div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px">담당자 단계 (등록 순서대로 1차 → 2차 → 3차 전달)</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <div class="field" style="flex:1;min-width:110px"><label>이름</label><input type="text" id="esc-new-name" maxlength="60"></div>
+        <div class="field" style="flex:1.4;min-width:160px"><label>이메일</label><input type="text" id="esc-new-email" placeholder="예: oncall1@company.com"></div>
+        <div class="field" style="width:150px"><label>미확인 시 전달(분)</label><input type="number" id="esc-new-timeout" min="1" max="1440" value="30"></div>
+        <button type="button" class="btn primary" id="esc-tier-add">담당자 추가</button>
+      </div>
+      <div id="esc-tier-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
+      <div id="esc-tier-list"></div>
+      <button type="button" class="btn" id="esc-log-btn" style="margin-top:12px">에스컬레이션 발송 이력</button>
+      <div id="esc-log-panel" style="display:none;margin-top:12px"></div>
+    </div>
   `;
   wireChannelHandlers();
+  wireEscalationHandlers();
 }
 function wireChannelHandlers(){
   const setStatus = (prefix, text, ok)=>{
@@ -3226,6 +3255,97 @@ function wireChannelHandlers(){
     $('#ch-sms-apikey').value = '';
   });
 }
+function wireEscalationHandlers(){
+  $('#esc-settings-save').addEventListener('click', async ()=>{
+    const statusEl = $('#esc-settings-status');
+    statusEl.textContent = '';
+    const body = {enabled: $('#esc-enabled').checked, minSeverity: $('#esc-minseverity').value};
+    const r = await apiFetch('/api/escalation/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    statusEl.textContent = r.ok ? '저장되었습니다' : (j.error||'저장 실패');
+    statusEl.style.color = r.ok ? 'var(--good)' : 'var(--crit)';
+  });
+  $('#esc-tier-add').addEventListener('click', async ()=>{
+    const errEl = $('#esc-tier-error');
+    errEl.textContent = '';
+    const body = {
+      name: $('#esc-new-name').value.trim(), email: $('#esc-new-email').value.trim(),
+      timeoutMinutes: parseInt($('#esc-new-timeout').value),
+    };
+    const r = await apiFetch('/api/escalation/tiers', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error||'추가 실패'; return; }
+    $('#esc-new-name').value = ''; $('#esc-new-email').value = ''; $('#esc-new-timeout').value = '30';
+    renderEscalationTiers();
+  });
+  $('#esc-log-btn').addEventListener('click', async ()=>{
+    const panel = $('#esc-log-panel');
+    if(panel.style.display !== 'none'){ panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    panel.innerHTML = '<div class="empty-note">불러오는 중...</div>';
+    const r = await apiFetch('/api/escalation/log?limit=50');
+    const j = await r.json();
+    if(!r.ok){ panel.innerHTML = `<div class="empty-note">${escapeHtml(j.error||'불러오기 실패')}</div>`; return; }
+    if(!j.log.length){ panel.innerHTML = '<div class="empty-note">에스컬레이션 발송 이력이 없습니다</div>'; return; }
+    panel.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+      <thead><tr><th>시각</th><th>이벤트 ID</th><th>단계</th><th>담당자</th><th>결과</th></tr></thead>
+      <tbody>${j.log.map(l=>`<tr>
+        <td style="font-size:11px;white-space:nowrap">${fmtWhen(l.notified_at)}</td>
+        <td class="mono">#${l.incident_id}</td>
+        <td>${l.tier_order}차</td>
+        <td>${escapeHtml(l.contact_name||'-')} &lt;${escapeHtml(l.email||'-')}&gt;</td>
+        <td>${l.ok ? '<span class="pill good" style="font-size:9px">발송됨</span>' : `<span class="pill crit" style="font-size:9px" title="${escapeHtml(l.error||'')}">실패</span>`}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  });
+}
+async function renderEscalationTiers(){
+  const listEl = $('#esc-tier-list');
+  if(!listEl) return;
+  try{
+    const r = await apiFetch('/api/escalation/tiers');
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || '불러오기 실패');
+    if(!j.tiers.length){
+      listEl.innerHTML = '<div class="empty-note">등록된 담당자가 없습니다. 위에서 1차 담당자부터 추가하세요.</div>';
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>단계</th><th>이름</th><th>이메일</th><th>미확인 시 전달</th><th>상태</th><th></th></tr></thead>
+        <tbody>
+          ${j.tiers.map(t=>`
+            <tr>
+              <td class="mono">${t.tier_order}차</td>
+              <td class="name">${escapeHtml(t.name)}</td>
+              <td>${escapeHtml(t.email)}</td>
+              <td class="mono">${t.timeout_minutes}분</td>
+              <td>${t.enabled?'<span class="pill good" style="font-size:9px">사용</span>':'<span class="pill neutral" style="font-size:9px">비활성</span>'}</td>
+              <td style="display:flex;gap:6px">
+                <button type="button" class="btn" data-esc-toggle="${t.id}" data-enabled="${t.enabled?1:0}"
+                  data-name="${escapeHtml(t.name)}" data-email="${escapeHtml(t.email)}" data-timeout="${t.timeout_minutes}">${t.enabled?'비활성화':'활성화'}</button>
+                <button type="button" class="btn" data-esc-del="${t.id}">삭제</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+    $$('[data-esc-toggle]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      await apiFetch('/api/escalation/tiers/'+b.dataset.escToggle, {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name:b.dataset.name, email:b.dataset.email, timeoutMinutes:parseInt(b.dataset.timeout), enabled: b.dataset.enabled!=='1'}),
+      });
+      renderEscalationTiers();
+    }));
+    $$('[data-esc-del]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const ok = await showConfirm('이 담당자를 에스컬레이션 단계에서 삭제할까요?', {title:'담당자 삭제', okText:'삭제'});
+      if(!ok) return;
+      await apiFetch('/api/escalation/tiers/'+b.dataset.escDel, {method:'DELETE'});
+      renderEscalationTiers();
+    }));
+  }catch(err){
+    listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+  }
+}
 async function loadChannelSettings(){
   const [smtpR, slackR, teamsR, kakaoR, smsR] = await Promise.all([
     apiFetch('/api/settings/smtp'), apiFetch('/api/settings/slack'), apiFetch('/api/settings/teams'),
@@ -3252,6 +3372,11 @@ async function loadChannelSettings(){
   $('#ch-sms-provider').value = sms.provider || '';
   $('#ch-sms-sendernumber').value = sms.senderNumber || '';
   $('#ch-sms-apikey').placeholder = sms.apiKeySet ? '변경하려면 입력 (비워두면 기존 값 유지)' : 'API 키 입력';
+  const escR = await apiFetch('/api/escalation/settings');
+  const esc = await escR.json();
+  $('#esc-enabled').checked = esc.enabled;
+  $('#esc-minseverity').value = esc.minSeverity || 'crit';
+  renderEscalationTiers();
 }
 function renderChannels(){
   // Settings page, not live monitoring data -- unlike every other view's

@@ -1037,6 +1037,74 @@ def api_maintenance_log():
     return jsonify({'log': log})
 
 
+# ----------------------------------------------------------- 2-5 알림 에스컬레이션 --
+@app.get('/api/escalation/settings')
+@require_role('OPERATOR')
+def api_get_escalation_settings():
+    return jsonify(storage.get_escalation_settings_public())
+
+
+@app.put('/api/escalation/settings')
+@require_role('OPERATOR')
+def api_set_escalation_settings():
+    body = request.get_json(force=True)
+    if body.get('minSeverity') not in (None, 'warn', 'crit'):
+        return jsonify({'error': 'minSeverity는 warn 또는 crit이어야 합니다'}), 400
+    storage.set_escalation_settings(bool(body.get('enabled', False)), body.get('minSeverity') or 'crit')
+    audit('SET_ESCALATION_SETTINGS', details=f"enabled={bool(body.get('enabled', False))}")
+    return jsonify({'ok': True})
+
+
+@app.get('/api/escalation/tiers')
+@require_role('VIEWER')
+def api_list_escalation_tiers():
+    return jsonify({'tiers': storage.load_escalation_tiers()})
+
+
+@app.post('/api/escalation/tiers')
+@require_role('OPERATOR')
+def api_create_escalation_tier():
+    body = request.get_json(force=True)
+    try:
+        name, email, timeout_minutes = validation.validate_escalation_tier(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    tier_id = storage.create_escalation_tier(name, email, timeout_minutes)
+    audit('CREATE_ESCALATION_TIER', target=str(tier_id), details=f"{name} <{email}>")
+    return jsonify({'ok': True, 'id': tier_id})
+
+
+@app.put('/api/escalation/tiers/<int:tier_id>')
+@require_role('OPERATOR')
+def api_update_escalation_tier(tier_id):
+    body = request.get_json(force=True)
+    try:
+        name, email, timeout_minutes = validation.validate_escalation_tier(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if not storage.update_escalation_tier(tier_id, name, email, timeout_minutes, bool(body.get('enabled', True))):
+        return jsonify({'error': 'not found'}), 404
+    audit('UPDATE_ESCALATION_TIER', target=str(tier_id), details=f"{name} <{email}>")
+    return jsonify({'ok': True})
+
+
+@app.delete('/api/escalation/tiers/<int:tier_id>')
+@require_role('OPERATOR')
+def api_delete_escalation_tier(tier_id):
+    storage.delete_escalation_tier(tier_id)
+    audit('DELETE_ESCALATION_TIER', target=str(tier_id))
+    return jsonify({'ok': True})
+
+
+@app.get('/api/escalation/log')
+@require_role('VIEWER')
+def api_escalation_log():
+    incident_id = request.args.get('incidentId')
+    incident_id = int(incident_id) if incident_id else None
+    limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
+    return jsonify({'log': storage.load_escalation_log(incident_id, limit)})
+
+
 @app.post('/api/agent/report')
 def api_agent_report():
     body = request.get_json(force=True)
