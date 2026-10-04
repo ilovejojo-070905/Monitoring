@@ -552,6 +552,22 @@ def api_register_device():
     snmp_port = fields.get('snmpPort')
     if snmp_port not in (None, '') and not validation.is_valid_port(snmp_port):
         return jsonify({'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}), 400
+    # 2-1: group is still just a free-text fields.group string (see
+    # storage.py's device_groups docstring for why), but it's rendered and
+    # matched the same way a device name is, so it gets the same charset/
+    # length validation here rather than accepting literally anything.
+    group_field = (fields.get('group') or '').strip()
+    if group_field:
+        if len(group_field) > 60 or not validation.is_safe_name(group_field):
+            return jsonify({'error': '그룹 이름에 사용할 수 없는 문자가 포함되어 있습니다 (60자 이하)'}), 400
+        fields['group'] = group_field
+    if 'tags' in fields:
+        try:
+            fields['tags'] = validation.validate_tags(fields['tags'])
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        if not fields['tags']:
+            del fields['tags']
     if mode == 'ping':
         # Registering a device that's already unreachable just guarantees an
         # immediate "위험" incident with nothing anyone can do about it from
@@ -677,6 +693,18 @@ def api_update_device(device_id):
     snmp_port = fields.get('snmpPort')
     if snmp_port not in (None, '') and not validation.is_valid_port(snmp_port):
         return jsonify({'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}), 400
+    group_field = (fields.get('group') or '').strip()
+    if group_field:
+        if len(group_field) > 60 or not validation.is_safe_name(group_field):
+            return jsonify({'error': '그룹 이름에 사용할 수 없는 문자가 포함되어 있습니다 (60자 이하)'}), 400
+        fields['group'] = group_field
+    if 'tags' in fields:
+        try:
+            fields['tags'] = validation.validate_tags(fields['tags'])
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        if not fields['tags']:
+            del fields['tags']
     for k, v in list(fields.items()):
         if isinstance(v, str) and len(v) > 200:
             fields[k] = v[:200]
@@ -740,6 +768,102 @@ def api_delete_device(device_id):
         state.LIVE.pop(device_id, None)
         state.LAST_REPORT.pop(device_id, None)
     audit('DELETE_DEVICE', target=device_id)
+    return jsonify({'ok': True})
+
+
+# ------------------------------------------------------------- 2-1 groups --
+@app.get('/api/groups')
+@require_role('VIEWER')
+def api_list_groups():
+    """A group's membership/status isn't DB-static (status comes from
+    state.LIVE, same as /api/state), so this is computed here each call
+    rather than stored -- the device_groups table only holds the catalog
+    (which names exist, their description), not any per-group rollup."""
+    with state.LOCK:
+        devices = storage.load_devices()
+        serialized = [serialize_device(d) for d in devices]
+    catalog = {g['name']: g for g in storage.load_device_groups()}
+    by_name = defaultdict(list)
+    for e in serialized:
+        g = e.get('group')
+        if g:
+            by_name[g].append(e)
+    conn = storage.get_db()
+    out = []
+    for name in sorted(set(catalog) | set(by_name)):
+        members = by_name.get(name, [])
+        status_counts = {'good': 0, 'warn': 0, 'crit': 0}
+        for m in members:
+            if m.get('status') in status_counts:
+                status_counts[m['status']] += 1
+        ids = [m['id'] for m in members]
+        if ids:
+            ph = ','.join('?' * len(ids))
+            open_incidents = conn.execute(
+                f"SELECT COUNT(*) c FROM incidents WHERE device_id IN ({ph}) AND status='open'", ids).fetchone()['c']
+            total_incidents = conn.execute(
+                f"SELECT COUNT(*) c FROM incidents WHERE device_id IN ({ph})", ids).fetchone()['c']
+        else:
+            open_incidents = total_incidents = 0
+        meta = catalog.get(name)
+        out.append({
+            'name': name, 'description': meta['description'] if meta else None,
+            'managed': name in catalog, 'deviceCount': len(members),
+            'statusCounts': status_counts, 'openIncidents': open_incidents, 'totalIncidents': total_incidents,
+        })
+    conn.close()
+    return jsonify({'groups': out})
+
+
+@app.post('/api/groups')
+@require_role('OPERATOR')
+def api_create_group():
+    body = request.get_json(force=True)
+    name = (body.get('name') or '').strip()
+    description = (body.get('description') or '').strip() or None
+    if not name or len(name) > 60:
+        return jsonify({'error': '그룹 이름을 입력해주세요 (60자 이하)'}), 400
+    if not validation.is_safe_name(name):
+        return jsonify({'error': '그룹 이름에 사용할 수 없는 문자가 포함되어 있습니다'}), 400
+    try:
+        storage.create_device_group(name, description)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    audit('CREATE_GROUP', target=name)
+    return jsonify({'ok': True})
+
+
+@app.put('/api/groups/<string:name>')
+@require_role('OPERATOR')
+def api_update_group(name):
+    body = request.get_json(force=True)
+    new_name = (body.get('name') or '').strip() or None
+    description = body.get('description')
+    if new_name and new_name != name:
+        if len(new_name) > 60 or not validation.is_safe_name(new_name):
+            return jsonify({'error': '그룹 이름에 사용할 수 없는 문자가 포함되어 있습니다 (60자 이하)'}), 400
+        try:
+            moved = storage.rename_device_group(name, new_name)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        if description is not None:
+            storage.update_device_group_description(new_name, description.strip() or None)
+        audit('UPDATE_GROUP', target=name, details=f'renamed to {new_name} ({moved}대 장비 함께 변경)')
+        return jsonify({'ok': True, 'devicesRenamed': moved})
+    if description is not None:
+        storage.update_device_group_description(name, description.strip() or None)
+    audit('UPDATE_GROUP', target=name, details='description updated')
+    return jsonify({'ok': True, 'devicesRenamed': 0})
+
+
+@app.delete('/api/groups/<string:name>')
+@require_role('OPERATOR')
+def api_delete_group(name):
+    count = storage.count_devices_in_group(name)
+    if count > 0:
+        return jsonify({'error': f'이 그룹에 {count}대의 장비가 속해 있어 삭제할 수 없습니다. 먼저 장비들의 그룹을 변경해주세요.'}), 400
+    storage.delete_device_group(name)
+    audit('DELETE_GROUP', target=name)
     return jsonify({'ok': True})
 
 

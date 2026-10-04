@@ -623,6 +623,17 @@
     <button type="button" class="btn primary" id="userEditOkBtn">저장</button>
   </div>
 </div>
+<div class="overlay" id="groupEditOverlay" style="z-index:89"></div>
+<div class="confirm-modal" id="groupEditModal">
+  <div class="confirm-title" id="groupEditTitle">그룹 수정</div>
+  <div class="field" style="margin-bottom:12px"><label>그룹 이름</label><input type="text" id="ge-name" maxlength="60"></div>
+  <div class="field" style="margin-bottom:8px"><label>설명 (선택)</label><input type="text" id="ge-desc"></div>
+  <div id="groupEditError" style="color:var(--crit);font-size:12px;min-height:16px;margin-bottom:8px"></div>
+  <div class="confirm-actions">
+    <button type="button" class="btn" id="groupEditCancelBtn">취소</button>
+    <button type="button" class="btn primary" id="groupEditOkBtn">저장</button>
+  </div>
+</div>
 <div class="overlay" id="overlay"></div>
 <div class="drawer" id="drawer">
   <div class="drawer-head">
@@ -674,6 +685,14 @@ function regTag(entity){
 }
 function maintTag(entity){ return entity.maintenance && entity.maintenance.enabled ? `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--warn-soft);color:var(--warn)">점검중</span>` : ''; }
 function groupTag(entity){ return entity.group ? `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--accent-soft);color:var(--accent)">${escapeHtml(entity.group)}</span>` : ''; }
+// 2-1: a device can carry several free-form tags, unlike the single group
+// above -- each renders as its own small pill so they read as a set, not
+// one combined string.
+function tagsHtml(entity){
+  return (entity.tags||[]).map(t=>
+    `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--surface-2);color:var(--text-dim)">#${escapeHtml(t)}</span>`
+  ).join('');
+}
 
 Chart.defaults.font.family = "'IBM Plex Mono', monospace";
 Chart.defaults.color = '#6b7488';
@@ -1840,6 +1859,7 @@ function refreshTopologyView(){
 
 /* ================= SERVERS ================= */
 let srvFilter = 'all';
+let srvGroupFilter = '';
 function renderServersSkeleton(){
   const el = $('#view-servers');
   el.innerHTML = `
@@ -1847,8 +1867,9 @@ function renderServersSkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>서버 목록</h3><span class="sub">클릭 시 상세 성능 정보를 확인할 수 있습니다</span></div>
         ${statusFilterRow('srv-filters', srvFilter)}
+        <select id="srv-group-filter"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="srv-search" placeholder="서버명 / IP / 그룹 검색"></div>
+          <input id="srv-search" placeholder="서버명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th></tr></thead>
@@ -1858,14 +1879,18 @@ function renderServersSkeleton(){
   `;
   $('#srv-search').addEventListener('input', renderServers);
   wireStatusFilter('srv-filters', v=>srvFilter=v, renderServers);
+  $('#srv-group-filter').addEventListener('change', ()=>{ srvGroupFilter = $('#srv-group-filter').value; renderServers(); });
 }
 function renderServers(){
   const q = ($('#srv-search')?.value||'').toLowerCase();
-  const rows = applyStatusFilter(SERVERS, srvFilter).filter(s=> s.name.toLowerCase().includes(q) || (s.ip||'').includes(q) || (s.group||'').toLowerCase().includes(q));
+  const groupSel = $('#srv-group-filter');
+  if(groupSel){ groupSel.innerHTML = groupFilterOptionsHtml(); groupSel.value = srvGroupFilter; }
+  const rows = applyStatusFilter(SERVERS, srvFilter)
+    .filter(s=> matchesEntitySearch(s, q) && (!srvGroupFilter || s.group===srvGroupFilter));
   $('#srv-tbody').innerHTML = rows.map(s=>`
     <tr data-id="${s.id}">
       <td><span class="pill ${s.status}"><span class="dot"></span>${statusLabel(s.status)}</span></td>
-      <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}${groupTag(s)}</td>
+      <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}${groupTag(s)}${tagsHtml(s)}</td>
       <td class="mono">${s.ip||'-'}</td>
       <td>${escapeHtml(s.role||'-')}</td>
       <td class="mono">${metricCell(s.cpu,75,90)}</td>
@@ -1900,8 +1925,27 @@ function wireStatusFilter(id, setter, rerender){
 function applyStatusFilter(list, filterVal){
   return filterVal==='all' ? list : list.filter(x=>x.status===filterVal);
 }
+// 2-1: shared by every list view's search box -- name/IP substring match,
+// plus group and tags, so "3층" finds every device in that group without
+// needing a separate control just for that.
+function matchesEntitySearch(entity, q){
+  if(!q) return true;
+  if(entity.name.toLowerCase().includes(q)) return true;
+  if((entity.ip||'').includes(q)) return true;
+  if((entity.group||'').toLowerCase().includes(q)) return true;
+  if((entity.tags||[]).some(t=>t.toLowerCase().includes(q))) return true;
+  return false;
+}
+// 그룹 드롭다운(정확 일치) 옵션 HTML -- 전체 카테고리를 합쳐 하나의 그룹
+// 목록을 쓴다 (2-1: 그룹은 카테고리 구분 없이 공유되는 개념).
+function groupFilterOptionsHtml(){
+  const all = [...SERVERS, ...DBS, ...NETS, ...FACS];
+  const names = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
+  return '<option value="">전체 그룹</option>' + names.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+}
 /* ================= DATABASE ================= */
 let dbFilter = 'all';
+let dbGroupFilter = '';
 function renderDatabaseSkeleton(){
   const el = $('#view-database');
   el.innerHTML = `
@@ -1909,8 +1953,9 @@ function renderDatabaseSkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>데이터베이스 인스턴스</h3><span class="sub">등록된 DB 호스트의 접속 포트 도달성을 실시간 확인합니다</span></div>
         ${statusFilterRow('db-filters', dbFilter)}
+        <select id="db-group-filter"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="db-search" placeholder="인스턴스명 / IP / 그룹 검색"></div>
+          <input id="db-search" placeholder="인스턴스명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
@@ -1920,14 +1965,18 @@ function renderDatabaseSkeleton(){
   `;
   $('#db-search').addEventListener('input', renderDatabase);
   wireStatusFilter('db-filters', v=>dbFilter=v, renderDatabase);
+  $('#db-group-filter').addEventListener('change', ()=>{ dbGroupFilter = $('#db-group-filter').value; renderDatabase(); });
 }
 function renderDatabase(){
   const q = ($('#db-search')?.value||'').toLowerCase();
-  const rows = applyStatusFilter(DBS, dbFilter).filter(d=> d.name.toLowerCase().includes(q) || (d.ip||'').includes(q) || (d.group||'').toLowerCase().includes(q));
+  const groupSel = $('#db-group-filter');
+  if(groupSel){ groupSel.innerHTML = groupFilterOptionsHtml(); groupSel.value = dbGroupFilter; }
+  const rows = applyStatusFilter(DBS, dbFilter)
+    .filter(d=> matchesEntitySearch(d, q) && (!dbGroupFilter || d.group===dbGroupFilter));
   $('#db-tbody').innerHTML = rows.map(d=>`
     <tr data-id="${d.id}">
       <td><span class="pill ${d.status}"><span class="dot"></span>${statusLabel(d.status)}</span></td>
-      <td class="name">${escapeHtml(d.name)}${regTag(d)}${maintTag(d)}${groupTag(d)}</td>
+      <td class="name">${escapeHtml(d.name)}${regTag(d)}${maintTag(d)}${groupTag(d)}${tagsHtml(d)}</td>
       <td>${escapeHtml(d.engine||'-')}</td>
       <td>${escapeHtml(d.role||'-')}</td>
       <td class="mono">${d.ip||'-'}</td>
@@ -1940,6 +1989,7 @@ function renderDatabase(){
 /* ================= NETWORK ================= */
 let selectedNetId = null;
 let netFilter = 'all';
+let netGroupFilter = '';
 function renderNetworkSkeleton(){
   const el = $('#view-network');
   el.innerHTML = `
@@ -1947,8 +1997,9 @@ function renderNetworkSkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>네트워크 장비</h3><span class="sub">Ping은 도달성만, SNMP는 CPU·메모리·트래픽·Uptime까지 실측합니다</span></div>
         ${statusFilterRow('net-filters', netFilter)}
+        <select id="net-group-filter"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="net-search" placeholder="장비명 / IP / 그룹 검색"></div>
+          <input id="net-search" placeholder="장비명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
@@ -1975,14 +2026,18 @@ function renderNetworkSkeleton(){
   ], {showX:false, max:100});
   $('#net-search').addEventListener('input', renderNetwork);
   wireStatusFilter('net-filters', v=>netFilter=v, renderNetwork);
+  $('#net-group-filter').addEventListener('change', ()=>{ netGroupFilter = $('#net-group-filter').value; renderNetwork(); });
 }
 function renderNetwork(){
   const q = ($('#net-search')?.value||'').toLowerCase();
-  const netRows = applyStatusFilter(NETS, netFilter).filter(n=> n.name.toLowerCase().includes(q) || (n.ip||'').includes(q) || (n.group||'').toLowerCase().includes(q));
+  const netGroupSel = $('#net-group-filter');
+  if(netGroupSel){ netGroupSel.innerHTML = groupFilterOptionsHtml(); netGroupSel.value = netGroupFilter; }
+  const netRows = applyStatusFilter(NETS, netFilter)
+    .filter(n=> matchesEntitySearch(n, q) && (!netGroupFilter || n.group===netGroupFilter));
   $('#net-tbody').innerHTML = netRows.map(n=>`
     <tr data-id="${n.id}" class="${n.id===selectedNetId?'sel-row':''}">
       <td><span class="pill ${n.status}"><span class="dot"></span>${statusLabel(n.status)}</span></td>
-      <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}${groupTag(n)}</td>
+      <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}${groupTag(n)}${tagsHtml(n)}</td>
       <td>${escapeHtml(n.type||'-')}</td>
       <td class="mono">${n.ip||'-'}</td>
       <td class="mono">${metricCell(n.cpu,75,90)}</td>
@@ -2156,6 +2211,7 @@ async function renderFlow(){
 
 /* ================= FACILITY ================= */
 let facFilter = 'all';
+let facGroupFilter = '';
 function renderFacilitySkeleton(){
   const el = $('#view-facility');
   el.innerHTML = `
@@ -2163,8 +2219,9 @@ function renderFacilitySkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>전산실 설비</h3><span class="sub">UPS · 항온항습기 · 분전반 등 설비의 도달성과 SNMP 실측값을 확인합니다</span></div>
         ${statusFilterRow('fac-filters', facFilter)}
+        <select id="fac-group-filter"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="fac-search" placeholder="설비명 / IP / 그룹 검색"></div>
+          <input id="fac-search" placeholder="설비명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
         <thead><tr><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
@@ -2177,14 +2234,18 @@ function renderFacilitySkeleton(){
     </div>`;
   $('#fac-search').addEventListener('input', renderFacility);
   wireStatusFilter('fac-filters', v=>facFilter=v, renderFacility);
+  $('#fac-group-filter').addEventListener('change', ()=>{ facGroupFilter = $('#fac-group-filter').value; renderFacility(); });
 }
 function renderFacility(){
   const q = ($('#fac-search')?.value||'').toLowerCase();
-  const facRows = applyStatusFilter(FACS, facFilter).filter(f=> f.name.toLowerCase().includes(q) || (f.ip||'').includes(q) || (f.group||'').toLowerCase().includes(q));
+  const facGroupSel = $('#fac-group-filter');
+  if(facGroupSel){ facGroupSel.innerHTML = groupFilterOptionsHtml(); facGroupSel.value = facGroupFilter; }
+  const facRows = applyStatusFilter(FACS, facFilter)
+    .filter(f=> matchesEntitySearch(f, q) && (!facGroupFilter || f.group===facGroupFilter));
   $('#fac-tbody').innerHTML = facRows.map(f=>`
     <tr data-id="${f.id}">
       <td><span class="pill ${f.status}"><span class="dot"></span>${statusLabel(f.status)}</span></td>
-      <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}${groupTag(f)}</td>
+      <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}${groupTag(f)}${tagsHtml(f)}</td>
       <td>${escapeHtml(f.type||'-')}${f.role? ' · '+escapeHtml(f.role) : ''}</td>
       <td class="mono">${f.ip||'-'}</td>
       <td class="mono" style="color:${f.reachable?'var(--text-dim)':'var(--crit)'}">${f.reachable? fmt0(f.latencyMs||0)+' ms' : '응답없음'}</td>
@@ -2270,6 +2331,16 @@ function renderRegisterSkeleton(){
   el.innerHTML = `
     <div id="reg-edit-overlay"></div>
     <div class="card">
+      <div class="card-head"><div><h3>장비 그룹</h3><span class="sub">그룹은 서버·DB·네트워크·설비 전체에 공통으로 적용되며, 그룹별 상태·장애 현황을 볼 수 있습니다</span></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        <div class="field" style="flex:1;min-width:160px"><label>새 그룹 이름</label><input type="text" id="grp-new-name" placeholder="예: 3층 서버실" maxlength="60"></div>
+        <div class="field" style="flex:1;min-width:160px"><label>설명 (선택)</label><input type="text" id="grp-new-desc" placeholder="예: 3층 전산실 랙"></div>
+        <button type="button" class="btn primary" id="grp-create-btn">그룹 추가</button>
+      </div>
+      <div id="grp-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
+      <div id="grp-list"></div>
+    </div>
+    <div class="card">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>네트워크 자동 스캔</h3><span class="sub">IP 대역을 지정하면 살아있는 장비를 찾아 등록 후보로 보여줍니다</span></div>
         <button type="button" class="btn" id="scan-history-btn" style="margin-left:auto;white-space:nowrap">탐지 이력</button>
@@ -2310,6 +2381,7 @@ function renderRegisterSkeleton(){
           </div>
           <div class="form-grid" style="margin-top:14px">
             <div class="field"><label>그룹 (선택)</label><input type="text" id="f-group" list="f-group-list" placeholder="예: 3층 서버실, 개발팀 PC"><datalist id="f-group-list"></datalist></div>
+            <div class="field"><label>태그 (선택, 쉼표로 구분)</label><input type="text" id="f-tags" placeholder="예: 중요, 백업대상"></div>
           </div>
 
           <div class="form-grid" data-group="server" style="margin-top:14px">
@@ -2578,6 +2650,27 @@ function renderRegisterSkeleton(){
       btn.disabled = false; btn.textContent = '스캔 시작';
     }
   });
+  $('#grp-create-btn').addEventListener('click', async ()=>{
+    const nameEl = $('#grp-new-name');
+    const name = nameEl.value.trim();
+    const description = $('#grp-new-desc').value.trim();
+    const errEl = $('#grp-error');
+    errEl.textContent = '';
+    if(!name){ errEl.textContent = '그룹 이름을 입력해주세요'; return; }
+    const btn = $('#grp-create-btn');
+    btn.disabled = true;
+    try{
+      const r = await apiFetch('/api/groups', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name, description}),
+      });
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error || '그룹 추가 실패');
+      nameEl.value = ''; $('#grp-new-desc').value = '';
+      renderGroupsList();
+    }catch(err){ errEl.textContent = err.message; }
+    finally{ btn.disabled = false; }
+  });
   $('#scan-history-btn').addEventListener('click', async ()=>{
     const panel = $('#scan-history-panel');
     if(panel.style.display !== 'none'){ panel.style.display = 'none'; return; }
@@ -2676,6 +2769,7 @@ function renderRegisterSkeleton(){
     $('#f-name').value = entity.name || '';
     $('#f-ip').value = entity.ip || '';
     $('#f-group').value = entity.group || '';
+    $('#f-tags').value = (entity.tags || []).join(', ');
     if(cat==='server'){ $('#f-os').value = entity.os||'linux'; $('#f-role-server').value = entity.role||''; }
     else if(cat==='db'){ $('#f-engine').value = entity.engine||'Oracle'; $('#f-role-db').value = entity.role||''; }
     else if(cat==='net'){ $('#f-nettype').value = entity.type||'공유기'; $('#f-role-net').value = entity.role||''; }
@@ -2716,6 +2810,8 @@ function renderRegisterSkeleton(){
     let fields = {};
     const groupVal = $('#f-group').value.trim();
     if(groupVal) fields.group = groupVal;
+    const tagsVal = $('#f-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+    if(tagsVal.length) fields.tags = tagsVal;
     if(regCategory==='server'){ fields.os=$('#f-os').value; fields.role=$('#f-role-server').value.trim(); }
     else if(regCategory==='db'){ fields.engine=$('#f-engine').value; fields.role=$('#f-role-db').value.trim(); }
     else if(regCategory==='net'){ fields.type=$('#f-nettype').value; fields.role=$('#f-role-net').value.trim(); }
@@ -2814,6 +2910,7 @@ function renderRegister(){
   const all = [...SERVERS, ...DBS, ...NETS, ...FACS];
   const distinctGroups = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
   groupList.innerHTML = distinctGroups.map(g=>`<option value="${escapeHtml(g)}">`).join('');
+  renderGroupsList();
 }
 
 /* ================= USERS (ADMIN only -- server enforces this regardless) ================= */
@@ -2961,6 +3058,88 @@ function openUserEditModal(userId, username, role){
   $('#userEditOkBtn').addEventListener('click', onSave);
   $('#userEditCancelBtn').addEventListener('click', close);
   $('#userEditOverlay').addEventListener('click', close);
+}
+
+/* ================= 2-1 group management ================= */
+async function renderGroupsList(){
+  const listEl = $('#grp-list');
+  if(!listEl) return;
+  try{
+    const r = await apiFetch('/api/groups');
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || '불러오기 실패');
+    if(!j.groups.length){
+      listEl.innerHTML = `<div class="empty-note">아직 그룹이 없습니다. 위에서 추가하거나, 장비 등록 시 그룹을 입력하면 자동으로 여기 나타납니다.</div>`;
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>그룹</th><th>설명</th><th>장비 수</th><th>상태</th><th>장애</th><th></th></tr></thead>
+        <tbody>
+          ${j.groups.map(g=>`
+            <tr>
+              <td class="name">${escapeHtml(g.name)}${g.managed?'':'<span class="pill neutral" style="font-size:9px;margin-left:5px" title="장비의 그룹 입력란에서만 생겨난 그룹 -- 아직 정식으로 만들진 않음">미관리</span>'}</td>
+              <td style="color:var(--text-dim);font-size:11.5px">${escapeHtml(g.description||'-')}</td>
+              <td class="mono">${g.deviceCount}대</td>
+              <td style="white-space:nowrap">
+                <span class="pill good" style="font-size:9px;padding:1px 6px">${g.statusCounts.good}</span>
+                <span class="pill warn" style="font-size:9px;padding:1px 6px">${g.statusCounts.warn}</span>
+                <span class="pill crit" style="font-size:9px;padding:1px 6px">${g.statusCounts.crit}</span>
+              </td>
+              <td class="mono" style="font-size:11px">미해결 ${g.openIncidents} / 누적 ${g.totalIncidents}</td>
+              <td style="display:flex;gap:6px">
+                <button type="button" class="btn" data-edit-group="${escapeHtml(g.name)}" data-desc="${escapeHtml(g.description||'')}">수정</button>
+                <button type="button" class="btn" data-del-group="${escapeHtml(g.name)}" ${g.deviceCount>0?'disabled title="장비가 속해 있어 삭제할 수 없습니다 (장비들의 그룹을 먼저 바꿔주세요)"':''}>삭제</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>
+    `;
+    $$('[data-del-group]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      if(b.disabled) return;
+      if(!(await showConfirm(`"${b.dataset.delGroup}" 그룹을 삭제할까요?`, {title:'그룹 삭제', okText:'삭제'}))) return;
+      const r2 = await apiFetch('/api/groups/'+encodeURIComponent(b.dataset.delGroup), {method:'DELETE'});
+      const j2 = await r2.json();
+      if(!r2.ok){ alert(j2.error||'삭제 실패'); return; }
+      renderGroupsList();
+    }));
+    $$('[data-edit-group]', listEl).forEach(b=> b.addEventListener('click', ()=> openGroupEditModal(b.dataset.editGroup, b.dataset.desc)));
+  }catch(err){
+    listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+  }
+}
+function openGroupEditModal(name, description){
+  $('#groupEditTitle').textContent = `"${name}" 수정`;
+  $('#ge-name').value = name;
+  $('#ge-desc').value = description || '';
+  $('#groupEditError').textContent = '';
+  $('#groupEditOverlay').classList.add('show');
+  $('#groupEditModal').classList.add('show');
+  function close(){
+    $('#groupEditOverlay').classList.remove('show');
+    $('#groupEditModal').classList.remove('show');
+    $('#groupEditOkBtn').removeEventListener('click', onSave);
+    $('#groupEditCancelBtn').removeEventListener('click', close);
+    $('#groupEditOverlay').removeEventListener('click', close);
+  }
+  async function onSave(){
+    const newName = $('#ge-name').value.trim();
+    const newDesc = $('#ge-desc').value.trim();
+    if(!newName){ $('#groupEditError').textContent = '그룹 이름을 입력해주세요'; return; }
+    const body = {description: newDesc};
+    if(newName !== name) body.name = newName;
+    const r = await apiFetch('/api/groups/'+encodeURIComponent(name), {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if(!r.ok){ $('#groupEditError').textContent = j.error||'수정 실패'; return; }
+    close();
+    renderGroupsList();
+    afterDeviceChange();  // renamed group propagated to member devices' fields.group
+  }
+  $('#groupEditOkBtn').addEventListener('click', onSave);
+  $('#groupEditCancelBtn').addEventListener('click', close);
+  $('#groupEditOverlay').addEventListener('click', close);
 }
 
 /* ================= DRAWER ================= */

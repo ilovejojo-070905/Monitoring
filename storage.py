@@ -328,6 +328,18 @@ def init_db():
         PRIMARY KEY (scan_id, ip)
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_discovery_scans_started ON discovery_scans(started_at)')
+    # 2-1: a managed catalog of group names, separate from the free-text
+    # `fields.group` string every device already carries (unchanged --
+    # devices still just reference a group BY NAME, not a foreign key, to
+    # avoid a bigger migration). This table is what makes "그룹" an actual
+    # thing you create/rename/delete instead of just whatever string
+    # someone typed into a device's 그룹 field -- see rename_device_group()
+    # for how a rename propagates to every member device.
+    conn.execute('''CREATE TABLE IF NOT EXISTS device_groups(
+        name TEXT PRIMARY KEY,
+        description TEXT,
+        created_at INTEGER NOT NULL
+    )''')
     conn.commit()
     conn.close()
     migrate_db()
@@ -369,6 +381,71 @@ def load_device(device_id):
     row = conn.execute('SELECT * FROM devices WHERE id=?', (device_id,)).fetchone()
     conn.close()
     return dict(row, fields=json.loads(row['fields'])) if row else None
+
+
+# ------------------------------------------------------------- 2-1 groups --
+def load_device_groups():
+    conn = get_db()
+    rows = conn.execute('SELECT name,description,created_at FROM device_groups ORDER BY name').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_device_group(name, description):
+    conn = get_db()
+    if conn.execute('SELECT 1 FROM device_groups WHERE name=?', (name,)).fetchone():
+        conn.close()
+        raise ValueError('이미 같은 이름의 그룹이 있습니다')
+    conn.execute('INSERT INTO device_groups(name,description,created_at) VALUES (?,?,?)',
+                 (name, description, int(time.time() * 1000)))
+    conn.commit()
+    conn.close()
+
+
+def update_device_group_description(name, description):
+    conn = get_db()
+    conn.execute('UPDATE device_groups SET description=? WHERE name=?', (description, name))
+    conn.commit()
+    conn.close()
+
+
+def rename_device_group(old_name, new_name):
+    """Renames the catalog row (if one exists -- an ad-hoc group inferred
+    purely from devices' own fields.group strings, never formally created,
+    has none) and rewrites fields.group on every device that currently
+    references old_name, since that reference is by name, not id. Returns
+    the number of devices updated."""
+    conn = get_db()
+    if conn.execute('SELECT 1 FROM device_groups WHERE name=?', (new_name,)).fetchone():
+        conn.close()
+        raise ValueError('이미 같은 이름의 그룹이 있습니다')
+    if conn.execute('SELECT 1 FROM device_groups WHERE name=?', (old_name,)).fetchone():
+        conn.execute('UPDATE device_groups SET name=? WHERE name=?', (new_name, old_name))
+    rows = conn.execute('SELECT id, fields FROM devices').fetchall()
+    updated = 0
+    for r in rows:
+        fields = json.loads(r['fields'])
+        if fields.get('group') == old_name:
+            fields['group'] = new_name
+            conn.execute('UPDATE devices SET fields=? WHERE id=?', (json.dumps(fields), r['id']))
+            updated += 1
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def count_devices_in_group(name):
+    conn = get_db()
+    rows = conn.execute('SELECT fields FROM devices').fetchall()
+    conn.close()
+    return sum(1 for r in rows if json.loads(r['fields']).get('group') == name)
+
+
+def delete_device_group(name):
+    conn = get_db()
+    conn.execute('DELETE FROM device_groups WHERE name=?', (name,))
+    conn.commit()
+    conn.close()
 
 
 def update_failure_state(device_id, consecutive_failures, last_failure_reason, last_success_at,

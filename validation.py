@@ -57,6 +57,38 @@ def is_valid_email(s):
     return bool(_EMAIL_RE.match(s or ''))
 
 
+MAX_TAGS_PER_DEVICE = 10
+MAX_TAG_LEN = 30
+
+
+def validate_tags(tags):
+    """tags: whatever the client sent for fields.tags -- not guaranteed to
+    even be a list (it's a JSON body field like any other). Returns a
+    cleaned list of unique, trimmed strings, or raises ValueError with a
+    Korean message. Reuses the same safe-name charset as a device name
+    (tags render in the UI the same way)."""
+    if not isinstance(tags, list):
+        raise ValueError('tags는 문자열 목록이어야 합니다')
+    cleaned = []
+    seen = set()
+    for t in tags:
+        if not isinstance(t, str):
+            raise ValueError('태그는 문자열이어야 합니다')
+        t = t.strip()
+        if not t:
+            continue
+        if len(t) > MAX_TAG_LEN:
+            raise ValueError(f'태그는 {MAX_TAG_LEN}자 이하여야 합니다 ("{t[:MAX_TAG_LEN]}...")')
+        if not is_safe_name(t):
+            raise ValueError(f'태그에 사용할 수 없는 문자가 포함되어 있습니다: "{t}"')
+        if t not in seen:
+            seen.add(t)
+            cleaned.append(t)
+    if len(cleaned) > MAX_TAGS_PER_DEVICE:
+        raise ValueError(f'태그는 장비당 최대 {MAX_TAGS_PER_DEVICE}개까지입니다')
+    return cleaned
+
+
 _SNMPV3_AUTH_PROTOCOLS = {'MD5', 'SHA'}
 _SNMPV3_PRIV_PROTOCOLS = {'DES', 'AES'}
 
