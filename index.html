@@ -187,7 +187,8 @@
      전체 현황·토플로지 맵은 카드가 촘촘히 배치되는 요약 화면이라 제외. */
   #view-servers .card-head h3, #view-database .card-head h3, #view-network .card-head h3,
   #view-facility .card-head h3, #view-incidents .card-head h3, #view-register .card-head h3,
-  #view-users .card-head h3{font-size:16px}
+  #view-users .card-head h3, #view-flowanalysis .card-head h3, #view-sla .card-head h3,
+  #view-security .card-head h3, #view-channels .card-head h3, #view-publicstatus .card-head h3{font-size:16px}
   .grid{display:grid;gap:16px}
   .grid-4{grid-template-columns:repeat(4,1fr)}
   .grid-3{grid-template-columns:repeat(3,1fr)}
@@ -3886,7 +3887,7 @@ function renderChannelsSkeleton(){
         <button type="button" class="btn primary" id="esc-settings-save">설정 저장</button>
         <span id="esc-settings-status" style="font-size:11.5px"></span>
       </div>
-      <div style="font-size:13px;font-weight:600;margin-bottom:8px">담당자 단계 (등록 순서대로 1차 → 2차 → 3차 전달)</div>
+      <div style="font-size:16px;font-weight:600;margin-bottom:8px">담당자 단계 (등록 순서대로 1차 → 2차 → 3차 전달)</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
         <div class="field" style="flex:1;min-width:110px"><label>이름</label><input type="text" id="esc-new-name" maxlength="60"></div>
         <div class="field" style="flex:1.4;min-width:160px"><label>이메일</label><input type="text" id="esc-new-email" placeholder="예: oncall1@company.com"></div>
