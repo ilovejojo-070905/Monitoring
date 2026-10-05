@@ -2065,9 +2065,9 @@ function renderServers(){
   $$('#srv-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
 }
 function miniBar(pct, lv){
-  return `<div style="display:flex;align-items:center;gap:8px;min-width:110px">
+  return `<div style="display:inline-flex;align-items:center;gap:8px">
     <div class="bar ${lv}" style="width:64px"><i style="width:${clamp(pct,0,100)}%"></i></div>
-    <span style="width:38px;text-align:right;color:${levelColor(lv)}">${fmt0(pct)}%</span>
+    <span style="width:38px;text-align:left;color:${levelColor(lv)}">${fmt0(pct)}%</span>
   </div>`;
 }
 function metricCell(dev, metric){
