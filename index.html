@@ -183,12 +183,13 @@
   .mini-toggle.collapsed .chev{transform:rotate(-90deg)}
   .card-head h3{font-size:13.5px;font-weight:600}
   .card-head .sub{font-size:11px;color:var(--text-faint)}
-  /* 서버/DB/네트워크/설비/이벤트/등록/계정 목록 화면의 카드 제목만 확대.
-     전체 현황·토플로지 맵은 카드가 촘촘히 배치되는 요약 화면이라 제외. */
+  /* 토플로지 맵을 제외한 거의 모든 화면의 카드 제목을 확대 (서버 목록 기준
+     16px로 통일). 토플로지 맵은 카드가 촘촘히 배치되는 요약 화면이라 제외. */
   #view-servers .card-head h3, #view-database .card-head h3, #view-network .card-head h3,
   #view-facility .card-head h3, #view-incidents .card-head h3, #view-register .card-head h3,
   #view-users .card-head h3, #view-flowanalysis .card-head h3, #view-sla .card-head h3,
-  #view-security .card-head h3, #view-channels .card-head h3, #view-publicstatus .card-head h3{font-size:16px}
+  #view-security .card-head h3, #view-channels .card-head h3, #view-publicstatus .card-head h3,
+  #view-overview .card-head h3{font-size:16px}
   .grid{display:grid;gap:16px}
   .grid-4{grid-template-columns:repeat(4,1fr)}
   .grid-3{grid-template-columns:repeat(3,1fr)}
@@ -201,7 +202,7 @@
   .kpi-icon{width:42px;height:42px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.06) inset}
   .kpi-icon svg{width:20px;height:20px}
   .kpi-body{display:flex;flex-direction:column;gap:2px;min-width:0}
-  .kpi-label{font-size:14px;color:var(--text);font-weight:600}
+  .kpi-label{font-size:16px;color:var(--text);font-weight:600}
   .kpi-value{font-size:22px;font-weight:700;font-family:var(--font-mono);letter-spacing:-.02em}
   .kpi-sub{display:flex;gap:8px;font-size:10.5px;font-family:var(--font-mono)}
   .kpi-sub .g{color:var(--good)} .kpi-sub .w{color:var(--warn)} .kpi-sub .c{color:var(--crit)}
