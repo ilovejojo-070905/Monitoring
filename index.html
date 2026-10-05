@@ -2551,12 +2551,18 @@ function renderRegisterSkeleton(){
           </details>
 
           <div class="form-grid" data-group="server" style="margin-top:14px">
-            <div class="field"><label>OS</label><select id="f-os"><option value="linux">Linux</option><option value="windows">Windows</option></select></div>
+            <div class="field"><label>OS</label>
+              <select id="f-os"><option value="linux">Linux</option><option value="windows">Windows</option><option value="기타">기타</option></select>
+              <input type="text" id="f-os-other" placeholder="OS를 직접 입력하세요" maxlength="40" style="display:none;margin-top:6px">
+            </div>
             <div class="field"><label>역할</label><input type="text" id="f-role-server" placeholder="예: 개발용 PC"></div>
           </div>
 
           <div class="form-grid" data-group="db" style="margin-top:14px;display:none">
-            <div class="field"><label>엔진</label><select id="f-engine"><option>Oracle</option><option>MySQL</option><option>PostgreSQL</option><option>MS-SQL</option><option>MongoDB</option><option>Redis</option></select></div>
+            <div class="field"><label>엔진</label>
+              <select id="f-engine"><option>Oracle</option><option>MySQL</option><option>PostgreSQL</option><option>MS-SQL</option><option>MongoDB</option><option>Redis</option><option>기타</option></select>
+              <input type="text" id="f-engine-other" placeholder="엔진을 직접 입력하세요" maxlength="40" style="display:none;margin-top:6px">
+            </div>
             <div class="field"><label>용도</label><input type="text" id="f-role-db" placeholder="예: 개인 프로젝트 DB"></div>
           </div>
 
@@ -2568,7 +2574,10 @@ function renderRegisterSkeleton(){
           </div>
 
           <div class="form-grid" data-group="fac" style="margin-top:14px;display:none">
-            <div class="field"><label>유형</label><select id="f-factype"><option value="UPS">UPS</option><option value="항온항습기">항온항습기</option><option value="분전반">분전반</option></select></div>
+            <div class="field"><label>유형</label>
+              <select id="f-factype"><option value="UPS">UPS</option><option value="항온항습기">항온항습기</option><option value="분전반">분전반</option><option value="기타">기타</option></select>
+              <input type="text" id="f-factype-other" placeholder="유형을 직접 입력하세요" maxlength="40" style="display:none;margin-top:6px">
+            </div>
             <div class="field"><label>역할</label><input type="text" id="f-role-fac" placeholder="예: 서재 UPS"></div>
           </div>
 
@@ -2714,17 +2723,22 @@ function renderRegisterSkeleton(){
     $$('#reg-form [data-mode-group]').forEach(g=>{ g.style.display = g.dataset.modeGroup===regMode ? '' : 'none'; });
     $('#f-ip-label').textContent = (regMode==='ping'||regMode==='snmp') ? 'IP 주소 *' : 'IP 주소 (선택)';
     updateSnmpFieldVisibility();
-    updateNettypeOtherVisibility();
+    updateAllOtherFieldsVisibility();
   }
-  // 네트워크 유형 "기타" 선택 시 직접 입력란을 보여준다 -- 선택이 아닌 값은
-  // 항상 비워서, 드롭다운을 다시 프리셋으로 바꿨을 때 안 보이는 기존 입력값이
-  // 제출에 섞여 들어가는 일이 없게 한다.
-  function updateNettypeOtherVisibility(){
-    const sel = $('#f-nettype'), other = $('#f-nettype-other');
+  // OS/엔진/네트워크 유형/설비 유형 선택에서 "기타"를 고르면 바로 아래 직접
+  // 입력란을 보여준다 -- 선택이 아닌 값으로 돌아가면 항상 비워서, 드롭다운을
+  // 다시 프리셋으로 바꿨을 때 안 보이는 기존 입력값이 제출에 섞여 들어가는
+  // 일이 없게 한다.
+  const OTHER_SELECT_PAIRS = [['f-os','f-os-other'], ['f-engine','f-engine-other'], ['f-nettype','f-nettype-other'], ['f-factype','f-factype-other']];
+  function updateOtherFieldVisibility(selId, otherId){
+    const sel = $('#'+selId), other = $('#'+otherId);
     if(!sel || !other) return;
     const isOther = sel.value === '기타';
     other.style.display = isOther ? '' : 'none';
     if(!isOther) other.value = '';
+  }
+  function updateAllOtherFieldsVisibility(){
+    OTHER_SELECT_PAIRS.forEach(([selId, otherId])=> updateOtherFieldVisibility(selId, otherId));
   }
   // v3 vs v1/v2c sub-layout (Community field vs the username/protocol/
   // password block) and, within v3, which of the auth/priv rows apply at
@@ -2770,7 +2784,7 @@ function renderRegisterSkeleton(){
   ['f-ip','f-snmp-version','f-snmp-port','f-snmp-community','f-snmp-v3-username',
    'f-snmp-v3-seclevel','f-snmp-v3-authproto','f-snmp-v3-authpw','f-snmp-v3-privproto','f-snmp-v3-privpw']
     .forEach(id=> $('#'+id).addEventListener('input', markSnmpUntested));
-  $('#f-nettype').addEventListener('change', updateNettypeOtherVisibility);
+  OTHER_SELECT_PAIRS.forEach(([selId, otherId])=> $('#'+selId).addEventListener('change', ()=> updateOtherFieldVisibility(selId, otherId)));
   $('#f-snmp-version').addEventListener('change', updateSnmpFieldVisibility);
   $('#f-snmp-v3-seclevel').addEventListener('change', updateSnmpFieldVisibility);
   function buildSnmpTestPayload(){
@@ -3060,8 +3074,32 @@ function renderRegisterSkeleton(){
     $('#f-group').value = entity.group || '';
     $('#f-tags').value = (entity.tags || []).join(', ');
     $('#f-threshold-fields').innerHTML = thresholdFieldsHtml('f-th', entity.thresholds || {});
-    if(cat==='server'){ $('#f-os').value = entity.os||'linux'; $('#f-role-server').value = entity.role||''; }
-    else if(cat==='db'){ $('#f-engine').value = entity.engine||'Oracle'; $('#f-role-db').value = entity.role||''; }
+    if(cat==='server'){
+      const osSelEl = $('#f-os');
+      const osPresetMatch = [...osSelEl.options].some(o=> o.value===(entity.os||''));
+      if(entity.os && !osPresetMatch){
+        osSelEl.value = '기타';
+        $('#f-os-other').value = entity.os;
+      } else {
+        osSelEl.value = entity.os || 'linux';
+        $('#f-os-other').value = '';
+      }
+      updateOtherFieldVisibility('f-os','f-os-other');
+      $('#f-role-server').value = entity.role||'';
+    }
+    else if(cat==='db'){
+      const engineSelEl = $('#f-engine');
+      const enginePresetMatch = [...engineSelEl.options].some(o=> o.value===(entity.engine||''));
+      if(entity.engine && !enginePresetMatch){
+        engineSelEl.value = '기타';
+        $('#f-engine-other').value = entity.engine;
+      } else {
+        engineSelEl.value = entity.engine || 'Oracle';
+        $('#f-engine-other').value = '';
+      }
+      updateOtherFieldVisibility('f-engine','f-engine-other');
+      $('#f-role-db').value = entity.role||'';
+    }
     else if(cat==='net'){
       const nettypeSelEl = $('#f-nettype');
       const presetMatch = [...nettypeSelEl.options].some(o=> o.value===(entity.type||''));
@@ -3072,9 +3110,21 @@ function renderRegisterSkeleton(){
         nettypeSelEl.value = entity.type || '공유기';
         $('#f-nettype-other').value = '';
       }
-      updateNettypeOtherVisibility();
+      updateOtherFieldVisibility('f-nettype','f-nettype-other');
     }
-    else if(cat==='fac'){ $('#f-factype').value = entity.type||'UPS'; $('#f-role-fac').value = entity.role||''; }
+    else if(cat==='fac'){
+      const factypeSelEl = $('#f-factype');
+      const factypePresetMatch = [...factypeSelEl.options].some(o=> o.value===(entity.type||''));
+      if(entity.type && !factypePresetMatch){
+        factypeSelEl.value = '기타';
+        $('#f-factype-other').value = entity.type;
+      } else {
+        factypeSelEl.value = entity.type || 'UPS';
+        $('#f-factype-other').value = '';
+      }
+      updateOtherFieldVisibility('f-factype','f-factype-other');
+      $('#f-role-fac').value = entity.role||'';
+    }
     if(entity.mode==='snmp'){
       $('#f-snmp-community').value = '';
       $('#f-snmp-community').placeholder = '변경하려면 입력 (비워두면 기존 값 유지)';
@@ -3117,8 +3167,28 @@ function renderRegisterSkeleton(){
       const th = readThresholdFields('f-th');
       if(Object.keys(th).length) fields.thresholds = th;
     }catch(thErr){ errEl.textContent = thErr.message; return; }
-    if(regCategory==='server'){ fields.os=$('#f-os').value; fields.role=$('#f-role-server').value.trim(); }
-    else if(regCategory==='db'){ fields.engine=$('#f-engine').value; fields.role=$('#f-role-db').value.trim(); }
+    if(regCategory==='server'){
+      const osSel = $('#f-os').value;
+      if(osSel==='기타'){
+        const customOs = $('#f-os-other').value.trim();
+        if(!customOs){ errEl.textContent = 'OS를 직접 입력해주세요'; return; }
+        fields.os = customOs;
+      } else {
+        fields.os = osSel;
+      }
+      fields.role=$('#f-role-server').value.trim();
+    }
+    else if(regCategory==='db'){
+      const engineSel = $('#f-engine').value;
+      if(engineSel==='기타'){
+        const customEngine = $('#f-engine-other').value.trim();
+        if(!customEngine){ errEl.textContent = '엔진을 직접 입력해주세요'; return; }
+        fields.engine = customEngine;
+      } else {
+        fields.engine = engineSel;
+      }
+      fields.role=$('#f-role-db').value.trim();
+    }
     else if(regCategory==='net'){
       const nettypeSel = $('#f-nettype').value;
       if(nettypeSel==='기타'){
@@ -3129,7 +3199,17 @@ function renderRegisterSkeleton(){
         fields.type = nettypeSel;
       }
     }
-    else if(regCategory==='fac'){ fields.type=$('#f-factype').value; fields.role=$('#f-role-fac').value.trim(); }
+    else if(regCategory==='fac'){
+      const factypeSel = $('#f-factype').value;
+      if(factypeSel==='기타'){
+        const customFactype = $('#f-factype-other').value.trim();
+        if(!customFactype){ errEl.textContent = '유형을 직접 입력해주세요'; return; }
+        fields.type = customFactype;
+      } else {
+        fields.type = factypeSel;
+      }
+      fields.role=$('#f-role-fac').value.trim();
+    }
     if(effMode==='snmp'){
       if(!editingDeviceId && !snmpTestPassed){
         errEl.textContent = 'SNMP 연결 테스트를 먼저 통과해야 등록할 수 있습니다';
@@ -4985,7 +5065,7 @@ $('#ifaceModalClose').addEventListener('click', ()=>{ closeIfaceModal(); refresh
 $('#ifaceOverlay').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });
 function drawServer(s){
   $('#drawerTitle').textContent = s.name;
-  $('#drawerRole').textContent = `${s.role||'-'} · ${s.ip||'-'} · ${s.os==='linux'?'Linux':'Windows'}`;
+  $('#drawerRole').textContent = `${s.role||'-'} · ${s.ip||'-'} · ${s.os==='linux'?'Linux':s.os==='windows'?'Windows':(s.os||'-')}`;
   $('#drawerBody').innerHTML = `
     <div class="kv-grid">
       <div class="kv"><span>상태</span><b style="color:${levelColor(s.status)}">${statusLabel(s.status)}</b></div>
