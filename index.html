@@ -2495,69 +2495,6 @@ function renderRegisterSkeleton(){
   el.innerHTML = `
     <div id="reg-edit-overlay"></div>
     <div class="card">
-      <div class="card-head"><div><h3>장비 그룹</h3><span class="sub">그룹은 서버·DB·네트워크·설비 전체에 공통으로 적용되며, 그룹별 상태·장애 현황을 볼 수 있습니다</span></div></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
-        <div class="field" style="flex:1;min-width:160px"><label>새 그룹 이름</label><input type="text" id="grp-new-name" placeholder="예: 3층 서버실" maxlength="60"></div>
-        <div class="field" style="flex:1;min-width:160px"><label>설명 (선택)</label><input type="text" id="grp-new-desc" placeholder="예: 3층 전산실 랙"></div>
-        <button type="button" class="btn primary" id="grp-create-btn">그룹 추가</button>
-      </div>
-      <div id="grp-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
-      <div id="grp-list"></div>
-    </div>
-    <div class="card" id="threshold-global-card">
-      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
-        <div><h3>임계치 기본값 (전역)</h3><span class="sub">그룹·장비별 개별 설정이 없으면 이 값이 적용됩니다. 지속 시간을 넘겨 계속 초과해야 장애 이벤트가 발생합니다 (0초 = 즉시)</span></div>
-        <div style="display:flex;gap:8px;margin-left:auto">
-          <button type="button" class="btn" id="threshold-history-btn">변경 이력</button>
-          <button type="button" class="btn primary" id="threshold-global-edit-btn">수정</button>
-        </div>
-      </div>
-      <div id="threshold-global-summary" class="kv-grid"></div>
-      <div id="threshold-history-panel" style="display:none;margin-top:12px"></div>
-    </div>
-    <div class="card" id="maint-window-card">
-      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
-        <div><h3>점검창 자동화</h3><span class="sub">지정한 일정 동안 대상 장비·그룹을 자동으로 유지보수 상태로 전환합니다. 점검 중에도 실제 장애·데이터는 계속 수집되며, 알림만 억제됩니다</span></div>
-        <button type="button" class="btn" id="maint-log-btn" style="margin-left:auto">점검 이력</button>
-      </div>
-      <form id="maint-window-form" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
-        <div class="form-grid">
-          <div class="field"><label>대상 종류</label>
-            <select id="mw-scope"><option value="device">장비</option><option value="group">그룹</option></select>
-          </div>
-          <div class="field"><label>대상</label>
-            <select id="mw-scope-id"></select>
-          </div>
-        </div>
-        <div class="form-grid">
-          <div class="field"><label>반복 종류</label>
-            <select id="mw-kind"><option value="once">일회성</option><option value="weekly">매주 반복</option></select>
-          </div>
-          <div class="field"><label>사유 (선택)</label><input type="text" id="mw-reason" placeholder="예: 정기 점검, 펌웨어 업데이트" maxlength="200"></div>
-        </div>
-        <div class="form-grid" id="mw-once-fields">
-          <div class="field"><label>시작 일시</label><input type="datetime-local" id="mw-start-at"></div>
-          <div class="field"><label>종료 일시</label><input type="datetime-local" id="mw-end-at"></div>
-        </div>
-        <div class="form-grid" id="mw-weekly-fields" style="display:none">
-          <div class="field"><label>요일</label>
-            <select id="mw-weekday">
-              <option value="0">월요일</option><option value="1">화요일</option><option value="2">수요일</option>
-              <option value="3">목요일</option><option value="4">금요일</option><option value="5">토요일</option><option value="6">일요일</option>
-            </select>
-          </div>
-          <div class="field"><label>시작 시각</label><input type="time" id="mw-start-time"></div>
-          <div class="field"><label>종료 시각</label><input type="time" id="mw-end-time"></div>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px">
-          <button type="submit" class="btn primary">점검창 등록</button>
-          <span id="mw-error" style="color:var(--crit);font-size:11.5px"></span>
-        </div>
-      </form>
-      <div id="mw-list"></div>
-      <div id="maint-log-panel" style="display:none;margin-top:12px"></div>
-    </div>
-    <div class="card">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>네트워크 자동 스캔</h3><span class="sub">IP 대역을 지정하면 살아있는 장비를 찾아 등록 후보로 보여줍니다</span></div>
         <button type="button" class="btn" id="scan-history-btn" style="margin-left:auto;white-space:nowrap">탐지 이력</button>
@@ -2692,6 +2629,69 @@ function renderRegisterSkeleton(){
           <p>· 등록된 장비는 서버에 저장되어 다른 브라우저에서 접속해도 동일하게 표시됩니다.</p>
         </div>
       </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h3>장비 그룹</h3><span class="sub">그룹은 서버·DB·네트워크·설비 전체에 공통으로 적용되며, 그룹별 상태·장애 현황을 볼 수 있습니다</span></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+        <div class="field" style="flex:1;min-width:160px"><label>새 그룹 이름</label><input type="text" id="grp-new-name" placeholder="예: 3층 서버실" maxlength="60"></div>
+        <div class="field" style="flex:1;min-width:160px"><label>설명 (선택)</label><input type="text" id="grp-new-desc" placeholder="예: 3층 전산실 랙"></div>
+        <button type="button" class="btn primary" id="grp-create-btn">그룹 추가</button>
+      </div>
+      <div id="grp-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
+      <div id="grp-list"></div>
+    </div>
+    <div class="card" id="threshold-global-card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>임계치 기본값 (전역)</h3><span class="sub">그룹·장비별 개별 설정이 없으면 이 값이 적용됩니다. 지속 시간을 넘겨 계속 초과해야 장애 이벤트가 발생합니다 (0초 = 즉시)</span></div>
+        <div style="display:flex;gap:8px;margin-left:auto">
+          <button type="button" class="btn" id="threshold-history-btn">변경 이력</button>
+          <button type="button" class="btn primary" id="threshold-global-edit-btn">수정</button>
+        </div>
+      </div>
+      <div id="threshold-global-summary" class="kv-grid"></div>
+      <div id="threshold-history-panel" style="display:none;margin-top:12px"></div>
+    </div>
+    <div class="card" id="maint-window-card">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>점검창 자동화</h3><span class="sub">지정한 일정 동안 대상 장비·그룹을 자동으로 유지보수 상태로 전환합니다. 점검 중에도 실제 장애·데이터는 계속 수집되며, 알림만 억제됩니다</span></div>
+        <button type="button" class="btn" id="maint-log-btn" style="margin-left:auto">점검 이력</button>
+      </div>
+      <form id="maint-window-form" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+        <div class="form-grid">
+          <div class="field"><label>대상 종류</label>
+            <select id="mw-scope"><option value="device">장비</option><option value="group">그룹</option></select>
+          </div>
+          <div class="field"><label>대상</label>
+            <select id="mw-scope-id"></select>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>반복 종류</label>
+            <select id="mw-kind"><option value="once">일회성</option><option value="weekly">매주 반복</option></select>
+          </div>
+          <div class="field"><label>사유 (선택)</label><input type="text" id="mw-reason" placeholder="예: 정기 점검, 펌웨어 업데이트" maxlength="200"></div>
+        </div>
+        <div class="form-grid" id="mw-once-fields">
+          <div class="field"><label>시작 일시</label><input type="datetime-local" id="mw-start-at"></div>
+          <div class="field"><label>종료 일시</label><input type="datetime-local" id="mw-end-at"></div>
+        </div>
+        <div class="form-grid" id="mw-weekly-fields" style="display:none">
+          <div class="field"><label>요일</label>
+            <select id="mw-weekday">
+              <option value="0">월요일</option><option value="1">화요일</option><option value="2">수요일</option>
+              <option value="3">목요일</option><option value="4">금요일</option><option value="5">토요일</option><option value="6">일요일</option>
+            </select>
+          </div>
+          <div class="field"><label>시작 시각</label><input type="time" id="mw-start-time"></div>
+          <div class="field"><label>종료 시각</label><input type="time" id="mw-end-time"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button type="submit" class="btn primary">점검창 등록</button>
+          <span id="mw-error" style="color:var(--crit);font-size:11.5px"></span>
+        </div>
+      </form>
+      <div id="mw-list"></div>
+      <div id="maint-log-panel" style="display:none;margin-top:12px"></div>
     </div>
 
   `;
