@@ -775,9 +775,11 @@ function groupTag(entity){ return entity.group ? `<span class="pill" style="font
 // above -- each renders as its own small pill so they read as a set, not
 // one combined string.
 function tagsHtml(entity){
-  return (entity.tags||[]).map(t=>
-    `<span class="pill" style="font-size:9px;padding:1px 6px;margin-left:5px;vertical-align:middle;background:var(--surface-2);color:var(--text-dim)">#${escapeHtml(t)}</span>`
-  ).join('');
+  const tags = entity.tags || [];
+  if(!tags.length) return '<span style="color:var(--text-faint)">—</span>';
+  return `<div style="display:flex;flex-wrap:wrap;gap:4px">` + tags.map(t=>
+    `<span class="pill" style="font-size:9px;padding:1px 6px;background:var(--surface-2);color:var(--text-dim)">#${escapeHtml(t)}</span>`
+  ).join('') + `</div>`;
 }
 
 Chart.defaults.font.family = "'IBM Plex Mono', monospace";
@@ -2037,7 +2039,7 @@ function renderServersSkeleton(){
           <input id="srv-search" placeholder="서버명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th></tr></thead>
+        <thead><tr><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>태그</th></tr></thead>
         <tbody id="srv-tbody"></tbody>
       </table></div>
     </div>
@@ -2055,7 +2057,7 @@ function renderServers(){
   $('#srv-tbody').innerHTML = rows.map(s=>`
     <tr data-id="${s.id}">
       <td><span class="pill ${s.status}"><span class="dot"></span>${statusLabel(s.status)}</span></td>
-      <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}${groupTag(s)}${tagsHtml(s)}</td>
+      <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}${groupTag(s)}</td>
       <td class="mono">${s.ip||'-'}</td>
       <td>${escapeHtml(s.role||'-')}</td>
       <td class="mono">${metricCell(s,'cpu')}</td>
@@ -2063,7 +2065,8 @@ function renderServers(){
       <td class="mono">${metricCell(s,'disk')}</td>
       <td class="mono">${typeof s.load==='number' ? fmt1(s.load) : '—'}</td>
       <td class="mono">${typeof s.uptime==='number' ? s.uptime+'d' : '—'}</td>
-    </tr>`).join('') || `<tr><td colspan="9"><div class="empty-note">검색 결과가 없습니다</div></td></tr>`;
+      <td>${tagsHtml(s)}</td>
+    </tr>`).join('') || `<tr><td colspan="10"><div class="empty-note">검색 결과가 없습니다</div></td></tr>`;
   $$('#srv-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
 }
 function miniBar(pct, lv){
@@ -2124,7 +2127,7 @@ function renderDatabaseSkeleton(){
           <input id="db-search" placeholder="인스턴스명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
+        <thead><tr><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th><th>태그</th></tr></thead>
         <tbody id="db-tbody"></tbody>
       </table></div>
     </div>
@@ -2142,13 +2145,14 @@ function renderDatabase(){
   $('#db-tbody').innerHTML = rows.map(d=>`
     <tr data-id="${d.id}">
       <td><span class="pill ${d.status}"><span class="dot"></span>${statusLabel(d.status)}</span></td>
-      <td class="name">${escapeHtml(d.name)}${regTag(d)}${maintTag(d)}${groupTag(d)}${tagsHtml(d)}</td>
+      <td class="name">${escapeHtml(d.name)}${regTag(d)}${maintTag(d)}${groupTag(d)}</td>
       <td>${escapeHtml(d.engine||'-')}</td>
       <td>${escapeHtml(d.role||'-')}</td>
       <td class="mono">${d.ip||'-'}</td>
       <td class="mono" style="color:${d.reachable?'var(--text-dim)':'var(--crit)'}">${d.reachable? fmt0(d.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${d.createdAt ? new Date(d.createdAt).toLocaleDateString('ko-KR') : '-'}</td>
-    </tr>`).join('') || `<tr><td colspan="7"><div class="empty-note">${DBS.length? '검색 결과가 없습니다' : '등록된 데이터베이스가 없습니다. "장비 등록"에서 DB 호스트의 IP를 등록해보세요.'}</div></td></tr>`;
+      <td>${tagsHtml(d)}</td>
+    </tr>`).join('') || `<tr><td colspan="8"><div class="empty-note">${DBS.length? '검색 결과가 없습니다' : '등록된 데이터베이스가 없습니다. "장비 등록"에서 DB 호스트의 IP를 등록해보세요.'}</div></td></tr>`;
   $$('#db-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
 }
 
@@ -2168,7 +2172,7 @@ function renderNetworkSkeleton(){
           <input id="net-search" placeholder="장비명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
+        <thead><tr><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th><th>태그</th></tr></thead>
         <tbody id="net-tbody"></tbody>
       </table></div>
     </div>
@@ -2203,7 +2207,7 @@ function renderNetwork(){
   $('#net-tbody').innerHTML = netRows.map(n=>`
     <tr data-id="${n.id}" class="${n.id===selectedNetId?'sel-row':''}">
       <td><span class="pill ${n.status}"><span class="dot"></span>${statusLabel(n.status)}</span></td>
-      <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}${groupTag(n)}${tagsHtml(n)}</td>
+      <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}${groupTag(n)}</td>
       <td>${escapeHtml(n.type||'-')}</td>
       <td class="mono">${n.ip||'-'}</td>
       <td class="mono">${metricCell(n,'cpu')}</td>
@@ -2211,7 +2215,8 @@ function renderNetwork(){
       <td class="mono">${typeof n.trafficIn==='number' ? fmtMbps((n.trafficIn||0)+(n.trafficOut||0))+' Mbps' : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono" style="color:${n.reachable?'var(--text-dim)':'var(--crit)'}">${n.reachable? fmt0(n.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
-    </tr>`).join('') || `<tr><td colspan="9"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
+      <td>${tagsHtml(n)}</td>
+    </tr>`).join('') || `<tr><td colspan="10"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
   $$('#net-tbody tr[data-id]').forEach(tr=>{
     tr.addEventListener('click', ()=>{ selectedNetId = tr.dataset.id; renderNetwork(); openDrawerFor(tr.dataset.id); });
   });
@@ -2390,7 +2395,7 @@ function renderFacilitySkeleton(){
           <input id="fac-search" placeholder="설비명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
+        <thead><tr><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th><th>태그</th></tr></thead>
         <tbody id="fac-tbody"></tbody>
       </table></div>
     </div>
@@ -2411,12 +2416,13 @@ function renderFacility(){
   $('#fac-tbody').innerHTML = facRows.map(f=>`
     <tr data-id="${f.id}">
       <td><span class="pill ${f.status}"><span class="dot"></span>${statusLabel(f.status)}</span></td>
-      <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}${groupTag(f)}${tagsHtml(f)}</td>
+      <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}${groupTag(f)}</td>
       <td>${escapeHtml(f.type||'-')}${f.role? ' · '+escapeHtml(f.role) : ''}</td>
       <td class="mono">${f.ip||'-'}</td>
       <td class="mono" style="color:${f.reachable?'var(--text-dim)':'var(--crit)'}">${f.reachable? fmt0(f.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof f.battPct==='number' ? `<span style="color:${levelColor(levelOf(100-f.battPct,40,75))}">${fmt0(f.battPct)}%</span>` : '<span style="color:var(--text-faint)">—</span>'}</td>
-    </tr>`).join('') || `<tr><td colspan="6"><div class="empty-note">${FACS.length? '검색 결과가 없습니다' : '등록된 설비가 없습니다. 네트워크 카드가 있는 UPS · 항온항습기 · 분전반이라면 IP를 등록해 도달성을 확인할 수 있습니다.'}</div></td></tr>`;
+      <td>${tagsHtml(f)}</td>
+    </tr>`).join('') || `<tr><td colspan="7"><div class="empty-note">${FACS.length? '검색 결과가 없습니다' : '등록된 설비가 없습니다. 네트워크 카드가 있는 UPS · 항온항습기 · 분전반이라면 IP를 등록해 도달성을 확인할 수 있습니다.'}</div></td></tr>`;
   $$('#fac-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
 
   const facInc = INCIDENTS.filter(i=>i.category==='FMS').slice(0,6);
