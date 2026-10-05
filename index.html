@@ -5208,7 +5208,7 @@ setInterval(tickClock, 1000);
   await syncState();
   refreshBadges();
   switchView('overview');
-  setInterval(async ()=>{
+  async function pollTick(){
     const ok = await syncState();
     if(ok){
       refreshBadges();
@@ -5216,7 +5216,16 @@ setInterval(tickClock, 1000);
       refreshOpenDrawer();
       renderIfaceModal();
     }
-  }, 2200);
+  }
+  setInterval(pollTick, 2200);
+  // A background/inactive tab gets its setInterval throttled by the browser
+  // (can fall to roughly once a minute) -- without this, a device registered
+  // from another tab only shows up here after a manual refresh, since the
+  // poll that would've picked it up may not fire again for a while. Forcing
+  // one fresh sync the moment this tab becomes visible again closes that gap.
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'visible') pollTick();
+  });
 })();
 
 })();
