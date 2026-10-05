@@ -194,6 +194,29 @@ foreach ($r in $rules) {
 
 # ------------------------------------------------------------ 지금 시작 --
 Write-Step '지금 바로 시작'
+# This may be an update to an already-running install (step [2] did
+# `git pull` rather than a fresh clone): the pulled code doesn't take effect
+# in an already-running python.exe on its own, and if a supervisor.ps1 is
+# still alive, launching a new one below just hits its own duplicate-run
+# guard and exits immediately instead of upgrading anything -- silently
+# leaving the OLD code running. Stop this install's own previously-tracked
+# processes (read from its own run\status.json, so this never touches any
+# unrelated python/caddy process elsewhere on the machine) before starting
+# fresh, so the just-pulled code actually takes effect either way.
+$statusFile = Join-Path $InstallDir 'run\status.json'
+if (Test-Path $statusFile) {
+    try {
+        $prevStatus = Get-Content $statusFile -Raw | ConvertFrom-Json
+        foreach ($p in @($prevStatus.supervisorPid, $prevStatus.backend.pid, $prevStatus.caddy.pid)) {
+            if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
+        }
+        Remove-Item (Join-Path $InstallDir 'run\supervisor.lock') -ErrorAction SilentlyContinue
+        Write-Ok '기존에 실행 중이던 프로세스를 종료해 방금 받은 최신 코드가 적용되도록 했습니다'
+        Start-Sleep -Seconds 2
+    } catch {
+        Write-Warn2 "기존 프로세스 종료 중 문제가 있었습니다 (무시하고 계속합니다): $_"
+    }
+}
 Start-Process powershell -ArgumentList @(
     '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
     '-File', (Join-Path $InstallDir 'ops\supervisor.ps1')
