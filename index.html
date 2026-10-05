@@ -96,7 +96,12 @@
   .sidebar{
     grid-area:sidebar;background:var(--sidebar-bg);border-right:1px solid var(--sidebar-border);
     display:flex;flex-direction:column;padding:18px 12px;gap:4px;position:sticky;top:0;height:100vh;
+    overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--sidebar-border) transparent;
   }
+  .sidebar::-webkit-scrollbar{width:6px}
+  .sidebar::-webkit-scrollbar-track{background:transparent}
+  .sidebar::-webkit-scrollbar-thumb{background:var(--sidebar-border);border-radius:3px}
+  .sidebar::-webkit-scrollbar-thumb:hover{background:var(--sidebar-text-faint)}
   .brand{display:flex;align-items:center;gap:12px;padding:6px 10px 22px;}
   .brand-mark{width:42px;height:42px;border-radius:11px;background:#fff;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.4) inset}
   .brand-text b{color:var(--sidebar-text)}
