@@ -25,7 +25,7 @@ import storage
 import validation
 import totp
 from applog import app_logger, safe_log_value
-from collector import state, scheduler, health, metrics, thresholds, maintenance, sla
+from collector import state, scheduler, health, metrics, thresholds, maintenance, sla, report_delivery
 import reports
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
@@ -1554,6 +1554,117 @@ def api_export_report():
     audit('EXPORT_REPORT', details=f'{report_type}/{fmt}')
     import io
     return send_file(io.BytesIO(data), mimetype=mimetype, as_attachment=True, download_name=filename)
+
+
+# ------------------------------------------------------- 3-3 정기 보고서 발송 --
+def _validate_report_schedule_body(body):
+    name = (body.get('name') or '').strip()
+    if not name or len(name) > 100:
+        raise ValueError('보고서 이름을 입력해주세요 (100자 이하)')
+    frequency = body.get('frequency')
+    if frequency not in ('weekly', 'monthly'):
+        raise ValueError('발송 주기는 weekly 또는 monthly여야 합니다')
+    report_type = body.get('reportType')
+    if report_type not in ('incident', 'resource', 'network'):
+        raise ValueError('보고서 종류가 올바르지 않습니다')
+    fmt = body.get('format')
+    if fmt not in ('pdf', 'excel'):
+        raise ValueError('형식은 pdf 또는 excel이어야 합니다')
+    recipients = body.get('recipients')
+    if not isinstance(recipients, list) or not recipients:
+        raise ValueError('발송 대상 이메일을 1개 이상 입력해주세요')
+    recipients = [r.strip() for r in recipients if r.strip()]
+    if not recipients or any(not validation.is_valid_email(r) for r in recipients):
+        raise ValueError('발송 대상 이메일 형식이 올바르지 않습니다')
+    device_id = (body.get('deviceId') or '').strip() or None
+    group_name = (body.get('group') or '').strip() or None
+    if device_id and not storage.load_device(device_id):
+        raise ValueError('대상 장비를 찾을 수 없습니다')
+    return name, frequency, report_type, fmt, device_id, group_name, recipients
+
+
+@app.get('/api/reports/schedules')
+@require_role('VIEWER')
+def api_list_report_schedules():
+    return jsonify({'schedules': storage.load_report_schedules()})
+
+
+@app.post('/api/reports/schedules')
+@require_role('OPERATOR')
+def api_create_report_schedule():
+    body = request.get_json(force=True)
+    try:
+        name, frequency, report_type, fmt, device_id, group_name, recipients = _validate_report_schedule_body(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    schedule_id = storage.create_report_schedule(name, frequency, report_type, fmt, device_id, group_name, recipients, _current_username())
+    audit('CREATE_REPORT_SCHEDULE', target=str(schedule_id), details=f"{name} ({frequency}/{report_type})")
+    return jsonify({'ok': True, 'id': schedule_id})
+
+
+@app.put('/api/reports/schedules/<int:schedule_id>/enabled')
+@require_role('OPERATOR')
+def api_set_report_schedule_enabled(schedule_id):
+    if not storage.get_report_schedule(schedule_id):
+        return jsonify({'error': 'not found'}), 404
+    body = request.get_json(force=True)
+    storage.set_report_schedule_enabled(schedule_id, bool(body.get('enabled')))
+    audit('SET_REPORT_SCHEDULE_ENABLED', target=str(schedule_id), details=f"enabled={bool(body.get('enabled'))}")
+    return jsonify({'ok': True})
+
+
+@app.delete('/api/reports/schedules/<int:schedule_id>')
+@require_role('OPERATOR')
+def api_delete_report_schedule(schedule_id):
+    storage.delete_report_schedule(schedule_id)
+    audit('DELETE_REPORT_SCHEDULE', target=str(schedule_id))
+    return jsonify({'ok': True})
+
+
+@app.post('/api/reports/schedules/<int:schedule_id>/test')
+@require_role('OPERATOR')
+def api_test_report_schedule(schedule_id):
+    """지금 바로 1회 발송 -- run_due_schedules의 재시도 루프는 타지 않는
+    단발성 시도(바로 성공/실패를 알고 싶은 수동 테스트 버튼의 목적에 맞게),
+    다만 결과는 동일하게 발송 이력에 기록된다."""
+    sched = storage.get_report_schedule(schedule_id)
+    if not sched:
+        return jsonify({'error': 'not found'}), 404
+    now_ms = int(time.time() * 1000)
+    smtp_cfg = storage.get_smtp_config()
+    if not smtp_cfg:
+        # Log this the same way run_due_schedules() logs its own "no SMTP"
+        # case -- a delivery attempt that failed before it could even try
+        # sending is still a delivery attempt an operator needs to see in
+        # the history, not a toast that evaporates the moment this response
+        # is dismissed.
+        err_msg = 'SMTP 채널이 설정되어 있지 않거나 비활성화 상태입니다'
+        storage.record_report_delivery(schedule_id, now_ms, 'failed', err_msg, 0)
+        storage.update_report_schedule_last_run(schedule_id, now_ms, 'failed')
+        return jsonify({'error': err_msg}), 400
+    try:
+        ok, err = report_delivery.send_schedule_now(sched, smtp_cfg)
+    except Exception as e:
+        ok, err = False, f"{type(e).__name__}: {e}"
+    storage.record_report_delivery(schedule_id, now_ms, 'success' if ok else 'failed', None if ok else err, 1)
+    storage.update_report_schedule_last_run(schedule_id, now_ms, 'success' if ok else 'failed')
+    audit('TEST_REPORT_SCHEDULE', target=str(schedule_id), details='ok' if ok else f'failed: {err}')
+    if not ok:
+        return jsonify({'error': f'발송에 실패했습니다: {err}'}), 502
+    return jsonify({'ok': True})
+
+
+@app.get('/api/reports/delivery-log')
+@require_role('VIEWER')
+def api_report_delivery_log():
+    schedule_id = request.args.get('scheduleId')
+    schedule_id = int(schedule_id) if schedule_id else None
+    limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
+    log = storage.load_report_delivery_log(schedule_id, limit)
+    schedule_names = {s['id']: s['name'] for s in storage.load_report_schedules()}
+    for row in log:
+        row['scheduleName'] = schedule_names.get(row['schedule_id'], f"#{row['schedule_id']}")
+    return jsonify({'log': log})
 
 
 @app.post('/api/agent/report')

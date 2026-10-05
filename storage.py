@@ -502,6 +502,35 @@ def init_db():
         source_ip TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token ON api_token_usage(token_id, ts)')
+    # 3-3: 정기 보고서 자동 발송. recipients is a JSON list of email
+    # addresses (a schedule can have more than one, unlike the single
+    # alert_to of the incident-alert SMTP path) -- device_id/group_name
+    # mirror reports.py's own filter params, NULL meaning "전체 장비" same
+    # as there.
+    conn.execute('''CREATE TABLE IF NOT EXISTS report_schedules(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        frequency TEXT NOT NULL,
+        report_type TEXT NOT NULL,
+        format TEXT NOT NULL,
+        device_id TEXT,
+        group_name TEXT,
+        recipients TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        created_by TEXT,
+        last_run_at INTEGER,
+        last_run_status TEXT
+    )''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS report_delivery_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_id INTEGER NOT NULL,
+        run_at INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        attempts INTEGER NOT NULL
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_report_delivery_schedule ON report_delivery_log(schedule_id, run_at)')
     conn.commit()
     conn.close()
     migrate_db()
@@ -2091,6 +2120,87 @@ def load_metric_history(device_id, metric, granularity='raw', since_ms=None, lim
                 for r in reversed(rows)]
     finally:
         conn.close()
+
+
+def create_report_schedule(name, frequency, report_type, fmt, device_id, group_name, recipients, created_by):
+    conn = get_db()
+    now = int(time.time() * 1000)
+    cur = conn.execute(
+        'INSERT INTO report_schedules(name,frequency,report_type,format,device_id,group_name,recipients,enabled,created_at,created_by) '
+        'VALUES (?,?,?,?,?,?,?,1,?,?)',
+        (name, frequency, report_type, fmt, device_id, group_name, json.dumps(recipients), now, created_by))
+    schedule_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return schedule_id
+
+
+def load_report_schedules():
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM report_schedules ORDER BY created_at DESC').fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d['recipients'] = json.loads(d['recipients'])
+        out.append(d)
+    return out
+
+
+def get_report_schedule(schedule_id):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM report_schedules WHERE id=?', (schedule_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    d['recipients'] = json.loads(d['recipients'])
+    return d
+
+
+def set_report_schedule_enabled(schedule_id, enabled):
+    conn = get_db()
+    conn.execute('UPDATE report_schedules SET enabled=? WHERE id=?', (1 if enabled else 0, schedule_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_report_schedule(schedule_id):
+    conn = get_db()
+    conn.execute('DELETE FROM report_schedules WHERE id=?', (schedule_id,))
+    conn.execute('DELETE FROM report_delivery_log WHERE schedule_id=?', (schedule_id,))
+    conn.commit()
+    conn.close()
+
+
+def update_report_schedule_last_run(schedule_id, run_at, status):
+    conn = get_db()
+    conn.execute('UPDATE report_schedules SET last_run_at=?, last_run_status=? WHERE id=?', (run_at, status, schedule_id))
+    conn.commit()
+    conn.close()
+
+
+def record_report_delivery(schedule_id, run_at, status, error, attempts):
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO report_delivery_log(schedule_id,run_at,status,error,attempts) VALUES (?,?,?,?,?)',
+        (schedule_id, run_at, status, error, attempts))
+    conn.commit()
+    conn.close()
+
+
+def load_report_delivery_log(schedule_id=None, limit=50):
+    conn = get_db()
+    q = 'SELECT * FROM report_delivery_log'
+    params = []
+    if schedule_id is not None:
+        q += ' WHERE schedule_id=?'
+        params.append(schedule_id)
+    q += ' ORDER BY run_at DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def summarize_metric_range(device_id, metric, start_ms, end_ms):

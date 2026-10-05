@@ -21,6 +21,7 @@ from collector import local_collector, ping_collector, snmp_collector, agent_col
 from collector import flow_listener
 from collector import maintenance
 from collector import escalation
+from collector import report_delivery
 
 def _compute_max_workers():
     """Code review pass, finding #4: this was a flat, hardcoded 10
@@ -165,6 +166,22 @@ def _run_backup_job():
         storage.add_incident('warn', 'InfraSight', 'SYSTEM', f"DB 백업 실패: {e}")
 
 
+def _run_weekly_report_job():
+    try:
+        report_delivery.run_due_schedules('weekly')
+        health.record_tick_success()
+    except Exception as e:
+        health.record_tick_error(f"weekly_report: {e}")
+
+
+def _run_monthly_report_job():
+    try:
+        report_delivery.run_due_schedules('monthly')
+        health.record_tick_success()
+    except Exception as e:
+        health.record_tick_error(f"monthly_report: {e}")
+
+
 def start():
     local_collector.prime_psutil()
     for d in storage.load_devices():
@@ -191,6 +208,14 @@ def start():
     # incident against the configured escalation chain each run.
     _scheduler.add_job(escalation.tick, 'interval', seconds=60, id='escalation_tick',
                         replace_existing=True, next_run_time=datetime.now())
+    # 3-3: 주간 보고서는 매주 월요일, 월간 보고서는 매월 1일 아침에 생성+발송.
+    # collector/report_delivery.period_for_frequency()가 "오늘 자정까지의
+    # 완전한 한 주/한 달"을 계산하므로, 월요일 06:00에 발송되는 주간 보고서는
+    # 바로 지난 일~월요일이 아니라 지난주 월~일(완전한 한 주)을 담는다.
+    _scheduler.add_job(_run_weekly_report_job, 'cron', day_of_week='mon', hour=6, minute=0,
+                        id='weekly_report', replace_existing=True)
+    _scheduler.add_job(_run_monthly_report_job, 'cron', day=1, hour=6, minute=30,
+                        id='monthly_report', replace_existing=True)
 
 
 def shutdown():

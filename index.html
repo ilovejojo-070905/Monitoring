@@ -3777,9 +3777,34 @@ function renderChannelsSkeleton(){
       <button type="button" class="btn" id="esc-log-btn" style="margin-top:12px">에스컬레이션 발송 이력</button>
       <div id="esc-log-panel" style="display:none;margin-top:12px"></div>
     </div>
+    <div class="card" id="report-schedule-card">
+      <div class="card-head"><div><h3>정기 보고서 자동 발송</h3><span class="sub">주간 보고서는 매주 월요일 06:00, 월간 보고서는 매월 1일 06:30에 생성되어 직전 완전한 한 주/한 달을 다루는 보고서가 첨부 이메일로 발송됩니다. SMTP 채널이 설정되어 있어야 하며, 실패 시 같은 발송 주기 내에서 최대 3회까지 자동 재시도합니다.</span></div></div>
+      <form id="rs-create-form" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+        <div class="form-grid">
+          <div class="field"><label>보고서 이름</label><input type="text" id="rs-name" placeholder="예: 주간 장애 보고서" maxlength="100" required></div>
+          <div class="field"><label>발송 주기</label><select id="rs-frequency"><option value="weekly">주간</option><option value="monthly">월간</option></select></div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>보고서 종류</label>
+            <select id="rs-type"><option value="incident">장애 이력</option><option value="resource">자원 사용률</option><option value="network">네트워크 상태</option></select>
+          </div>
+          <div class="field"><label>형식</label><select id="rs-format"><option value="pdf">PDF</option><option value="excel">Excel</option></select></div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>대상 (선택)</label><select id="rs-target"><option value="">전체</option></select></div>
+          <div class="field"><label>수신자 이메일 (쉼표로 구분)</label><input type="text" id="rs-recipients" placeholder="예: ops@company.com, lead@company.com" required></div>
+        </div>
+        <div><button type="submit" class="btn primary">등록</button></div>
+      </form>
+      <div id="rs-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
+      <div id="rs-list"></div>
+      <button type="button" class="btn" id="rs-log-btn" style="margin-top:12px">발송 이력</button>
+      <div id="rs-log-panel" style="display:none;margin-top:12px"></div>
+    </div>
   `;
   wireChannelHandlers();
   wireEscalationHandlers();
+  wireReportScheduleHandlers();
 }
 function wireChannelHandlers(){
   const setStatus = (prefix, text, ok)=>{
@@ -3973,6 +3998,125 @@ async function loadChannelSettings(){
   $('#esc-enabled').checked = esc.enabled;
   $('#esc-minseverity').value = esc.minSeverity || 'crit';
   renderEscalationTiers();
+  populateReportScheduleTargetOptions();
+  renderReportScheduleList();
+}
+const RS_FREQ_LABEL = {weekly:'주간', monthly:'월간'};
+const RS_TYPE_LABEL = {incident:'장애 이력', resource:'자원 사용률', network:'네트워크 상태'};
+function populateReportScheduleTargetOptions(){
+  const sel = $('#rs-target');
+  if(!sel) return;
+  const prevValue = sel.value;
+  const all = [...SERVERS, ...DBS, ...NETS, ...FACS];
+  const groups = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">전체</option>'
+    + (groups.length ? `<optgroup label="그룹">${groups.map(g=>`<option value="group:${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('')}</optgroup>` : '')
+    + `<optgroup label="장비">${all.map(d=>`<option value="device:${escapeHtml(d.id)}">${escapeHtml(d.name)}</option>`).join('')}</optgroup>`;
+  if([...sel.options].some(o=>o.value===prevValue)) sel.value = prevValue;
+}
+function reportScheduleTargetDesc(s){
+  if(s.device_id){
+    const d = [...SERVERS,...DBS,...NETS,...FACS].find(x=>x.id===s.device_id);
+    return '장비: '+(d?d.name:s.device_id);
+  }
+  if(s.group_name) return '그룹: '+s.group_name;
+  return '전체';
+}
+async function renderReportScheduleList(){
+  const listEl = $('#rs-list');
+  if(!listEl) return;
+  try{
+    const r = await apiFetch('/api/reports/schedules');
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || '불러오기 실패');
+    if(!j.schedules.length){
+      listEl.innerHTML = '<div class="empty-note">등록된 정기 보고서가 없습니다.</div>';
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>이름</th><th>주기</th><th>종류</th><th>대상</th><th>수신자</th><th>마지막 발송</th><th>상태</th><th></th></tr></thead>
+        <tbody>
+          ${j.schedules.map(s=>`
+            <tr>
+              <td class="name">${escapeHtml(s.name)}</td>
+              <td>${RS_FREQ_LABEL[s.frequency]||s.frequency}</td>
+              <td>${RS_TYPE_LABEL[s.report_type]||s.report_type} (${s.format.toUpperCase()})</td>
+              <td style="font-size:11.5px">${escapeHtml(reportScheduleTargetDesc(s))}</td>
+              <td style="font-size:11px">${escapeHtml(s.recipients.join(', '))}</td>
+              <td style="font-size:11px;white-space:nowrap">${s.last_run_at?fmtWhen(s.last_run_at):'없음'}</td>
+              <td>${!s.enabled?'<span class="pill neutral" style="font-size:9px">비활성</span>':s.last_run_status==='failed'?'<span class="pill crit" style="font-size:9px">실패</span>':s.last_run_status==='success'?'<span class="pill good" style="font-size:9px">성공</span>':'<span class="pill neutral" style="font-size:9px">대기</span>'}</td>
+              <td style="display:flex;gap:6px;flex-wrap:wrap">
+                <button type="button" class="btn" data-rs-test="${s.id}">지금 발송</button>
+                <button type="button" class="btn" data-rs-toggle="${s.id}" data-enabled="${s.enabled?1:0}">${s.enabled?'비활성화':'활성화'}</button>
+                <button type="button" class="btn" data-rs-del="${s.id}">삭제</button>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+    $$('[data-rs-test]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      b.disabled = true; b.textContent = '발송 중...';
+      const r2 = await apiFetch('/api/reports/schedules/'+b.dataset.rsTest+'/test', {method:'POST'});
+      const j2 = await r2.json();
+      b.disabled = false; b.textContent = '지금 발송';
+      if(!r2.ok){ alert(j2.error||'발송 실패'); }
+      renderReportScheduleList();
+    }));
+    $$('[data-rs-toggle]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      await apiFetch('/api/reports/schedules/'+b.dataset.rsToggle+'/enabled', {
+        method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: b.dataset.enabled!=='1'}),
+      });
+      renderReportScheduleList();
+    }));
+    $$('[data-rs-del]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const ok = await showConfirm('이 정기 보고서를 삭제할까요?', {title:'정기 보고서 삭제', okText:'삭제'});
+      if(!ok) return;
+      await apiFetch('/api/reports/schedules/'+b.dataset.rsDel, {method:'DELETE'});
+      renderReportScheduleList();
+    }));
+  }catch(err){
+    listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+  }
+}
+function wireReportScheduleHandlers(){
+  $('#rs-create-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const errEl = $('#rs-error');
+    errEl.textContent = '';
+    const recipients = $('#rs-recipients').value.split(',').map(s=>s.trim()).filter(Boolean);
+    const target = $('#rs-target').value;
+    const body = {
+      name: $('#rs-name').value.trim(), frequency: $('#rs-frequency').value,
+      reportType: $('#rs-type').value, format: $('#rs-format').value, recipients,
+    };
+    if(target.startsWith('device:')) body.deviceId = target.slice(7);
+    else if(target.startsWith('group:')) body.group = target.slice(6);
+    const r = await apiFetch('/api/reports/schedules', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error||'등록 실패'; return; }
+    $('#rs-name').value = ''; $('#rs-recipients').value = '';
+    renderReportScheduleList();
+  });
+  $('#rs-log-btn').addEventListener('click', async ()=>{
+    const panel = $('#rs-log-panel');
+    if(panel.style.display !== 'none'){ panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    panel.innerHTML = '<div class="empty-note">불러오는 중...</div>';
+    const r = await apiFetch('/api/reports/delivery-log?limit=50');
+    const j = await r.json();
+    if(!r.ok){ panel.innerHTML = `<div class="empty-note">${escapeHtml(j.error||'불러오기 실패')}</div>`; return; }
+    if(!j.log.length){ panel.innerHTML = '<div class="empty-note">발송 이력이 없습니다</div>'; return; }
+    panel.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+      <thead><tr><th>시각</th><th>보고서</th><th>결과</th><th>시도 횟수</th><th>오류</th></tr></thead>
+      <tbody>${j.log.map(l=>`<tr>
+        <td style="font-size:11px;white-space:nowrap">${fmtWhen(l.run_at)}</td>
+        <td>${escapeHtml(l.scheduleName)}</td>
+        <td>${l.status==='success'?'<span class="pill good" style="font-size:9px">성공</span>':'<span class="pill crit" style="font-size:9px">실패</span>'}</td>
+        <td class="mono">${l.attempts}</td>
+        <td style="font-size:11px;color:var(--text-dim)">${escapeHtml(l.error||'-')}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  });
 }
 function renderChannels(){
   // Settings page, not live monitoring data -- unlike every other view's
