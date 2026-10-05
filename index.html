@@ -3467,6 +3467,21 @@ function renderSlaSkeleton(){
       <div id="sla-settings-box" style="display:none;margin-top:12px;padding:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2)"></div>
     </div>
     <div class="card">
+      <div class="card-head"><div><h3>보고서 내보내기</h3><span class="sub">위에서 선택한 기간을 기준으로 생성됩니다 (PDF는 한글 글꼴 포함, 표가 여러 페이지에 걸치면 자동으로 나뉩니다)</span></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div class="field"><label>보고서 종류</label>
+          <select id="report-type">
+            <option value="incident">장애 이력 보고서</option>
+            <option value="resource">자원 사용률 보고서</option>
+            <option value="network">네트워크 상태 보고서</option>
+          </select>
+        </div>
+        <div class="field" style="min-width:160px"><label>대상 (선택)</label><select id="report-target"><option value="">전체</option></select></div>
+        <button type="button" class="btn" id="report-export-pdf">PDF 다운로드</button>
+        <button type="button" class="btn" id="report-export-excel">Excel 다운로드</button>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-head"><h3>그룹별 가동률</h3></div>
       <div id="sla-group-list"></div>
     </div>
@@ -3492,6 +3507,7 @@ function slaMetricRowHtml(r, kind){
     </tr>`;
 }
 async function loadSlaOverview(){
+  populateReportTargetOptions();
   const start = new Date($('#sla-start').value).getTime();
   const end = new Date($('#sla-end').value).getTime();
   if(!start || !end || start >= end){ return; }
@@ -3518,6 +3534,33 @@ function applySlaRange(days){
   $('#sla-start').value = toDatetimeLocalValue(start);
   $('#sla-end').value = toDatetimeLocalValue(end);
 }
+function populateReportTargetOptions(){
+  const sel = $('#report-target');
+  if(!sel) return;
+  const prevValue = sel.value;
+  const all = [...SERVERS, ...DBS, ...NETS, ...FACS];
+  const groups = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">전체</option>'
+    + (groups.length ? `<optgroup label="그룹">${groups.map(g=>`<option value="group:${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('')}</optgroup>` : '')
+    + `<optgroup label="장비">${all.map(d=>`<option value="device:${escapeHtml(d.id)}">${escapeHtml(d.name)}</option>`).join('')}</optgroup>`;
+  if([...sel.options].some(o=>o.value===prevValue)) sel.value = prevValue;
+}
+function downloadReport(fmt){
+  const type = $('#report-type').value;
+  const target = $('#report-target').value;
+  const start = new Date($('#sla-start').value).getTime();
+  const end = new Date($('#sla-end').value).getTime();
+  if(!start || !end || start >= end){ alert('기간을 먼저 선택해주세요'); return; }
+  let url = `/api/reports/export?type=${type}&format=${fmt}&start=${start}&end=${end}`;
+  if(target.startsWith('device:')) url += '&deviceId='+encodeURIComponent(target.slice(7));
+  else if(target.startsWith('group:')) url += '&group='+encodeURIComponent(target.slice(6));
+  // A plain navigation (not fetch+blob) -- the server sends Content-
+  // Disposition: attachment, so the browser downloads the file and stays
+  // on this page, same pattern the existing agent-installer download link
+  // already uses. This also means the request carries the session cookie
+  // automatically, same as any other same-origin navigation.
+  window.location.href = url;
+}
 function wireSlaHandlers(){
   // Called once from renderSlaSkeleton(), which (like every skeleton) runs
   // at initSkeletons() time -- before login. Only wire listeners and do
@@ -3532,6 +3575,8 @@ function wireSlaHandlers(){
     loadSlaOverview();
   }));
   $('#sla-query-btn').addEventListener('click', loadSlaOverview);
+  $('#report-export-pdf').addEventListener('click', ()=> downloadReport('pdf'));
+  $('#report-export-excel').addEventListener('click', ()=> downloadReport('excel'));
   $('#sla-settings-btn').addEventListener('click', async ()=>{
     const box = $('#sla-settings-box');
     if(box.style.display !== 'none'){ box.style.display = 'none'; return; }

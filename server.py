@@ -17,7 +17,7 @@ from collections import defaultdict, deque
 from datetime import timedelta, datetime
 from functools import wraps
 
-from flask import Flask, Response, g, jsonify, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory, session
 from waitress import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -26,6 +26,7 @@ import validation
 import totp
 from applog import app_logger, safe_log_value
 from collector import state, scheduler, health, metrics, thresholds, maintenance, sla
+import reports
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
 from collector import snmp_collector
@@ -1521,8 +1522,38 @@ def api_sla_overview():
     devices = storage.load_devices()
     rows = [sla.device_uptime_report(d, start_ms, end_ms) for d in devices]
     groups = sorted({(d.get('fields') or {}).get('group') for d in devices} - {None})
-    group_rows = [sla.group_uptime_report(g, storage.devices_in_group(g), start_ms, end_ms) for g in groups]
+    # Named group_name, not g -- g is also the Flask request-context object
+    # imported at the top of this file (used by the Bearer-token auth path
+    # to stash g.api_token_row); shadowing it here would be harmless today
+    # (nothing in this loop body touches flask.g) but a landmine for the
+    # next edit that does.
+    group_rows = [sla.group_uptime_report(group_name, storage.devices_in_group(group_name), start_ms, end_ms) for group_name in groups]
     return jsonify({'periodStart': start_ms, 'periodEnd': end_ms, 'devices': rows, 'groups': group_rows})
+
+
+# ------------------------------------------------------- 3-2 보고서 내보내기 --
+@app.get('/api/reports/export')
+@require_role('VIEWER')
+def api_export_report():
+    report_type = request.args.get('type')
+    fmt = request.args.get('format')
+    if report_type not in ('incident', 'resource', 'network'):
+        return jsonify({'error': 'type은 incident, resource, network 중 하나여야 합니다'}), 400
+    if fmt not in ('pdf', 'excel'):
+        return jsonify({'error': 'format은 pdf 또는 excel이어야 합니다'}), 400
+    start_ms, end_ms, _ = _sla_range_params()
+    device_id = (request.args.get('deviceId') or '').strip() or None
+    group = (request.args.get('group') or '').strip() or None
+    if device_id and not storage.load_device(device_id):
+        return jsonify({'error': 'device not found'}), 404
+    try:
+        data, filename, mimetype = reports.build_report(report_type, fmt, start_ms, end_ms, device_id, group)
+    except Exception as e:
+        app_logger.exception('report export failed')
+        return jsonify({'error': f'보고서 생성에 실패했습니다: {e}'}), 500
+    audit('EXPORT_REPORT', details=f'{report_type}/{fmt}')
+    import io
+    return send_file(io.BytesIO(data), mimetype=mimetype, as_attachment=True, download_name=filename)
 
 
 @app.post('/api/agent/report')

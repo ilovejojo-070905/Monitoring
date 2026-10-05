@@ -2093,6 +2093,36 @@ def load_metric_history(device_id, metric, granularity='raw', since_ms=None, lim
         conn.close()
 
 
+def summarize_metric_range(device_id, metric, start_ms, end_ms):
+    """One (avg, max, sampleCount) summary for a metric over [start_ms,
+    end_ms) -- for 3-2's 자원 사용률 보고서, which wants "평균/최대 사용률
+    for the period" per device, not a time series. Tries metrics_1h first
+    (cheapest, and the only tier retention guarantees survives for an
+    older/longer report range), falls back to metrics_5m, then metrics_raw,
+    returning None only if genuinely no data exists at any tier -- a device
+    registered mid-period, or one that's been offline the whole time, is
+    exactly when that matters."""
+    conn = get_db()
+    try:
+        for table, is_rollup in (('metrics_1h', True), ('metrics_5m', True), ('metrics_raw', False)):
+            ts_col = 'bucket_ts' if is_rollup else 'ts'
+            if is_rollup:
+                row = conn.execute(
+                    f'SELECT AVG(avg_value) a, MAX(max_value) m, SUM(sample_count) c FROM {table} '
+                    f'WHERE device_id=? AND metric=? AND {ts_col}>=? AND {ts_col}<?',
+                    (device_id, metric, start_ms, end_ms)).fetchone()
+            else:
+                row = conn.execute(
+                    f'SELECT AVG(value) a, MAX(value) m, COUNT(*) c FROM {table} '
+                    f'WHERE device_id=? AND metric=? AND {ts_col}>=? AND {ts_col}<?',
+                    (device_id, metric, start_ms, end_ms)).fetchone()
+            if row and row['c']:
+                return {'avg': row['a'], 'max': row['m'], 'sampleCount': row['c']}
+        return None
+    finally:
+        conn.close()
+
+
 # Data backup pass: the single knob for "최근 N일간 백업 유지" -- both the
 # daily scheduled job (collector/scheduler.py's _run_backup_job) and the
 # manual "지금 백업" admin button (server.py's /api/system/backup) call
