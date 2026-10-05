@@ -256,6 +256,8 @@
   .search-box input{background:none;border:none;color:var(--text);font-size:12.5px;font-family:inherit;width:100%}
   .search-box input:focus{outline:none}
   .search-box input::placeholder{color:var(--text-faint)}
+  .group-filter-select{background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);padding:9px 12px;font-size:13.5px;font-family:inherit;min-width:140px}
+  .group-filter-select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(124,92,255,.15)}
 
   .empty-note{padding:26px;text-align:center;color:var(--text-faint);font-size:12.5px}
 
@@ -2030,7 +2032,7 @@ function renderServersSkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>서버 목록</h3><span class="sub">클릭 시 상세 성능 정보를 확인할 수 있습니다</span></div>
         ${statusFilterRow('srv-filters', srvFilter)}
-        <select id="srv-group-filter"></select>
+        <select id="srv-group-filter" class="group-filter-select"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="srv-search" placeholder="서버명 / IP / 그룹 / 태그 검색"></div>
       </div>
@@ -2117,7 +2119,7 @@ function renderDatabaseSkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>데이터베이스 인스턴스</h3><span class="sub">등록된 DB 호스트의 접속 포트 도달성을 실시간 확인합니다</span></div>
         ${statusFilterRow('db-filters', dbFilter)}
-        <select id="db-group-filter"></select>
+        <select id="db-group-filter" class="group-filter-select"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="db-search" placeholder="인스턴스명 / IP / 그룹 / 태그 검색"></div>
       </div>
@@ -2161,7 +2163,7 @@ function renderNetworkSkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>네트워크 장비</h3><span class="sub">Ping은 도달성만, SNMP는 CPU·메모리·트래픽·Uptime까지 실측합니다</span></div>
         ${statusFilterRow('net-filters', netFilter)}
-        <select id="net-group-filter"></select>
+        <select id="net-group-filter" class="group-filter-select"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="net-search" placeholder="장비명 / IP / 그룹 / 태그 검색"></div>
       </div>
@@ -2383,7 +2385,7 @@ function renderFacilitySkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>전산실 설비</h3><span class="sub">UPS · 항온항습기 · 분전반 등 설비의 도달성과 SNMP 실측값을 확인합니다</span></div>
         ${statusFilterRow('fac-filters', facFilter)}
-        <select id="fac-group-filter"></select>
+        <select id="fac-group-filter" class="group-filter-select"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="fac-search" placeholder="설비명 / IP / 그룹 / 태그 검색"></div>
       </div>
