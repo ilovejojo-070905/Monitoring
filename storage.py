@@ -671,6 +671,15 @@ def count_devices_in_group(name):
     return sum(1 for r in rows if json.loads(r['fields']).get('group') == name)
 
 
+def devices_in_group(name):
+    """Full device rows (not just a count) for every device currently
+    carrying fields.group == name -- same dynamic-membership resolution
+    every other group feature in this app uses (collector/maintenance.py's
+    resolve_target_device_ids, the group-threshold lookup, etc.), pulled out
+    here so 3-1's SLA reports don't need to re-implement the same filter."""
+    return [d for d in load_devices() if (d.get('fields') or {}).get('group') == name]
+
+
 def delete_device_group(name):
     conn = get_db()
     conn.execute('DELETE FROM device_groups WHERE name=?', (name,))
@@ -1030,6 +1039,58 @@ def load_maintenance_log(device_id=None, limit=50):
     rows = conn.execute(q, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def load_maintenance_log_range(device_id, start_ms, end_ms):
+    """Every maintenance_log row for this device whose [started_at, ended_at)
+    overlaps [start_ms, end_ms) -- unlike load_maintenance_log() above (a
+    recent-history list for the UI, capped at 50 rows), this is for 3-1's
+    uptime calculation, which needs a complete, date-range-scoped set
+    regardless of how many maintenance periods happened. A still-open period
+    (ended_at IS NULL) is treated as ongoing through end_ms for overlap
+    purposes -- it hasn't ended yet, so it covers up to "now"/the report's
+    own end, whichever the caller clips to."""
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT * FROM maintenance_log WHERE device_id=? AND started_at<? AND (ended_at IS NULL OR ended_at>?) '
+        'ORDER BY started_at',
+        (device_id, end_ms, start_ms)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def load_incidents_in_range(device_id, event_types, start_ms, end_ms):
+    """Every incident row for this device whose [first_occurred_at,
+    resolved_at) overlaps [start_ms, end_ms), restricted to event_types
+    (e.g. ['REACHABILITY'] for downtime, ['COLLECTION_ERROR'] for collection
+    gaps -- see collector/sla.py). A still-open incident (resolved_at IS
+    NULL) is treated as ongoing through end_ms, same reasoning as the
+    maintenance-log range query above."""
+    conn = get_db()
+    placeholders = ','.join('?' * len(event_types))
+    rows = conn.execute(
+        f'SELECT * FROM incidents WHERE device_id=? AND event_type IN ({placeholders}) '
+        f'AND first_occurred_at IS NOT NULL AND first_occurred_at<? AND (resolved_at IS NULL OR resolved_at>?) '
+        f'ORDER BY first_occurred_at',
+        (device_id, *event_types, end_ms, start_ms)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_sla_settings_public():
+    return {
+        # Which REACHABILITY incident severities count as real downtime for
+        # uptime% -- default both, since this app's reachability smoothing
+        # (collector/state.py's evaluate_status) already only escalates to
+        # 'warn' after a real consecutive-failure streak, not a single
+        # blip, so a 'warn'-only reachability incident is still a
+        # meaningful outage, not noise.
+        'downtimeSeverities': (get_setting('sla_downtime_severities') or 'warn,crit').split(','),
+    }
+
+
+def set_sla_settings(downtime_severities):
+    set_setting('sla_downtime_severities', ','.join(downtime_severities))
 
 
 # ------------------------------------------------------------------- 2-3 --

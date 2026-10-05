@@ -528,6 +528,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
       트래픽 분석 (Flow)
     </button>
+    <button class="nav-item" data-view="sla">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M4 19h16"/><rect x="6" y="11" width="3" height="8" rx="1"/><rect x="11" y="6" width="3" height="13" rx="1"/><rect x="16" y="14" width="3" height="5" rx="1"/></svg>
+      가동률 / SLA
+    </button>
     </div></div>
 
     <button class="nav-group-label" data-group="navgrp-ops">운영<svg class="chev" viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></button>
@@ -616,6 +620,7 @@
     <section class="view" data-view="register" id="view-register"></section>
 
     <!-- ============ USERS ============ -->
+    <section class="view" data-view="sla" id="view-sla"></section>
     <section class="view" data-view="security" id="view-security"></section>
     <section class="view" data-view="channels" id="view-channels"></section>
     <section class="view" data-view="users" id="view-users"></section>
@@ -672,6 +677,14 @@
     <button type="button" class="btn" id="thresholdEditCancelBtn">취소</button>
     <button type="button" class="btn primary" id="thresholdEditOkBtn">저장</button>
   </div>
+</div>
+<div class="overlay" id="slaDetailOverlay" style="z-index:89"></div>
+<div class="confirm-modal" id="slaDetailModal" style="width:640px;max-width:92vw;max-height:84vh;overflow-y:auto">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+    <div class="confirm-title" id="slaDetailTitle" style="margin:0;flex:1">가동률 상세</div>
+    <button type="button" class="btn" id="slaDetailCloseBtn">닫기</button>
+  </div>
+  <div id="slaDetailBody"></div>
 </div>
 <div class="overlay" id="overlay"></div>
 <div class="drawer" id="drawer">
@@ -3413,6 +3426,198 @@ function renderSecurity(){
   renderTokenList();
 }
 
+/* ================= 3-1 가동률 / SLA ================= */
+let slaLoaded = false;
+let slaRangeDays = 30;
+function fmtDuration(ms){
+  if(ms == null) return '-';
+  const totalMin = Math.round(ms/60000);
+  const days = Math.floor(totalMin/1440);
+  const hours = Math.floor((totalMin%1440)/60);
+  const mins = totalMin%60;
+  const parts = [];
+  if(days) parts.push(days+'일');
+  if(hours) parts.push(hours+'시간');
+  if(!days && mins) parts.push(mins+'분');
+  return parts.length ? parts.join(' ') : '0분';
+}
+function uptimePillClass(pct){ return pct>=99.9?'good':pct>=99?'warn':'crit'; }
+function toDatetimeLocalValue(ms){
+  const d = new Date(ms);
+  const pad = n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function renderSlaSkeleton(){
+  const el = $('#view-sla');
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head"><div><h3>측정 기간</h3><span class="sub">예정된 점검 시간과 데이터 수집 누락 시간은 가동률 계산에서 분모·분자 모두 제외됩니다. 어떤 심각도를 장애로 판단할지는 "산정 기준 설정"에서 바꿀 수 있습니다.</span></div></div>
+      <div class="chip-row" id="sla-range-chips" style="margin-bottom:10px">
+        <button type="button" class="chip-btn" data-range="1">오늘</button>
+        <button type="button" class="chip-btn" data-range="7">최근 7일</button>
+        <button type="button" class="chip-btn active" data-range="30">최근 30일</button>
+        <button type="button" class="chip-btn" data-range="90">최근 90일</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div class="field"><label>시작</label><input type="datetime-local" id="sla-start"></div>
+        <div class="field"><label>종료</label><input type="datetime-local" id="sla-end"></div>
+        <button type="button" class="btn primary" id="sla-query-btn">조회</button>
+        <button type="button" class="btn" id="sla-settings-btn" style="margin-left:auto">산정 기준 설정</button>
+      </div>
+      <div id="sla-settings-box" style="display:none;margin-top:12px;padding:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2)"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>그룹별 가동률</h3></div>
+      <div id="sla-group-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>장비별 가동률</h3></div>
+      <div id="sla-device-list"></div>
+    </div>
+  `;
+  wireSlaHandlers();
+}
+function slaMetricRowHtml(r, kind){
+  const label = kind==='group' ? `그룹: ${escapeHtml(r.group)}` : escapeHtml(r.deviceName||r.deviceId);
+  return `
+    <tr>
+      <td class="name">${label}</td>
+      <td><span class="pill ${uptimePillClass(r.uptimePct)}">${r.uptimePct.toFixed(3)}%</span></td>
+      <td class="mono">${r.failureCount}</td>
+      <td style="font-size:11.5px">${fmtDuration(r.mttrMs)}</td>
+      <td style="font-size:11.5px">${fmtDuration(r.mtbfMs)}</td>
+      <td style="font-size:11.5px;color:var(--text-dim)">${fmtDuration(r.maintenanceMs)}</td>
+      <td style="font-size:11.5px;color:var(--text-dim)">${fmtDuration(r.collectionGapMs)}</td>
+      <td><button type="button" class="btn" data-sla-detail="${kind}" data-sla-id="${kind==='group'?escapeHtml(r.group):escapeHtml(r.deviceId)}">상세</button></td>
+    </tr>`;
+}
+async function loadSlaOverview(){
+  const start = new Date($('#sla-start').value).getTime();
+  const end = new Date($('#sla-end').value).getTime();
+  if(!start || !end || start >= end){ return; }
+  const r = await apiFetch(`/api/sla/overview?start=${start}&end=${end}`);
+  const j = await r.json();
+  if(!r.ok) return;
+  const theadRow = `<tr><th>대상</th><th>가동률</th><th>장애 횟수</th><th>MTTR</th><th>MTBF</th><th>점검 시간</th><th>데이터 누락</th><th></th></tr>`;
+  $('#sla-group-list').innerHTML = j.groups.length ? `
+    <div class="table-wrap"><table class="data reg-device-table">
+      <thead>${theadRow}</thead>
+      <tbody>${j.groups.map(r=>slaMetricRowHtml(r,'group')).join('')}</tbody>
+    </table></div>` : '<div class="empty-note">그룹이 없습니다.</div>';
+  $('#sla-device-list').innerHTML = j.devices.length ? `
+    <div class="table-wrap"><table class="data reg-device-table">
+      <thead>${theadRow}</thead>
+      <tbody>${j.devices.map(r=>slaMetricRowHtml(r,'device')).join('')}</tbody>
+    </table></div>` : '<div class="empty-note">장비가 없습니다.</div>';
+  $$('[data-sla-detail]').forEach(b=> b.addEventListener('click', ()=> openSlaDetailModal(b.dataset.slaDetail, b.dataset.slaId, start, end)));
+}
+function applySlaRange(days){
+  slaRangeDays = days;
+  const end = Date.now();
+  const start = days===1 ? new Date().setHours(0,0,0,0) : end - days*86400000;
+  $('#sla-start').value = toDatetimeLocalValue(start);
+  $('#sla-end').value = toDatetimeLocalValue(end);
+}
+function wireSlaHandlers(){
+  // Called once from renderSlaSkeleton(), which (like every skeleton) runs
+  // at initSkeletons() time -- before login. Only wire listeners and do
+  // pure-DOM setup here; any apiFetch call has to wait for renderSla()
+  // (called after auth, on first visit to this view) or it 401s against a
+  // session that doesn't exist yet.
+  applySlaRange(30);
+  $$('#sla-range-chips .chip-btn').forEach(b=> b.addEventListener('click', ()=>{
+    $$('#sla-range-chips .chip-btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    applySlaRange(parseInt(b.dataset.range));
+    loadSlaOverview();
+  }));
+  $('#sla-query-btn').addEventListener('click', loadSlaOverview);
+  $('#sla-settings-btn').addEventListener('click', async ()=>{
+    const box = $('#sla-settings-box');
+    if(box.style.display !== 'none'){ box.style.display = 'none'; return; }
+    const r = await apiFetch('/api/sla/settings');
+    const j = await r.json();
+    box.style.display = '';
+    box.innerHTML = `
+      <div style="font-size:12.5px;margin-bottom:8px">가동률 계산에서 "장애(다운타임)"로 판단할 응답 없음(REACHABILITY) 이벤트의 심각도를 선택하세요.</div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-bottom:4px"><input type="checkbox" id="sla-sev-warn" ${j.downtimeSeverities.includes('warn')?'checked':''}> 주의 (warn) 포함</label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-bottom:10px"><input type="checkbox" id="sla-sev-crit" ${j.downtimeSeverities.includes('crit')?'checked':''}> 위험 (crit) 포함</label>
+      <button type="button" class="btn primary" id="sla-settings-save">저장</button>
+      <span id="sla-settings-status" style="font-size:11.5px;margin-left:8px"></span>
+    `;
+    $('#sla-settings-save').addEventListener('click', async ()=>{
+      const sevs = [];
+      if($('#sla-sev-warn').checked) sevs.push('warn');
+      if($('#sla-sev-crit').checked) sevs.push('crit');
+      const statusEl = $('#sla-settings-status');
+      if(!sevs.length){ statusEl.textContent = '최소 1개는 선택해야 합니다'; statusEl.style.color = 'var(--crit)'; return; }
+      const r2 = await apiFetch('/api/sla/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({downtimeSeverities: sevs})});
+      const j2 = await r2.json();
+      statusEl.textContent = r2.ok ? '저장되었습니다 (다음 조회부터 적용)' : (j2.error||'저장 실패');
+      statusEl.style.color = r2.ok ? 'var(--good)' : 'var(--crit)';
+    });
+  });
+}
+async function openSlaDetailModal(kind, id, start, end){
+  $('#slaDetailTitle').textContent = kind==='group' ? `"${id}" 그룹 가동률 상세` : '장비 가동률 상세';
+  $('#slaDetailBody').innerHTML = '<div class="empty-note">불러오는 중...</div>';
+  $('#slaDetailOverlay').classList.add('show');
+  $('#slaDetailModal').classList.add('show');
+  const url = kind==='group' ? `/api/sla/group/${encodeURIComponent(id)}` : `/api/sla/device/${encodeURIComponent(id)}`;
+  const r = await apiFetch(`${url}?start=${start}&end=${end}&granularity=day`);
+  const j = await r.json();
+  if(!r.ok){ $('#slaDetailBody').innerHTML = `<div class="empty-note">${escapeHtml(j.error||'불러오기 실패')}</div>`; return; }
+  const buckets = j.buckets || [];
+  const incidents = kind==='group'
+    ? j.deviceReports.flatMap(d=>d.incidents.map(i=>({...i, deviceName:d.deviceName})))
+    : j.incidents;
+  incidents.sort((a,b)=> b.firstOccurredAt - a.firstOccurredAt);
+  $('#slaDetailBody').innerHTML = `
+    <div class="kv-grid" style="margin-bottom:14px">
+      <div class="kv"><span>가동률</span><b style="color:${uptimePillClass(j.uptimePct)==='good'?'var(--good)':uptimePillClass(j.uptimePct)==='warn'?'var(--warn)':'var(--crit)'}">${j.uptimePct.toFixed(3)}%</b></div>
+      <div class="kv"><span>장애 횟수</span><b>${j.failureCount}</b></div>
+      <div class="kv"><span>MTTR (평균 복구 시간)</span><b>${fmtDuration(j.mttrMs)}</b></div>
+      <div class="kv"><span>MTBF (평균 무고장 시간)</span><b>${fmtDuration(j.mtbfMs)}</b></div>
+      <div class="kv"><span>점검 제외 시간</span><b>${fmtDuration(j.maintenanceMs)}</b></div>
+      <div class="kv"><span>데이터 누락 시간</span><b>${fmtDuration(j.collectionGapMs)}</b></div>
+    </div>
+    <div class="card" style="margin-bottom:14px"><div class="card-head"><h3>일별 가동률</h3></div>
+      <div style="height:160px"><canvas id="slaDetailChart"></canvas></div>
+    </div>
+    <div class="card-head"><h3>장애 이력</h3></div>
+    <div class="table-wrap"><table class="data reg-device-table">
+      <thead><tr><th>시작</th><th>지속 시간</th><th>심각도</th>${kind==='group'?'<th>장비</th>':''}<th>내용</th></tr></thead>
+      <tbody>${incidents.slice(0,100).map(i=>`<tr>
+        <td style="font-size:11px;white-space:nowrap">${fmtWhen(i.firstOccurredAt)}</td>
+        <td class="mono">${i.ongoing?'진행 중':fmtDuration(i.durationMs)}</td>
+        <td><span class="pill ${i.severity==='crit'?'crit':'warn'}">${i.severity==='crit'?'위험':'주의'}</span></td>
+        ${kind==='group'?`<td>${escapeHtml(i.deviceName||'')}</td>`:''}
+        <td style="font-size:11.5px">${escapeHtml(i.message)}</td>
+      </tr>`).join('') || `<tr><td colspan="${kind==='group'?5:4}"><div class="empty-note">장애 이력이 없습니다</div></td></tr>`}</tbody>
+    </table></div>
+  `;
+  destroyChart('slaDetail');
+  charts.slaDetail = barChart($('#slaDetailChart'),
+    buckets.map(b=> new Date(b.periodStart).toLocaleDateString('ko-KR', {month:'numeric', day:'numeric'})),
+    buckets.map(b=> b.uptimePct),
+    buckets.map(b=> b.uptimePct>=99.9?'#00b087':b.uptimePct>=99?'#e6960f':'#ef3b5c'));
+}
+function closeSlaDetailModal(){
+  $('#slaDetailOverlay').classList.remove('show');
+  $('#slaDetailModal').classList.remove('show');
+  destroyChart('slaDetail');
+}
+$('#slaDetailCloseBtn').addEventListener('click', closeSlaDetailModal);
+$('#slaDetailOverlay').addEventListener('click', closeSlaDetailModal);
+function renderSla(){
+  // Historical report, not live telemetry -- loaded once per page visit
+  // (+ explicit 조회/필터 button clicks), not re-fetched on the 2.2s poll
+  // tick like every monitoring view is.
+  if(slaLoaded) return;
+  slaLoaded = true;
+  loadSlaOverview();
+}
+
 /* ================= 2-4 알림 채널 ================= */
 let channelsLoaded = false;
 function channelCardHtml(prefix, title, sub, bodyHtml, testable){
@@ -4529,6 +4734,7 @@ const VIEWS = {
   facility: {skeleton:renderFacilitySkeleton, render:renderFacility, title:'전산실 설비 관리 (FMS)', sub:'UPS · 항온항습기 · 전원 설비 모니터링'},
   incidents: {skeleton:renderIncidentsSkeleton, render:renderIncidents, title:'이벤트 / 장애 관리', sub:'전체 영역 통합 이벤트 로그 및 조치 이력'},
   register: {skeleton:renderRegisterSkeleton, render:renderRegister, title:'장비 등록', sub:'신규 서버 · DB · 네트워크 · 설비 등록 및 관리'},
+  sla: {skeleton:renderSlaSkeleton, render:renderSla, title:'가동률 / SLA', sub:'장비·그룹별 가동률, 장애 통계, MTTR/MTBF'},
   security: {skeleton:renderSecuritySkeleton, render:renderSecurity, title:'보안', sub:'2단계 인증(2FA)과 API 토큰 관리'},
   channels: {skeleton:renderChannelsSkeleton, render:renderChannels, title:'알림 채널', sub:'이메일·Slack·Teams·카카오톡·SMS 알림 채널 설정'},
   users: {skeleton:renderUsersSkeleton, render:renderUsers, title:'사용자 관리', sub:'로그인 계정 및 권한 관리 (ADMIN)'},

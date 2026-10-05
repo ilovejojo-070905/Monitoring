@@ -23,3 +23,11 @@ pycryptodomex==3.23.0
 # scan) -- qrcode is pure Python, its SVG output path needs no Pillow, and
 # its only dependency is colorama (already transitively present).
 qrcode==8.0
+# 3-2 보고서 내보내기: PDF/Excel generation. Both pure-Python-friendly on
+# Windows (reportlab ships prebuilt wheels for its Pillow dependency, no
+# build toolchain needed) -- hand-rolling either file format is far riskier
+# than the QR-encoding precedent above (a PDF with broken table/page-break
+# logic, or an XLSX with a malformed zip/XML structure, fails in ways that
+# are hard to catch without opening the file in real Acrobat/Excel).
+reportlab==5.0.1
+openpyxl==3.1.5

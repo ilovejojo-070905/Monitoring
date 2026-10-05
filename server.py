@@ -25,7 +25,7 @@ import storage
 import validation
 import totp
 from applog import app_logger, safe_log_value
-from collector import state, scheduler, health, metrics, thresholds, maintenance
+from collector import state, scheduler, health, metrics, thresholds, maintenance, sla
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
 from collector import snmp_collector
@@ -1440,6 +1440,89 @@ def api_escalation_log():
     incident_id = int(incident_id) if incident_id else None
     limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
     return jsonify({'log': storage.load_escalation_log(incident_id, limit)})
+
+
+# ------------------------------------------------- 3-1 가동률/SLA 리포트 --
+_SLA_MAX_RANGE_MS = 370 * 86400 * 1000  # a little over a year -- generous, but not "compute since epoch"
+
+
+def _sla_range_params():
+    """start/end are explicit epoch-ms query params (no implicit "since
+    forever" default -- the ticket itself calls out that the measurement
+    period must be stated), defaulting to the last 30 days when omitted.
+    granularity is optional; its absence means "one number for the whole
+    range" rather than a bucketed series."""
+    now_ms = int(time.time() * 1000)
+    end_ms = validation.clamp_int(request.args.get('end'), 0, now_ms + _SLA_MAX_RANGE_MS, now_ms)
+    start_ms = validation.clamp_int(request.args.get('start'), 0, end_ms, end_ms - 30 * 86400 * 1000)
+    if end_ms - start_ms > _SLA_MAX_RANGE_MS:
+        start_ms = end_ms - _SLA_MAX_RANGE_MS
+    granularity = request.args.get('granularity') or None
+    if granularity not in (None, 'day', 'week', 'month'):
+        granularity = None
+    return start_ms, end_ms, granularity
+
+
+@app.get('/api/sla/settings')
+@require_role('VIEWER')
+def api_get_sla_settings():
+    return jsonify(storage.get_sla_settings_public())
+
+
+@app.put('/api/sla/settings')
+@require_role('OPERATOR')
+def api_set_sla_settings():
+    body = request.get_json(force=True)
+    severities = body.get('downtimeSeverities')
+    if not isinstance(severities, list) or not severities or any(s not in ('warn', 'crit') for s in severities):
+        return jsonify({'error': 'downtimeSeverities는 warn/crit로만 구성된 목록이어야 합니다'}), 400
+    storage.set_sla_settings(severities)
+    audit('SET_SLA_SETTINGS', details=','.join(severities))
+    return jsonify({'ok': True})
+
+
+@app.get('/api/sla/device/<device_id>')
+@require_role('VIEWER')
+def api_sla_device(device_id):
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    start_ms, end_ms, granularity = _sla_range_params()
+    report = sla.device_uptime_report(device_row, start_ms, end_ms)
+    if granularity:
+        report['buckets'] = sla.bucketed_device_report(device_row, start_ms, end_ms, granularity)
+    return jsonify(report)
+
+
+@app.get('/api/sla/group/<string:name>')
+@require_role('VIEWER')
+def api_sla_group(name):
+    members = storage.devices_in_group(name)
+    if not members:
+        return jsonify({'error': '해당 그룹에 속한 장비가 없습니다'}), 404
+    start_ms, end_ms, granularity = _sla_range_params()
+    report = sla.group_uptime_report(name, members, start_ms, end_ms)
+    if granularity:
+        report['buckets'] = [
+            sla.group_uptime_report(name, members, b_start, b_end)
+            for b_start, b_end in sla._bucket_bounds(start_ms, end_ms, granularity)
+            if max(b_start, start_ms) < min(b_end, end_ms)
+        ]
+    return jsonify(report)
+
+
+@app.get('/api/sla/overview')
+@require_role('VIEWER')
+def api_sla_overview():
+    """One summary row per device, for the 가동률 리포트 화면's default
+    landing table -- the per-device/per-group detail endpoints above are
+    for drilling into one target with bucketed history."""
+    start_ms, end_ms, _ = _sla_range_params()
+    devices = storage.load_devices()
+    rows = [sla.device_uptime_report(d, start_ms, end_ms) for d in devices]
+    groups = sorted({(d.get('fields') or {}).get('group') for d in devices} - {None})
+    group_rows = [sla.group_uptime_report(g, storage.devices_in_group(g), start_ms, end_ms) for g in groups]
+    return jsonify({'periodStart': start_ms, 'periodEnd': end_ms, 'devices': rows, 'groups': group_rows})
 
 
 @app.post('/api/agent/report')
