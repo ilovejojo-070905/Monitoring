@@ -2561,7 +2561,10 @@ function renderRegisterSkeleton(){
           </div>
 
           <div class="form-grid" data-group="net" style="margin-top:14px;display:none">
-            <div class="field"><label>유형</label><select id="f-nettype"><option>공유기</option><option>L2 Switch</option><option>L3 Switch</option><option>L4 Switch</option><option>Backbone</option><option>Firewall</option><option>HUB</option><option>NAS</option><option>기타</option></select></div>
+            <div class="field"><label>유형</label>
+              <select id="f-nettype"><option>공유기</option><option>L2 Switch</option><option>L3 Switch</option><option>L4 Switch</option><option>Backbone</option><option>Firewall</option><option>HUB</option><option>NAS</option><option>기타</option></select>
+              <input type="text" id="f-nettype-other" placeholder="유형을 직접 입력하세요" maxlength="40" style="display:none;margin-top:6px">
+            </div>
             <div class="field"><label>역할</label><input type="text" id="f-role-net" placeholder="예: 거실 공유기"></div>
           </div>
 
@@ -2712,6 +2715,17 @@ function renderRegisterSkeleton(){
     $$('#reg-form [data-mode-group]').forEach(g=>{ g.style.display = g.dataset.modeGroup===regMode ? '' : 'none'; });
     $('#f-ip-label').textContent = (regMode==='ping'||regMode==='snmp') ? 'IP 주소 *' : 'IP 주소 (선택)';
     updateSnmpFieldVisibility();
+    updateNettypeOtherVisibility();
+  }
+  // 네트워크 유형 "기타" 선택 시 직접 입력란을 보여준다 -- 선택이 아닌 값은
+  // 항상 비워서, 드롭다운을 다시 프리셋으로 바꿨을 때 안 보이는 기존 입력값이
+  // 제출에 섞여 들어가는 일이 없게 한다.
+  function updateNettypeOtherVisibility(){
+    const sel = $('#f-nettype'), other = $('#f-nettype-other');
+    if(!sel || !other) return;
+    const isOther = sel.value === '기타';
+    other.style.display = isOther ? '' : 'none';
+    if(!isOther) other.value = '';
   }
   // v3 vs v1/v2c sub-layout (Community field vs the username/protocol/
   // password block) and, within v3, which of the auth/priv rows apply at
@@ -2757,6 +2771,7 @@ function renderRegisterSkeleton(){
   ['f-ip','f-snmp-version','f-snmp-port','f-snmp-community','f-snmp-v3-username',
    'f-snmp-v3-seclevel','f-snmp-v3-authproto','f-snmp-v3-authpw','f-snmp-v3-privproto','f-snmp-v3-privpw']
     .forEach(id=> $('#'+id).addEventListener('input', markSnmpUntested));
+  $('#f-nettype').addEventListener('change', updateNettypeOtherVisibility);
   $('#f-snmp-version').addEventListener('change', updateSnmpFieldVisibility);
   $('#f-snmp-v3-seclevel').addEventListener('change', updateSnmpFieldVisibility);
   function buildSnmpTestPayload(){
@@ -3048,7 +3063,19 @@ function renderRegisterSkeleton(){
     $('#f-threshold-fields').innerHTML = thresholdFieldsHtml('f-th', entity.thresholds || {});
     if(cat==='server'){ $('#f-os').value = entity.os||'linux'; $('#f-role-server').value = entity.role||''; }
     else if(cat==='db'){ $('#f-engine').value = entity.engine||'Oracle'; $('#f-role-db').value = entity.role||''; }
-    else if(cat==='net'){ $('#f-nettype').value = entity.type||'공유기'; $('#f-role-net').value = entity.role||''; }
+    else if(cat==='net'){
+      const nettypeSelEl = $('#f-nettype');
+      const presetMatch = [...nettypeSelEl.options].some(o=> o.value===(entity.type||''));
+      if(entity.type && !presetMatch){
+        nettypeSelEl.value = '기타';
+        $('#f-nettype-other').value = entity.type;
+      } else {
+        nettypeSelEl.value = entity.type || '공유기';
+        $('#f-nettype-other').value = '';
+      }
+      updateNettypeOtherVisibility();
+      $('#f-role-net').value = entity.role||'';
+    }
     else if(cat==='fac'){ $('#f-factype').value = entity.type||'UPS'; $('#f-role-fac').value = entity.role||''; }
     if(entity.mode==='snmp'){
       $('#f-snmp-community').value = '';
@@ -3094,7 +3121,17 @@ function renderRegisterSkeleton(){
     }catch(thErr){ errEl.textContent = thErr.message; return; }
     if(regCategory==='server'){ fields.os=$('#f-os').value; fields.role=$('#f-role-server').value.trim(); }
     else if(regCategory==='db'){ fields.engine=$('#f-engine').value; fields.role=$('#f-role-db').value.trim(); }
-    else if(regCategory==='net'){ fields.type=$('#f-nettype').value; fields.role=$('#f-role-net').value.trim(); }
+    else if(regCategory==='net'){
+      const nettypeSel = $('#f-nettype').value;
+      if(nettypeSel==='기타'){
+        const customType = $('#f-nettype-other').value.trim();
+        if(!customType){ errEl.textContent = '유형을 직접 입력해주세요'; return; }
+        fields.type = customType;
+      } else {
+        fields.type = nettypeSel;
+      }
+      fields.role=$('#f-role-net').value.trim();
+    }
     else if(regCategory==='fac'){ fields.type=$('#f-factype').value; fields.role=$('#f-role-fac').value.trim(); }
     if(effMode==='snmp'){
       if(!editingDeviceId && !snmpTestPassed){
