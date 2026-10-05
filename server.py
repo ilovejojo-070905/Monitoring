@@ -257,17 +257,18 @@ def require_role(min_role='VIEWER'):
             if storage.ROLE_RANK.get(session.get('role'), -1) < storage.ROLE_RANK.get(min_role, 0):
                 audit('AUTHORIZATION_FAILURE', target=request.path, details=f"role={session.get('role')} needs {min_role}")
                 return jsonify({'error': 'forbidden'}), 403
-            # 5-1 "관리자 계정 2FA 적용 정책": every OPERATOR+-ranked route is
-            # blocked for an ADMIN session until 2FA is enrolled -- VIEWER-
-            # ranked routes stay open, which is what actually lets them
-            # reach every /api/auth/totp/* endpoint (all VIEWER-ranked) to
-            # enroll in the first place, log out, or change their password,
-            # with no separate exemption list to keep in sync as routes
-            # change.
-            if session.get('role') == 'ADMIN' and min_role != 'VIEWER':
-                user_row = storage.get_user_by_username(username)
-                if user_row and not user_row['totp_enabled']:
-                    return jsonify({'error': 'totp_enrollment_required'}), 403
+            # 5-1 "관리자 계정 2FA 적용 정책" 강제 게이트: 2026-10-05 사용자
+            # 요청으로 비활성화 -- 2FA 자체(등록/로그인 시 검증/관리자의 타
+            # 계정 초기화)는 전부 그대로 동작하고, ADMIN 계정이 원하면 언제든
+            # 자발적으로 켤 수 있다. 다만 "2FA 안 켜면 OPERATOR+ 작업을 전부
+            # 막는다"는 강제성만 뺐다. 다시 켜려면 아래 블록의 주석을 풀면
+            # 된다 (원래 동작: ADMIN 세션인데 2FA 미설정이면 VIEWER급을 뺀
+            # 모든 요청을 totp_enrollment_required 403으로 거부).
+            #
+            # if session.get('role') == 'ADMIN' and min_role != 'VIEWER':
+            #     user_row = storage.get_user_by_username(username)
+            #     if user_row and not user_row['totp_enabled']:
+            #         return jsonify({'error': 'totp_enrollment_required'}), 403
             if request.method in CSRF_METHODS:
                 token = request.headers.get('X-CSRF-Token')
                 if not token or token != session.get('csrf'):
