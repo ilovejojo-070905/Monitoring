@@ -2462,7 +2462,7 @@ function renderIncidents(){
   if(q) rows = rows.filter(i=> i.message.toLowerCase().includes(q) || i.source.toLowerCase().includes(q) || (i.category||'').toLowerCase().includes(q));
   $('#inc-tbody').innerHTML = rows.slice(0,80).map(i=>`
     <tr>
-      <td><span class="pill ${i.severity==='crit'?'crit':i.severity==='warn'?'warn':'info'}"><span class="dot"></span>${i.severity==='crit'?'위험':i.severity==='warn'?'주의':'정보'}</span></td>
+      <td><span class="pill ${i.severity==='crit'?'crit':i.severity==='warn'?'warn':'good'}"><span class="dot"></span>${i.severity==='crit'?'위험':i.severity==='warn'?'주의':'정보'}</span></td>
       <td class="mono">${i.time.toLocaleTimeString('ko-KR',{hour12:false})}</td>
       <td>${i.category}</td>
       <td class="name">${escapeHtml(i.source)}</td>
