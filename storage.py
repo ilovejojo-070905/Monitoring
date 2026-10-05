@@ -531,6 +531,39 @@ def init_db():
         attempts INTEGER NOT NULL
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_report_delivery_schedule ON report_delivery_log(schedule_id, run_at)')
+    # 3-4: 외부 공개 상태 페이지. `label`/`description` are the ONLY text an
+    # admin writes for public consumption -- device_id is resolved
+    # server-side to compute live status, but is NEVER itself serialized
+    # into a public API response (see collector/public_status.py's module
+    # docstring for the full "공개 정보와 내부 정보 분리" policy). Nothing
+    # is public by default -- `enabled` starts at 0, an admin must
+    # deliberately opt each service in.
+    conn.execute('''CREATE TABLE IF NOT EXISTS public_services(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        description TEXT,
+        enabled INTEGER DEFAULT 0,
+        display_order INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+    )''')
+    # 장애 공지/복구 공지: deliberately a SEPARATE, operator-authored channel
+    # from the internal incidents table -- an internal incident message can
+    # contain details (SNMP error text, IP-adjacent hints, device internals)
+    # that must never reach the public page, so nothing here is ever
+    # auto-generated from storage.add_incident()'s own rows. service_id
+    # NULL means a site-wide announcement (not tied to one service).
+    conn.execute('''CREATE TABLE IF NOT EXISTS public_announcements(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service_id INTEGER,
+        title TEXT NOT NULL,
+        body TEXT,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        created_by TEXT,
+        resolved_at INTEGER
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_public_announcements_created ON public_announcements(created_at)')
     conn.commit()
     conn.close()
     migrate_db()
@@ -2197,6 +2230,122 @@ def load_report_delivery_log(schedule_id=None, limit=50):
         q += ' WHERE schedule_id=?'
         params.append(schedule_id)
     q += ' ORDER BY run_at DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------------- 3-4 --
+def create_public_service(label, device_id, description):
+    conn = get_db()
+    now = int(time.time() * 1000)
+    max_order = conn.execute('SELECT COALESCE(MAX(display_order),0) m FROM public_services').fetchone()['m']
+    cur = conn.execute(
+        'INSERT INTO public_services(label,device_id,description,enabled,display_order,created_at) VALUES (?,?,?,0,?,?)',
+        (label, device_id, description, max_order + 1, now))
+    service_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return service_id
+
+
+def load_public_services():
+    """Full rows, device_id included -- for the AUTHENTICATED admin
+    management screen only. The public-facing serialization that strips
+    device_id/label-adjacent internals lives in collector/public_status.py,
+    never here."""
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM public_services ORDER BY display_order').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_public_service(service_id):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM public_services WHERE id=?', (service_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_public_service(service_id, label=None, description=None, enabled=None, display_order=None):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM public_services WHERE id=?', (service_id,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    d = dict(row)
+    conn.execute(
+        'UPDATE public_services SET label=?, description=?, enabled=?, display_order=? WHERE id=?',
+        (label if label is not None else d['label'],
+         description if description is not None else d['description'],
+         (1 if enabled else 0) if enabled is not None else d['enabled'],
+         display_order if display_order is not None else d['display_order'],
+         service_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_public_service(service_id):
+    conn = get_db()
+    conn.execute('DELETE FROM public_services WHERE id=?', (service_id,))
+    conn.execute('UPDATE public_announcements SET service_id=NULL WHERE service_id=?', (service_id,))
+    conn.commit()
+    conn.close()
+
+
+def create_public_announcement(service_id, title, body, status, created_by):
+    conn = get_db()
+    now = int(time.time() * 1000)
+    cur = conn.execute(
+        'INSERT INTO public_announcements(service_id,title,body,status,created_at,created_by) VALUES (?,?,?,?,?,?)',
+        (service_id, title, body, status, now, created_by))
+    ann_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return ann_id
+
+
+def update_public_announcement(ann_id, body=None, status=None):
+    """Appends the progress of an ongoing incident (조사 중 -> 확인됨 ->
+    모니터링 중 -> 해결됨) on the SAME announcement row rather than creating
+    a new one each time -- resolved_at is stamped the moment status is set
+    to 'resolved', same one-way transition the internal incidents table
+    uses for its own resolved_at."""
+    conn = get_db()
+    row = conn.execute('SELECT * FROM public_announcements WHERE id=?', (ann_id,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    d = dict(row)
+    new_status = status if status is not None else d['status']
+    resolved_at = d['resolved_at']
+    if new_status == 'resolved' and not resolved_at:
+        resolved_at = int(time.time() * 1000)
+    conn.execute(
+        'UPDATE public_announcements SET body=?, status=?, resolved_at=? WHERE id=?',
+        (body if body is not None else d['body'], new_status, resolved_at, ann_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_public_announcement(ann_id):
+    conn = get_db()
+    conn.execute('DELETE FROM public_announcements WHERE id=?', (ann_id,))
+    conn.commit()
+    conn.close()
+
+
+def load_public_announcements(service_id=None, limit=50):
+    conn = get_db()
+    q = 'SELECT * FROM public_announcements'
+    params = []
+    if service_id is not None:
+        q += ' WHERE service_id=?'
+        params.append(service_id)
+    q += ' ORDER BY created_at DESC LIMIT ?'
     params.append(limit)
     rows = conn.execute(q, params).fetchall()
     conn.close()

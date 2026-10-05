@@ -560,6 +560,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.2c1.7.5 3 2.1 3 4s-1.3 3.5-3 4"/><path d="M20 20c0-2.6-1.7-4.8-4-5.6"/></svg>
       사용자 관리
     </button>
+    <button class="nav-item" data-view="publicstatus" id="nav-publicstatus" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+      공개 상태 페이지
+    </button>
     </div></div>
 
     <div class="sidebar-foot">
@@ -623,6 +627,7 @@
     <section class="view" data-view="sla" id="view-sla"></section>
     <section class="view" data-view="security" id="view-security"></section>
     <section class="view" data-view="channels" id="view-channels"></section>
+    <section class="view" data-view="publicstatus" id="view-publicstatus"></section>
     <section class="view" data-view="users" id="view-users"></section>
 
   </main>
@@ -1010,6 +1015,8 @@ function applyRoleUI(){
   if(registerNav) registerNav.style.display = isOperatorPlus ? '' : 'none';
   const channelsNav = $('#nav-channels');
   if(channelsNav) channelsNav.style.display = isOperatorPlus ? '' : 'none';
+  const publicStatusNav = $('#nav-publicstatus');
+  if(publicStatusNav) publicStatusNav.style.display = isOperatorPlus ? '' : 'none';
   // 1-4 완료 기준: 조회자는 "관리" 그룹에 들어갈 항목이 하나도 없으므로
   // 빈 분류 라벨만 남지 않도록 그룹 전체를 숨긴다.
   const adminGroupLabel = document.querySelector('.nav-group-label[data-group="navgrp-admin"]');
@@ -4130,6 +4137,195 @@ function renderChannels(){
   loadChannelSettings();
 }
 
+/* ================= 3-4 공개 상태 페이지 ================= */
+let publicStatusLoaded = false;
+const PS_ANN_STATUS_LABEL = {investigating:'조사 중', identified:'원인 확인', monitoring:'모니터링 중', resolved:'해결됨'};
+function renderPublicStatusSkeleton(){
+  const el = $('#view-publicstatus');
+  el.innerHTML = `
+    <div class="card" style="border-color:var(--warn)">
+      <div class="card-head"><div><h3>⚠ 외부 공개 전 보안 검토</h3><span class="sub">아래에서 등록-활성화한 서비스와 공지만 <a href="/status" target="_blank" rel="noopener" style="color:var(--accent)">/status</a> 공개 페이지에 노출됩니다. 공개 표시 이름은 실제 장비명과 다르게 설정하세요 (예: "Cisco" 대신 "사내 네트워크"). IP, 상세 자원 수치, SNMP 정보, 장비명은 어떤 경우에도 공개 페이지에 표시되지 않습니다. 외부에 실제로 공개(방화벽/도메인 연결 등)하기 전, 이 화면에서 선택한 서비스 목록과 공개 페이지 미리보기를 다시 한 번 확인하세요.</span></div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>공개 서비스 등록</h3></div>
+      <form id="ps-svc-form" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <div class="field" style="flex:1;min-width:140px"><label>공개 표시 이름</label><input type="text" id="ps-svc-label" placeholder="예: 사내 네트워크" maxlength="80" required></div>
+        <div class="field" style="flex:1;min-width:160px"><label>연결할 내부 장비</label><select id="ps-svc-device" required></select></div>
+        <div class="field" style="flex:1.4;min-width:180px"><label>설명 (선택, 공개됨)</label><input type="text" id="ps-svc-desc" maxlength="300"></div>
+        <button type="submit" class="btn primary">추가</button>
+      </form>
+      <div id="ps-svc-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
+      <div id="ps-svc-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>장애 / 복구 공지 작성</h3></div>
+      <form id="ps-ann-form" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="flex:1;min-width:160px"><label>제목</label><input type="text" id="ps-ann-title" maxlength="150" required></div>
+          <div class="field" style="min-width:140px"><label>대상 서비스 (선택)</label><select id="ps-ann-service"><option value="">전체 (사이트 공지)</option></select></div>
+          <div class="field" style="min-width:130px"><label>상태</label>
+            <select id="ps-ann-status">
+              <option value="investigating">조사 중</option><option value="identified">원인 확인</option>
+              <option value="monitoring">모니터링 중</option><option value="resolved">해결됨</option>
+            </select>
+          </div>
+        </div>
+        <div class="field"><label>내용 (선택, 공개됨)</label><textarea id="ps-ann-body" rows="2" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-family:inherit;box-sizing:border-box;resize:vertical"></textarea></div>
+        <div><button type="submit" class="btn primary">공지 등록</button></div>
+      </form>
+      <div id="ps-ann-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
+      <div id="ps-ann-list"></div>
+    </div>
+  `;
+  wirePublicStatusHandlers();
+}
+function populatePublicServiceDeviceOptions(){
+  const sel = $('#ps-svc-device');
+  if(!sel) return;
+  const prevValue = sel.value;
+  const all = [...SERVERS, ...DBS, ...NETS, ...FACS];
+  sel.innerHTML = all.map(d=>`<option value="${escapeHtml(d.id)}">${escapeHtml(d.name)}</option>`).join('') || '<option value="">(등록된 장비 없음)</option>';
+  if([...sel.options].some(o=>o.value===prevValue)) sel.value = prevValue;
+}
+async function renderPublicServiceList(){
+  const listEl = $('#ps-svc-list');
+  if(!listEl) return;
+  try{
+    const r = await apiFetch('/api/public-status/services');
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || '불러오기 실패');
+    const annServiceSel = $('#ps-ann-service');
+    if(annServiceSel){
+      const prev = annServiceSel.value;
+      annServiceSel.innerHTML = '<option value="">전체 (사이트 공지)</option>'
+        + j.services.map(s=>`<option value="${s.id}">${escapeHtml(s.label)}</option>`).join('');
+      if([...annServiceSel.options].some(o=>o.value===prev)) annServiceSel.value = prev;
+    }
+    if(!j.services.length){
+      listEl.innerHTML = '<div class="empty-note">등록된 공개 서비스가 없습니다.</div>';
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>공개 표시 이름</th><th>연결 장비 (내부용)</th><th>설명</th><th>상태</th><th></th></tr></thead>
+        <tbody>${j.services.map(s=>`
+          <tr>
+            <td class="name">${escapeHtml(s.label)}</td>
+            <td style="font-size:11.5px;color:var(--text-dim)">${escapeHtml(s.deviceName)}</td>
+            <td style="font-size:11.5px">${escapeHtml(s.description||'-')}</td>
+            <td>${s.enabled?'<span class="pill good" style="font-size:9px">공개 중</span>':'<span class="pill neutral" style="font-size:9px">비공개</span>'}</td>
+            <td style="display:flex;gap:6px">
+              <button type="button" class="btn" data-ps-toggle="${s.id}" data-enabled="${s.enabled?1:0}">${s.enabled?'비공개로 전환':'공개하기'}</button>
+              <button type="button" class="btn" data-ps-del="${s.id}">삭제</button>
+            </td>
+          </tr>`).join('')}</tbody>
+      </table></div>`;
+    $$('[data-ps-toggle]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const enable = b.dataset.enabled !== '1';
+      if(enable){
+        const ok = await showConfirm('이 서비스를 외부 공개 상태 페이지에 표시할까요? 공개 표시 이름/설명이 누구나 볼 수 있는 상태가 됩니다.', {title:'서비스 공개', okText:'공개'});
+        if(!ok) return;
+      }
+      await apiFetch('/api/public-status/services/'+b.dataset.psToggle, {
+        method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: enable}),
+      });
+      renderPublicServiceList();
+    }));
+    $$('[data-ps-del]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const ok = await showConfirm('이 공개 서비스를 삭제할까요?', {title:'공개 서비스 삭제', okText:'삭제'});
+      if(!ok) return;
+      await apiFetch('/api/public-status/services/'+b.dataset.psDel, {method:'DELETE'});
+      renderPublicServiceList();
+    }));
+  }catch(err){
+    listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+  }
+}
+async function renderPublicAnnouncementList(){
+  const listEl = $('#ps-ann-list');
+  if(!listEl) return;
+  try{
+    const r = await apiFetch('/api/public-status/announcements');
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || '불러오기 실패');
+    if(!j.announcements.length){
+      listEl.innerHTML = '<div class="empty-note">작성된 공지가 없습니다.</div>';
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>제목</th><th>상태</th><th>작성 시각</th><th>해결 시각</th><th></th></tr></thead>
+        <tbody>${j.announcements.map(a=>`
+          <tr>
+            <td class="name">${escapeHtml(a.title)}</td>
+            <td><span class="pill ${a.status==='resolved'?'good':'warn'}">${PS_ANN_STATUS_LABEL[a.status]||a.status}</span></td>
+            <td style="font-size:11px;white-space:nowrap">${fmtWhen(a.created_at)}</td>
+            <td style="font-size:11px;white-space:nowrap">${a.resolved_at?fmtWhen(a.resolved_at):'-'}</td>
+            <td style="display:flex;gap:6px">
+              ${a.status!=='resolved'?`<button type="button" class="btn" data-ps-ann-resolve="${a.id}">해결됨으로 표시</button>`:''}
+              <button type="button" class="btn" data-ps-ann-del="${a.id}">삭제</button>
+            </td>
+          </tr>`).join('')}</tbody>
+      </table></div>`;
+    $$('[data-ps-ann-resolve]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      await apiFetch('/api/public-status/announcements/'+b.dataset.psAnnResolve, {
+        method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status:'resolved'}),
+      });
+      renderPublicAnnouncementList();
+    }));
+    $$('[data-ps-ann-del]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const ok = await showConfirm('이 공지를 삭제할까요?', {title:'공지 삭제', okText:'삭제'});
+      if(!ok) return;
+      await apiFetch('/api/public-status/announcements/'+b.dataset.psAnnDel, {method:'DELETE'});
+      renderPublicAnnouncementList();
+    }));
+  }catch(err){
+    listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+  }
+}
+function wirePublicStatusHandlers(){
+  populatePublicServiceDeviceOptions();
+  $('#ps-svc-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const errEl = $('#ps-svc-error');
+    errEl.textContent = '';
+    const body = {
+      label: $('#ps-svc-label').value.trim(), deviceId: $('#ps-svc-device').value,
+      description: $('#ps-svc-desc').value.trim(),
+    };
+    const r = await apiFetch('/api/public-status/services', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error||'등록 실패'; return; }
+    $('#ps-svc-label').value = ''; $('#ps-svc-desc').value = '';
+    renderPublicServiceList();
+  });
+  $('#ps-ann-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const errEl = $('#ps-ann-error');
+    errEl.textContent = '';
+    const serviceVal = $('#ps-ann-service').value;
+    const body = {
+      title: $('#ps-ann-title').value.trim(), body: $('#ps-ann-body').value.trim(),
+      status: $('#ps-ann-status').value, serviceId: serviceVal ? parseInt(serviceVal) : null,
+    };
+    const r = await apiFetch('/api/public-status/announcements', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error||'등록 실패'; return; }
+    $('#ps-ann-title').value = ''; $('#ps-ann-body').value = '';
+    renderPublicAnnouncementList();
+  });
+}
+function renderPublicStatus(){
+  // Admin management page, not live telemetry -- load once, same reasoning
+  // as every other settings-shaped view (channels/security/sla): a 2.2s
+  // periodic re-render would wipe in-progress form input.
+  if(publicStatusLoaded) return;
+  publicStatusLoaded = true;
+  populatePublicServiceDeviceOptions();
+  renderPublicServiceList();
+  renderPublicAnnouncementList();
+}
+
 /* ================= USERS (ADMIN only -- server enforces this regardless) ================= */
 const ROLE_LABEL = {ADMIN:'관리자', OPERATOR:'운영자', VIEWER:'조회자'};
 function renderUsersSkeleton(){
@@ -4926,6 +5122,7 @@ const VIEWS = {
   sla: {skeleton:renderSlaSkeleton, render:renderSla, title:'가동률 / SLA', sub:'장비·그룹별 가동률, 장애 통계, MTTR/MTBF'},
   security: {skeleton:renderSecuritySkeleton, render:renderSecurity, title:'보안', sub:'2단계 인증(2FA)과 API 토큰 관리'},
   channels: {skeleton:renderChannelsSkeleton, render:renderChannels, title:'알림 채널', sub:'이메일·Slack·Teams·카카오톡·SMS 알림 채널 설정'},
+  publicstatus: {skeleton:renderPublicStatusSkeleton, render:renderPublicStatus, title:'공개 상태 페이지', sub:'외부에 공개할 서비스와 장애/복구 공지 관리'},
   users: {skeleton:renderUsersSkeleton, render:renderUsers, title:'사용자 관리', sub:'로그인 계정 및 권한 관리 (ADMIN)'},
 };
 let currentView = 'overview';

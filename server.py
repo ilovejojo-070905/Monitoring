@@ -25,7 +25,7 @@ import storage
 import validation
 import totp
 from applog import app_logger, safe_log_value
-from collector import state, scheduler, health, metrics, thresholds, maintenance, sla, report_delivery
+from collector import state, scheduler, health, metrics, thresholds, maintenance, sla, report_delivery, public_status
 import reports
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
@@ -141,6 +141,32 @@ def _ip_rate_limited(ip):
     while dq and now - dq[0] > IP_WINDOW_SEC:
         dq.popleft()
     if len(dq) >= IP_MAX_ATTEMPTS:
+        return True
+    dq.append(now)
+    return False
+
+
+# 3-4 "외부 접근을 위한 ... 접근 제어 검토": the public status page has no
+# login to rate-limit attempts against, but it's still an unauthenticated
+# endpoint reachable by anyone on the internet once exposed -- a separate,
+# more generous limiter (page views legitimately fire several API calls at
+# once) than the login one, so a scraping/DoS-ish burst from one IP can't
+# peg the collector thread pool that's also serving the real monitoring
+# workload.
+_public_requests_by_ip = defaultdict(deque)
+PUBLIC_IP_WINDOW_SEC = 60
+PUBLIC_IP_MAX_REQUESTS = 120
+
+
+def _public_rate_limited(ip):
+    now = time.time()
+    stale = [k for k, dq in _public_requests_by_ip.items() if not dq or now - dq[-1] > PUBLIC_IP_WINDOW_SEC]
+    for k in stale:
+        del _public_requests_by_ip[k]
+    dq = _public_requests_by_ip[ip]
+    while dq and now - dq[0] > PUBLIC_IP_WINDOW_SEC:
+        dq.popleft()
+    if len(dq) >= PUBLIC_IP_MAX_REQUESTS:
         return True
     dq.append(now)
     return False
@@ -1665,6 +1691,149 @@ def api_report_delivery_log():
     for row in log:
         row['scheduleName'] = schedule_names.get(row['schedule_id'], f"#{row['schedule_id']}")
     return jsonify({'log': log})
+
+
+# -------------------------------------------- 3-4 외부 공개 상태 페이지 (관리) --
+# 아래 /api/public-status/* 는 전부 OPERATOR+ 인증이 필요한 "관리" 라우트다
+# (어떤 장비를 공개할지, 공지를 작성/해제하는 행위는 그 자체로 내부 정보를
+# 다루는 민감한 작업이므로). 실제 외부에서 호출되는 공개 라우트는 이 섹션
+# 아래의 /api/public/* 이며, 그쪽은 의도적으로 require_role이 전혀 없다 --
+# collector/public_status.py 모듈 docstring에 "공개 정보와 내부 정보 분리"
+# 정책 전체가 적혀 있다.
+@app.get('/api/public-status/services')
+@require_role('OPERATOR')
+def api_list_public_services():
+    services = storage.load_public_services()
+    device_names = {d['id']: d['name'] for d in storage.load_devices()}
+    for s in services:
+        s['deviceName'] = device_names.get(s['device_id'], '(삭제된 장비)')
+    return jsonify({'services': services})
+
+
+@app.post('/api/public-status/services')
+@require_role('OPERATOR')
+def api_create_public_service():
+    body = request.get_json(force=True)
+    label = (body.get('label') or '').strip()
+    device_id = (body.get('deviceId') or '').strip()
+    description = (body.get('description') or '').strip() or None
+    if not label or len(label) > 80:
+        return jsonify({'error': '공개 표시 이름을 입력해주세요 (80자 이하, 장비명이 아닌 서비스명을 권장합니다)'}), 400
+    if not storage.load_device(device_id):
+        return jsonify({'error': '대상 장비를 찾을 수 없습니다'}), 404
+    if description and len(description) > 300:
+        return jsonify({'error': '설명은 300자 이하여야 합니다'}), 400
+    service_id = storage.create_public_service(label, device_id, description)
+    audit('CREATE_PUBLIC_SERVICE', target=str(service_id), details=label)
+    return jsonify({'ok': True, 'id': service_id})
+
+
+@app.put('/api/public-status/services/<int:service_id>')
+@require_role('OPERATOR')
+def api_update_public_service(service_id):
+    if not storage.get_public_service(service_id):
+        return jsonify({'error': 'not found'}), 404
+    body = request.get_json(force=True)
+    label = body.get('label')
+    if label is not None:
+        label = label.strip()
+        if not label or len(label) > 80:
+            return jsonify({'error': '공개 표시 이름을 입력해주세요 (80자 이하)'}), 400
+    description = body.get('description')
+    if description is not None:
+        description = description.strip() or None
+        if description and len(description) > 300:
+            return jsonify({'error': '설명은 300자 이하여야 합니다'}), 400
+    enabled = body.get('enabled')
+    display_order = body.get('displayOrder')
+    storage.update_public_service(service_id, label=label, description=description, enabled=enabled, display_order=display_order)
+    audit('UPDATE_PUBLIC_SERVICE', target=str(service_id),
+          details=f"enabled={enabled}" if enabled is not None else None)
+    return jsonify({'ok': True})
+
+
+@app.delete('/api/public-status/services/<int:service_id>')
+@require_role('OPERATOR')
+def api_delete_public_service(service_id):
+    storage.delete_public_service(service_id)
+    audit('DELETE_PUBLIC_SERVICE', target=str(service_id))
+    return jsonify({'ok': True})
+
+
+_PUBLIC_ANNOUNCEMENT_STATUSES = ('investigating', 'identified', 'monitoring', 'resolved')
+
+
+@app.get('/api/public-status/announcements')
+@require_role('OPERATOR')
+def api_list_public_announcements():
+    limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
+    return jsonify({'announcements': storage.load_public_announcements(limit=limit)})
+
+
+@app.post('/api/public-status/announcements')
+@require_role('OPERATOR')
+def api_create_public_announcement():
+    body = request.get_json(force=True)
+    title = (body.get('title') or '').strip()
+    bodytext = (body.get('body') or '').strip() or None
+    status = body.get('status') or 'investigating'
+    service_id = body.get('serviceId')
+    if not title or len(title) > 150:
+        return jsonify({'error': '공지 제목을 입력해주세요 (150자 이하)'}), 400
+    if status not in _PUBLIC_ANNOUNCEMENT_STATUSES:
+        return jsonify({'error': 'status가 올바르지 않습니다'}), 400
+    if service_id is not None and not storage.get_public_service(service_id):
+        return jsonify({'error': '대상 서비스를 찾을 수 없습니다'}), 404
+    ann_id = storage.create_public_announcement(service_id, title, bodytext, status, _current_username())
+    audit('CREATE_PUBLIC_ANNOUNCEMENT', target=str(ann_id), details=title)
+    return jsonify({'ok': True, 'id': ann_id})
+
+
+@app.put('/api/public-status/announcements/<int:ann_id>')
+@require_role('OPERATOR')
+def api_update_public_announcement(ann_id):
+    body = request.get_json(force=True)
+    status = body.get('status')
+    if status is not None and status not in _PUBLIC_ANNOUNCEMENT_STATUSES:
+        return jsonify({'error': 'status가 올바르지 않습니다'}), 400
+    bodytext = body.get('body')
+    if not storage.update_public_announcement(ann_id, body=bodytext, status=status):
+        return jsonify({'error': 'not found'}), 404
+    audit('UPDATE_PUBLIC_ANNOUNCEMENT', target=str(ann_id), details=f"status={status}" if status else None)
+    return jsonify({'ok': True})
+
+
+@app.delete('/api/public-status/announcements/<int:ann_id>')
+@require_role('OPERATOR')
+def api_delete_public_announcement(ann_id):
+    storage.delete_public_announcement(ann_id)
+    audit('DELETE_PUBLIC_ANNOUNCEMENT', target=str(ann_id))
+    return jsonify({'ok': True})
+
+
+# -------------------------------------------- 3-4 외부 공개 상태 페이지 (공개) --
+# 의도적으로 require_role이 없다 -- 이 두 라우트와 /status 페이지 라우트는
+# session을 전혀 읽지 않고, 항상 동일한 (누구나 볼 수 있는) 데이터만
+# 반환한다. collector/public_status.py가 실제 필드 단위 분리를 담당한다.
+@app.get('/api/public/status')
+def api_public_status():
+    if _public_rate_limited(request.remote_addr):
+        return jsonify({'error': 'rate_limited'}), 429
+    return jsonify({'services': public_status.public_services_view()})
+
+
+@app.get('/api/public/announcements')
+def api_public_announcements():
+    if _public_rate_limited(request.remote_addr):
+        return jsonify({'error': 'rate_limited'}), 429
+    return jsonify({'announcements': public_status.public_announcements_view()})
+
+
+@app.get('/status')
+def public_status_page():
+    resp = send_from_directory(BASE_DIR, 'status.html')
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
 
 
 @app.post('/api/agent/report')
