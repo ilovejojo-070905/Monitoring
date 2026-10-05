@@ -2058,6 +2058,12 @@ def api_test_smtp():
     channel = EmailChannel(cfg['host'], cfg['port'], cfg['username'], cfg['password'], cfg['use_tls'])
     ok, err = channel.send(cfg['alert_to'], '[InfraSight] 테스트 알림',
                             'InfraSight 알림 설정이 정상적으로 동작합니다.')
+    # 1-2: the manual test button is a single attempt (no retry) -- a user
+    # clicking "테스트 발송" wants an immediate pass/fail, not a silent 30s
+    # wait while 3 attempts run. Still logged to the same history as the
+    # real incident-alert path so "실패 상황의 로그 확인" covers both.
+    storage.record_email_alert(int(time.time() * 1000), 'info', 'InfraSight', '테스트 알림 발송',
+                                cfg['alert_to'], 'success' if ok else 'failed', None if ok else err, 1)
     # The raw smtplib/SSL error can echo back connection internals (and in
     # principle the account being used) -- keep it in the audit log for the
     # admin to look up server-side, not in the HTTP response body.
@@ -2065,6 +2071,17 @@ def api_test_smtp():
     if not ok:
         return jsonify({'error': 'SMTP 발송에 실패했습니다. 감사 로그에서 자세한 내용을 확인하세요.'}), 502
     return jsonify({'ok': True})
+
+
+@app.get('/api/settings/smtp/log')
+@require_role('OPERATOR')
+def api_smtp_alert_log():
+    """1-2: every email alert attempt (장애 알림 + 수동 테스트 발송), success
+    and failure alike -- what "알림 성공·실패 로그 저장" means in the UI.
+    `error` here is smtplib's own exception text (e.g. "535 Authentication
+    failed"), never the password we sent -- same content already stored in
+    the audit log for TEST_SMTP, just queryable per-attempt here."""
+    return jsonify({'log': storage.load_email_alert_log(limit=100)})
 
 
 # ---------------------------------------------------------- 2-4 알림 채널 --

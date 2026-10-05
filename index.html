@@ -3783,7 +3783,7 @@ function renderSla(){
 
 /* ================= 2-4 알림 채널 ================= */
 let channelsLoaded = false;
-function channelCardHtml(prefix, title, sub, bodyHtml, testable){
+function channelCardHtml(prefix, title, sub, bodyHtml, testable, historyLog){
   return `
     <div class="card">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
@@ -3796,8 +3796,10 @@ function channelCardHtml(prefix, title, sub, bodyHtml, testable){
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
         <button type="button" class="btn primary" id="ch-${prefix}-save">저장</button>
         ${testable ? `<button type="button" class="btn" id="ch-${prefix}-test">테스트 발송</button>` : ''}
+        ${historyLog ? `<button type="button" class="btn" id="ch-${prefix}-log-btn">발송 이력</button>` : ''}
         <span id="ch-${prefix}-status" style="font-size:11.5px"></span>
       </div>
+      ${historyLog ? `<div id="ch-${prefix}-log-panel" style="display:none;margin-top:12px"></div>` : ''}
     </div>`;
 }
 function minSeveritySelectHtml(prefix){
@@ -3809,14 +3811,15 @@ function renderChannelsSkeleton(){
   const el = $('#view-channels');
   el.innerHTML = `
     ${channelCardHtml('smtp', '이메일 (SMTP)', '새/악화된 장애 발생 시 이메일로 알립니다', `
-      <div class="field"><label>SMTP 호스트</label><input type="text" id="ch-smtp-host" placeholder="예: smtp.gmail.com"></div>
-      <div class="field"><label>포트</label><input type="number" id="ch-smtp-port" placeholder="587"></div>
-      <div class="field"><label>사용자명 (발신 계정)</label><input type="text" id="ch-smtp-username"></div>
+      <div class="field" style="grid-column:1/-1"><span style="font-size:11px;color:var(--text-faint)">메일플러그(Mailplug) 사용 시 -- 서버: smtp.mailplug.co.kr · 포트: 465 (SSL, 아래 TLS 사용 여부와 무관하게 465는 항상 SSL로 접속합니다). 실제 발송 계정의 비밀번호는 메일플러그 관리자 페이지에서 발급받은 값을 입력하세요.</span></div>
+      <div class="field"><label>SMTP 호스트</label><input type="text" id="ch-smtp-host" placeholder="예: smtp.mailplug.co.kr"></div>
+      <div class="field"><label>포트</label><input type="number" id="ch-smtp-port" placeholder="465"></div>
+      <div class="field"><label>사용자명 (발신 계정)</label><input type="text" id="ch-smtp-username" placeholder="예: alert@yourcompany.com"></div>
       <div class="field"><label>비밀번호</label><input type="password" id="ch-smtp-password" placeholder="변경하려면 입력 (비워두면 기존 값 유지)"></div>
       <div class="field"><label>수신 이메일</label><input type="text" id="ch-smtp-alertto" placeholder="비워두면 사용자명과 동일"></div>
       ${minSeveritySelectHtml('smtp')}
       <div class="field"><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="ch-smtp-usetls" style="width:auto"> TLS 사용</label></div>
-    `, true)}
+    `, true, true)}
     ${channelCardHtml('slack', 'Slack', 'Slack 채널의 Incoming Webhook으로 알립니다', `
       <div class="field" style="grid-column:1/-1"><label>Webhook URL</label><input type="text" id="ch-slack-url" placeholder="https://hooks.slack.com/services/... (변경하려면 입력)"></div>
       ${minSeveritySelectHtml('slack')}
@@ -3949,6 +3952,38 @@ function wireChannelHandlers(){
     const r = await apiFetch('/api/settings/smtp/test', {method:'POST'});
     const j = await r.json();
     setStatus('smtp', r.ok ? '테스트 발송 성공' : (j.error||'발송 실패'), r.ok);
+    // 발송 이력 패널이 이미 열려 있다면 방금 보낸 테스트 결과가 바로 보이도록
+    // 다시 불러온다 -- 닫혀 있으면 건드리지 않는다 (불필요한 요청 방지).
+    const panel = $('#ch-smtp-log-panel');
+    if(panel && panel.style.display !== 'none') loadSmtpLogPanel();
+  });
+  function loadSmtpLogPanel(){
+    const panel = $('#ch-smtp-log-panel');
+    if(!panel) return;
+    panel.innerHTML = '<div class="empty-note">불러오는 중...</div>';
+    apiFetch('/api/settings/smtp/log').then(async r=>{
+      const j = await r.json();
+      if(!r.ok){ panel.innerHTML = `<div class="empty-note">${escapeHtml(j.error||'불러오기 실패')}</div>`; return; }
+      if(!j.log.length){ panel.innerHTML = '<div class="empty-note">발송 이력이 없습니다</div>'; return; }
+      panel.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>시각</th><th>심각도</th><th>발생 위치</th><th>수신자</th><th>결과</th><th>시도 횟수</th><th>오류</th></tr></thead>
+        <tbody>${j.log.map(l=>`<tr>
+          <td style="font-size:11px;white-space:nowrap">${fmtWhen(l.ts)}</td>
+          <td>${escapeHtml(l.severity)}</td>
+          <td class="name">${escapeHtml(l.source)}</td>
+          <td class="mono" style="font-size:11px">${escapeHtml(l.recipient)}</td>
+          <td><span class="pill ${l.status==='success'?'good':'crit'}">${l.status==='success'?'성공':'실패'}</span></td>
+          <td class="mono">${l.attempts}</td>
+          <td style="font-size:11px;color:var(--crit)">${l.error?escapeHtml(l.error):'-'}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+    });
+  }
+  $('#ch-smtp-log-btn').addEventListener('click', ()=>{
+    const panel = $('#ch-smtp-log-panel');
+    if(panel.style.display !== 'none'){ panel.style.display = 'none'; return; }
+    panel.style.display = '';
+    loadSmtpLogPanel();
   });
   for(const prefix of ['slack','teams']){
     $('#ch-'+prefix+'-save').addEventListener('click', async ()=>{

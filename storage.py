@@ -531,6 +531,22 @@ def init_db():
         attempts INTEGER NOT NULL
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_report_delivery_schedule ON report_delivery_log(schedule_id, run_at)')
+    # 1-2: 장애 알림 이메일 발송 이력 -- 성공/실패 둘 다 매 시도마다 기록한다
+    # (report_delivery_log와 동일한 구조/목적, 대상이 정기 보고서가 아니라
+    # 개별 장애 알림이라는 점만 다르다). "알림 성공·실패 로그 저장" 요구사항의
+    # 저장소.
+    conn.execute('''CREATE TABLE IF NOT EXISTS email_alert_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        severity TEXT NOT NULL,
+        source TEXT NOT NULL,
+        message TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        attempts INTEGER NOT NULL
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_email_alert_log_ts ON email_alert_log(ts)')
     # 3-4: 외부 공개 상태 페이지. `label`/`description` are the ONLY text an
     # admin writes for public consumption -- device_id is resolved
     # server-side to compute live status, but is NEVER itself serialized
@@ -2222,6 +2238,22 @@ def record_report_delivery(schedule_id, run_at, status, error, attempts):
     conn.close()
 
 
+def record_email_alert(ts, severity, source, message, recipient, status, error, attempts):
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO email_alert_log(ts,severity,source,message,recipient,status,error,attempts) VALUES (?,?,?,?,?,?,?,?)',
+        (ts, severity, source, message, recipient, status, error, attempts))
+    conn.commit()
+    conn.close()
+
+
+def load_email_alert_log(limit=50):
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM email_alert_log ORDER BY ts DESC LIMIT ?', (limit,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def load_report_delivery_log(schedule_id=None, limit=50):
     conn = get_db()
     q = 'SELECT * FROM report_delivery_log'
@@ -2675,11 +2707,33 @@ def _get_alert_channels():
     return channels
 
 
+# 1-2: a transient SMTP hiccup (relay momentarily unreachable, timeout) is
+# common enough that giving up after one try would under-deliver real
+# incident alerts -- mirrors report_delivery.py's RETRY_ATTEMPTS=3 pattern.
+# Slack/Teams aren't retried here: this ticket is specifically about email,
+# and a webhook POST failing almost always means a bad/revoked URL (not a
+# transient blip), where retrying 3x just delays the "발송 실패" incident
+# for no benefit.
+EMAIL_ALERT_RETRY_ATTEMPTS = 3
+
+
 def _dispatch_alert(severity, source, message):
     for name, channel, destination, min_severity in _get_alert_channels():
         if _SEVERITY_RANK.get(severity, 0) < _SEVERITY_RANK.get(min_severity, 2):
             continue
         subject = f"[InfraSight] {severity.upper()} - {source}"
-        ok, err = channel.send(destination, subject, message)
-        if not ok:
-            add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)
+        if name == 'email':
+            ok, err, attempts = False, None, 0
+            for attempts in range(1, EMAIL_ALERT_RETRY_ATTEMPTS + 1):
+                ok, err = channel.send(destination, subject, message)
+                if ok:
+                    break
+            record_email_alert(int(time.time() * 1000), severity, source, message, destination,
+                                'success' if ok else 'failed', None if ok else err, attempts)
+            if not ok:
+                add_incident('warn', 'InfraSight', 'SYSTEM',
+                              f"{name} 알림 발송 실패 ({attempts}회 시도): {err}", _no_alert=True)
+        else:
+            ok, err = channel.send(destination, subject, message)
+            if not ok:
+                add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)
