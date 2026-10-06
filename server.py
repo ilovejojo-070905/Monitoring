@@ -93,6 +93,21 @@ app.secret_key = _load_or_create_secret_key()
 # on cross-site POST/PUT/DELETE, which is most of what CSRF relies on; the
 # explicit CSRF token below covers the rest.
 #
+# Reported: after a PC reboot, opening the site logs straight back in as
+# admin with no password prompt. That's the flip side of the sliding window
+# above -- session.permanent=True (at every session['user']=... call site
+# below) makes Flask write an actual Expires/Max-Age onto the cookie, so the
+# browser persists it to disk and it survives the browser (and the whole PC)
+# restarting, same as any other "remember me" cookie. Flask's session
+# decoder verifies the signed cookie's age against PERMANENT_SESSION_LIFETIME
+# on every request *regardless* of the permanent flag (open_session always
+# passes max_age=permanent_session_lifetime) -- so leaving `permanent` unset
+# (defaults False) keeps the exact same 30-minute sliding cap server-side,
+# and only removes the cookie's own Expires/Max-Age, making it a true
+# session cookie the browser discards once it fully closes. A PC reboot
+# closes the browser, so that's now a hard logout boundary too, not just 30
+# idle minutes.
+#
 # Security review pass: SESSION_COOKIE_SECURE was left off through Phase E
 # (HTTPS via Caddy) landing -- the comment here used to say "revisit once
 # HTTPS is in place" and then nobody did, so the login session cookie was
@@ -310,14 +325,12 @@ def api_login():
         session['pending_2fa_user_id'] = result['user_id']
         session['pending_2fa_username'] = result['username']
         session['pending_2fa_exp'] = int(time.time()) + 300
-        session.permanent = True
         return jsonify({'ok': True, 'needsTotp': True})
     csrf_token = secrets.token_hex(16)
     session['user'] = result['username']
     session['role'] = result['role']
     session['sv'] = result['session_version']
     session['csrf'] = csrf_token
-    session.permanent = True
     storage.write_audit(result['username'], 'LOGIN', source_ip=ip)
     return jsonify({'ok': True, 'username': result['username'], 'role': result['role'], 'csrfToken': csrf_token,
                      'mustChangePassword': result.get('must_change_password', False)})
@@ -366,7 +379,6 @@ def api_totp_verify():
     session['role'] = user['role']
     session['sv'] = user['session_version']
     session['csrf'] = csrf_token
-    session.permanent = True
     storage.write_audit(user['username'], 'LOGIN (TOTP)' if not used_recovery else 'LOGIN (recovery code)', source_ip=ip)
     resp = {'ok': True, 'username': user['username'], 'role': user['role'], 'csrfToken': csrf_token,
             'mustChangePassword': bool(user['must_change_password'])}

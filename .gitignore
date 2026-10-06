@@ -35,3 +35,7 @@ build_installer/
 # OS cruft
 Thumbs.db
 .DS_Store
+
+# Generated at setup time (register-task.ps1), bakes in this machine's own
+# absolute path to supervisor.ps1 -- not portable, regenerate per install.
+ops/run-supervisor-hidden.vbs
