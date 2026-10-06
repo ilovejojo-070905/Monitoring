@@ -112,9 +112,24 @@ Write-Ok "mkcert: $mkcertExe"
 # --------------------------------------------------------- [2] 프로젝트 받기 --
 Write-Step "[2/8] 프로젝트 받기 ($InstallDir)"
 if (Test-Path (Join-Path $InstallDir '.git')) {
-    Write-Ok '이미 받아져 있어 최신 상태로 갱신합니다 (git pull)'
+    Write-Ok '이미 받아져 있어 최신 상태로 갱신합니다 (git fetch + reset --hard)'
     Push-Location $InstallDir
-    & $gitExe pull origin main
+    # `git pull`이 아니라 fetch + reset --hard인 이유: pull은 머지를 시도하다
+    # 실패하면(로컬에 추적되는 수정 사항이 남아있거나, 이전에 누가 특정
+    # 커밋으로 직접 checkout해 detached HEAD가 됐거나, 다른 PC의
+    # core.autocrlf 설정 차이로 줄바꿈만 다르게 보여도) git.exe는 0이 아닌
+    # 종료 코드로 끝나는데, PowerShell의 $ErrorActionPreference='Stop'은
+    # 외부 exe의 종료 코드에는 적용되지 않는다 -- 실패해도 이 스크립트는
+    # 그냥 다음 단계로 넘어갔고, 그 결과 "최신 Setup.exe로 설치했는데 예전
+    # 코드가 그대로 떠 있다"는 증상으로 나타났다 (git pull이 콘솔에 에러를
+    # 찍긴 했지만 아무도 안 보고 있었을 뿐). 이 설치 폴더는 사람이 직접
+    # 수정할 일이 없는 배포 전용 디렉터리이므로, 머지를 시도할 이유 없이
+    # 매번 origin/main과 완전히 똑같은 상태로 강제로 맞추는 게 더 맞고,
+    # 실패하면 바로 알 수 있게 명시적으로 중단한다.
+    & $gitExe fetch origin main
+    if ($LASTEXITCODE -ne 0) { throw "git fetch 실패 (종료 코드 $LASTEXITCODE). 네트워크 연결을 확인해주세요." }
+    & $gitExe reset --hard origin/main
+    if ($LASTEXITCODE -ne 0) { throw "git reset --hard 실패 (종료 코드 $LASTEXITCODE)." }
     Pop-Location
 } else {
     if ((Test-Path $InstallDir) -and (Get-ChildItem $InstallDir -Force -ErrorAction SilentlyContinue)) {
@@ -122,6 +137,7 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
     }
     New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir -Parent) | Out-Null
     & $gitExe clone $RepoUrl $InstallDir
+    if ($LASTEXITCODE -ne 0) { throw "git clone 실패 (종료 코드 $LASTEXITCODE). 네트워크 연결을 확인해주세요." }
     Write-Ok '클론 완료'
 }
 
