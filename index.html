@@ -470,6 +470,7 @@
     </label>
     <div id="loginError" style="color:var(--crit);font-size:12px;min-height:16px;"></div>
     <button type="submit" style="padding:11px;border-radius:8px;border:none;background:var(--accent-gradient);color:#fff;font-weight:600;box-shadow:0 4px 18px rgba(124,92,255,.4);">로그인</button>
+    <button type="button" id="loginCancelBtn" style="padding:0;background:none;border:none;color:var(--text-dim);font-size:11.5px;text-decoration:underline;cursor:pointer;">로그인 취소 (공개 상태 페이지 보기)</button>
   </form>
 </div>
 <div id="forcePwOverlay" style="position:fixed;inset:0;z-index:201;display:none;align-items:center;justify-content:center;background:rgba(4,6,14,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);">
@@ -904,6 +905,10 @@ function reAuth(){
   });
   return _reauthPromise;
 }
+// 로그인 창(최초 접속이든 세션 만료로 다시 뜬 것이든)에서 로그인하지 않고
+// 떠날 수 있는 유일한 출구 -- 이 앱은 /status 페이지만 로그인 없이 공개돼
+// 있으므로, "취소"는 그쪽으로 보낸다.
+$('#loginCancelBtn').addEventListener('click', ()=>{ location.href = '/status'; });
 
 /* Shown right after a login that comes back with mustChangePassword (the
    installer's admin/admin default). Resolves true once the password is
