@@ -2657,6 +2657,25 @@ function renderRegisterSkeleton(){
           <p>· 등록된 장비는 서버에 저장되어 다른 브라우저에서 접속해도 동일하게 표시됩니다.</p>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-head collapsible collapsed" data-collapse="net-bulk-body">
+          <div><h3>네트워크 장비 엑셀 일괄 등록</h3><span class="sub">엑셀 파일 하나로 네트워크 장비를 여러 대 한 번에 등록합니다 (Ping 또는 SNMP v1/v2c만 지원, Agent·SNMPv3는 개별 등록)</span></div>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
+        <div class="collapse-wrap collapsed" id="net-bulk-body"><div class="collapse-inner" style="padding-top:12px">
+          <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 12px">먼저 양식을 내려받아 장비명/IP 등을 입력한 뒤 업로드해주세요. 한 대씩 등록할 때와 똑같이 실제 연결(Ping 또는 SNMP)을 확인한 뒤에만 등록되므로, 장비 수가 많으면 시간이 걸릴 수 있습니다.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <a id="net-bulk-template-link" href="/download/network-bulk-template" class="btn" style="text-decoration:none">⬇ 양식 다운로드</a>
+            <input type="file" id="net-bulk-file" accept=".xlsx" style="display:none">
+            <button type="button" class="btn" id="net-bulk-choose-btn">파일 선택</button>
+            <span id="net-bulk-filename" style="font-size:11.5px;color:var(--text-dim)"></span>
+            <button type="button" class="btn primary" id="net-bulk-upload-btn" disabled>업로드 및 등록</button>
+          </div>
+          <div id="net-bulk-status" style="font-size:11.5px;margin-top:10px"></div>
+          <div id="net-bulk-results" style="margin-top:10px"></div>
+        </div></div>
+      </div>
     </div>
     <div class="card">
       <div class="card-head collapsible collapsed" data-collapse="grp-card-body"><div><h3>장비 그룹</h3><span class="sub">그룹은 서버·DB·네트워크·설비 전체에 공통으로 적용되며, 그룹별 상태·장애 현황을 볼 수 있습니다</span></div>
@@ -2971,6 +2990,51 @@ function renderRegisterSkeleton(){
       resultsEl.innerHTML = '';
     }finally{
       btn.disabled = false; btn.textContent = '스캔 시작';
+    }
+  });
+  $('#net-bulk-choose-btn').addEventListener('click', ()=> $('#net-bulk-file').click());
+  $('#net-bulk-file').addEventListener('change', ()=>{
+    const f = $('#net-bulk-file').files[0];
+    $('#net-bulk-filename').textContent = f ? f.name : '';
+    $('#net-bulk-upload-btn').disabled = !f;
+  });
+  $('#net-bulk-upload-btn').addEventListener('click', async ()=>{
+    const fileEl = $('#net-bulk-file');
+    const f = fileEl.files[0];
+    if(!f) return;
+    const btn = $('#net-bulk-upload-btn');
+    const statusEl = $('#net-bulk-status');
+    const resultsEl = $('#net-bulk-results');
+    btn.disabled = true;
+    statusEl.style.color = 'var(--text-dim)';
+    statusEl.textContent = '등록 중... (장비 수에 따라 시간이 걸릴 수 있습니다)';
+    resultsEl.innerHTML = '';
+    try{
+      const formData = new FormData();
+      formData.append('file', f);
+      const r = await apiFetch('/api/devices/bulk-import/network', {method:'POST', body: formData});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error || '업로드 실패');
+      statusEl.style.color = j.successCount===j.total ? 'var(--good)' : 'var(--warn)';
+      statusEl.textContent = `전체 ${j.total}건 중 ${j.successCount}건 등록 성공`;
+      resultsEl.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>행</th><th>장비명</th><th>결과</th></tr></thead>
+        <tbody>${j.results.map(row=>`<tr>
+          <td class="mono">${row.rowNum}</td>
+          <td class="name">${escapeHtml(row.name||'-')}</td>
+          <td>${row.ok
+            ? '<span class="pill good"><span class="dot"></span>성공</span>'
+            : `<span class="pill crit"><span class="dot"></span>실패</span> <span style="font-size:11px;color:var(--text-faint)">${escapeHtml(row.error||'')}</span>`}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+      if(j.successCount > 0) await syncState();
+      fileEl.value = '';
+      $('#net-bulk-filename').textContent = '';
+    }catch(err){
+      statusEl.style.color = 'var(--crit)';
+      statusEl.textContent = err.message;
+    }finally{
+      btn.disabled = !fileEl.files[0];
     }
   });
   $('#grp-create-btn').addEventListener('click', async ()=>{

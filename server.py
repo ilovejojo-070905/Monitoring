@@ -28,6 +28,7 @@ import totp
 from applog import app_logger, safe_log_value
 from collector import state, scheduler, health, metrics, thresholds, maintenance, sla, report_delivery, public_status
 import reports
+import network_bulk_import
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
 from collector import snmp_collector
@@ -930,38 +931,45 @@ def api_test_snmp():
     return jsonify({'ok': True, 'message': f'"{ip}"에서 SNMP 응답을 확인했습니다 ({successes}/{attempts}회 성공).'})
 
 
-@app.post('/api/devices')
-@require_role('OPERATOR')
-def api_register_device():
-    body = request.get_json(force=True)
-    category = body.get('category')
-    name = (body.get('name') or '').strip()
-    mode = body.get('mode')
-    ip = (body.get('ip') or '').strip() or None
-    fields = body.get('fields') or {}
+def _register_device_core(category, name, mode, ip, fields):
+    """All the validation/connectivity-check/creation logic for registering
+    one device, shared by the single-device route (api_register_device)
+    below and the network bulk-import route (api_bulk_import_network
+    devices) -- extracted so the Excel-upload path gets exactly the same
+    safety checks (name/IP validation, live ping/SNMP connectivity test,
+    credential handling, scheduler wiring, audit log) as registering one
+    device by hand, instead of a second, drifting copy of them.
+
+    Returns (status_code, resp_dict) -- the route wrappers just
+    jsonify(resp_dict), status_code. 200/resp with an 'id' means success;
+    any other code means resp['error'] is the reason, same shape the
+    frontend's register form has always handled."""
+    name = (name or '').strip()
+    ip = (ip or '').strip() or None
+    fields = dict(fields or {})
     if category not in ('server', 'db', 'net', 'fac') or mode not in ('agent', 'ping', 'snmp') or not name:
-        return jsonify({'error': 'invalid payload'}), 400
+        return 400, {'error': 'invalid payload'}
     # Security hardening Phase C sections 12/18: name is used verbatim in a
     # per-device installer filename and title -- validating the character set
     # here is what actually prevents any downstream injection through it, not
     # escaping on the display side alone.
     if not validation.is_safe_name(name):
-        return jsonify({'error': '장비 이름에 사용할 수 없는 문자가 포함되어 있습니다 (특수문자 &|<>^%"\'` 등 제외, 80자 이하)'}), 400
+        return 400, {'error': '장비 이름에 사용할 수 없는 문자가 포함되어 있습니다 (특수문자 &|<>^%"\'` 등 제외, 80자 이하)'}
     if mode in ('ping', 'snmp') and not ip:
-        return jsonify({'error': 'ip required for this mode'}), 400
+        return 400, {'error': 'ip required for this mode'}
     # Also closes the ping-argument-injection gap (collector/ping_collector.py
     # passes ip straight into a subprocess arg list; a leading '-' would
     # otherwise be read as a ping flag rather than a target).
     if ip and not validation.is_valid_host(ip):
-        return jsonify({'error': 'IP 주소 또는 호스트명 형식이 올바르지 않습니다'}), 400
+        return 400, {'error': 'IP 주소 또는 호스트명 형식이 올바르지 않습니다'}
     if mode == 'snmp' and not SNMP_AVAILABLE:
-        return jsonify({'error': 'SNMP 라이브러리(pysnmp)가 서버에 설치되어 있지 않습니다'}), 400
+        return 400, {'error': 'SNMP 라이브러리(pysnmp)가 서버에 설치되어 있지 않습니다'}
     port_field = fields.get('port')
     if port_field not in (None, '') and not validation.is_valid_port(port_field):
-        return jsonify({'error': 'port는 1~65535 사이의 숫자여야 합니다'}), 400
+        return 400, {'error': 'port는 1~65535 사이의 숫자여야 합니다'}
     snmp_port = fields.get('snmpPort')
     if snmp_port not in (None, '') and not validation.is_valid_port(snmp_port):
-        return jsonify({'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}), 400
+        return 400, {'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}
     # 2-1: group is still just a free-text fields.group string (see
     # storage.py's device_groups docstring for why), but it's rendered and
     # matched the same way a device name is, so it gets the same charset/
@@ -969,20 +977,20 @@ def api_register_device():
     group_field = (fields.get('group') or '').strip()
     if group_field:
         if len(group_field) > 60 or not validation.is_safe_name(group_field):
-            return jsonify({'error': '그룹 이름에 사용할 수 없는 문자가 포함되어 있습니다 (60자 이하)'}), 400
+            return 400, {'error': '그룹 이름에 사용할 수 없는 문자가 포함되어 있습니다 (60자 이하)'}
         fields['group'] = group_field
     if 'tags' in fields:
         try:
             fields['tags'] = validation.validate_tags(fields['tags'])
         except ValueError as e:
-            return jsonify({'error': str(e)}), 400
+            return 400, {'error': str(e)}
         if not fields['tags']:
             del fields['tags']
     if 'thresholds' in fields:
         try:
             fields['thresholds'] = validation.validate_thresholds(fields['thresholds'])
         except ValueError as e:
-            return jsonify({'error': str(e)}), 400
+            return 400, {'error': str(e)}
         if not fields['thresholds']:
             del fields['thresholds']
     if mode == 'ping':
@@ -1002,7 +1010,7 @@ def api_register_device():
         attempts, needed = 3, 2
         successes = sum(1 for _ in range(attempts) if ping_collector._attempt(ip, check_port or None, timeout_s=1.5)[0])
         if successes < needed:
-            return jsonify({'error': f'"{ip}"에 연결할 수 없습니다 ({attempts}회 중 {successes}회만 응답). IP 주소를 확인해주세요. 응답이 불안정해도 꼭 등록해야 한다면 SNMP나 Agent 방식을 이용해주세요.'}), 400
+            return 400, {'error': f'"{ip}"에 연결할 수 없습니다 ({attempts}회 중 {successes}회만 응답). IP 주소를 확인해주세요. 응답이 불안정해도 꼭 등록해야 한다면 SNMP나 Agent 방식을 이용해주세요.'}
     # Generic length cap on every free-text field value -- these are all
     # display-only (already HTML-escaped on the frontend) so this is just a
     # sanity bound against absurd payloads, not itself an XSS control.
@@ -1028,7 +1036,7 @@ def api_register_device():
                 v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password,
                 require_username=True)
             if v3_err:
-                return jsonify({'error': v3_err}), 400
+                return 400, {'error': v3_err}
         # Same reasoning as the ping check above: one lucky reply out of a
         # flaky device isn't good enough evidence to register on.
         ok, successes, attempts = snmp_collector.test_connection(
@@ -1036,7 +1044,7 @@ def api_register_device():
             v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password)
         if not ok:
             cred_hint = '사용자명/인증·개인정보 보호 정보' if snmp_version == 'v3' else 'Community 문자열'
-            return jsonify({'error': f'"{ip}"에서 SNMP 응답을 받지 못했습니다 ({attempts}회 중 {successes}회만 응답). {cred_hint}/버전/포트를 확인해주세요. 응답이 없어도 꼭 등록해야 한다면 Ping이나 Agent 방식을 이용해주세요.'}), 400
+            return 400, {'error': f'"{ip}"에서 SNMP 응답을 받지 못했습니다 ({attempts}회 중 {successes}회만 응답). {cred_hint}/버전/포트를 확인해주세요. 응답이 없어도 꼭 등록해야 한다면 Ping이나 Agent 방식을 이용해주세요.'}
     device_id = uuid.uuid4().hex[:10]
     token = secrets.token_hex(16) if mode == 'agent' else None
     conn = storage.get_db()
@@ -1086,7 +1094,70 @@ def api_register_device():
         # itself connects back to (a plain HTTP client, not a browser), so
         # it must stay the direct backend host:port, not a relative path.
         resp['agentCommand'] = f"InfraSightAgent.exe --server http://{lan_ip}:{PORT} --token {token} --install-startup"
-    return jsonify(resp)
+    return 200, resp
+
+
+@app.post('/api/devices')
+@require_role('OPERATOR')
+def api_register_device():
+    body = request.get_json(force=True)
+    status_code, resp = _register_device_core(
+        body.get('category'), body.get('name'), body.get('mode'), body.get('ip'), body.get('fields') or {})
+    return jsonify(resp), status_code
+
+
+# --------------------------------------------- 네트워크 장비 엑셀 일괄 등록 --
+MAX_BULK_IMPORT_ROWS = 100
+
+
+@app.get('/download/network-bulk-template')
+@require_role('OPERATOR')
+def download_network_bulk_template():
+    data, filename = network_bulk_import.build_template_xlsx()
+    import io
+    return send_file(io.BytesIO(data),
+                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                      as_attachment=True, download_name=filename)
+
+
+@app.post('/api/devices/bulk-import/network')
+@require_role('OPERATOR')
+def api_bulk_import_network_devices():
+    """엑셀 파일 하나로 네트워크(NMS) 장비를 여러 대 한 번에 등록한다. 행
+    하나당 _register_device_core를 한 번씩 그대로 호출하므로, 개별 등록과
+    정확히 같은 검증/실측 연결 테스트(ping 또는 SNMP)를 거친다 -- 그래서
+    장비가 많으면 응답이 느릴 수 있다 (행마다 최대 몇 초씩 실측하므로)."""
+    f = request.files.get('file')
+    if not f or not f.filename:
+        return jsonify({'error': '엑셀 파일을 선택해주세요'}), 400
+    try:
+        rows = network_bulk_import.parse_xlsx(f.read())
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if len(rows) > MAX_BULK_IMPORT_ROWS:
+        return jsonify({'error': f'한 번에 최대 {MAX_BULK_IMPORT_ROWS}대까지 등록할 수 있습니다 (파일에 {len(rows)}행). 파일을 나눠서 다시 시도해주세요'}), 400
+
+    results = []
+    success_count = 0
+    for row in rows:
+        if row['parseError']:
+            results.append({'rowNum': row['rowNum'], 'name': row['name'], 'ok': False, 'error': row['parseError']})
+            continue
+        fields = {'type': row['nettype'] or '기타'}
+        if row['group']:
+            fields['group'] = row['group']
+        if row['mode'] == 'snmp':
+            fields['community'] = row['community'] or 'public'
+            fields['snmpPort'] = row['snmpPort'] or 161
+            fields['snmpVersion'] = row['snmpVersion']
+        status_code, resp = _register_device_core('net', row['name'], row['mode'], row['ip'], fields)
+        ok = status_code == 200
+        if ok:
+            success_count += 1
+        results.append({'rowNum': row['rowNum'], 'name': row['name'], 'ok': ok,
+                         'error': None if ok else resp.get('error'), 'id': resp.get('id') if ok else None})
+    audit('BULK_IMPORT_NETWORK_DEVICES', details=f'{success_count}/{len(rows)} 성공')
+    return jsonify({'total': len(rows), 'successCount': success_count, 'results': results})
 
 
 @app.put('/api/devices/<device_id>')
