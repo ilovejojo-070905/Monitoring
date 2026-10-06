@@ -804,7 +804,7 @@ def update_agent_info(device_id, version, os_info, started_at, reported_ip, last
 # can flag a device whose agentVersion (reported live, see above) doesn't
 # match -- the version-comparison groundwork an eventual auto-update feature
 # would need, without this pass implementing any actual update mechanism.
-AGENT_VERSION = '1.2.0'
+AGENT_VERSION = '1.2.1'
 
 
 # Mirrors agent_collector.ONLINE_WINDOW_SEC / WARN_WINDOW_SEC. Duplicated

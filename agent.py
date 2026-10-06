@@ -43,7 +43,7 @@ IS_WINDOWS = os.name == 'nt'
 # foundation an eventual auto-update feature would compare against; nothing
 # here downloads or applies updates yet, by design (see the directive this
 # was built from).
-AGENT_VERSION = '1.2.0'
+AGENT_VERSION = '1.2.1'
 
 _START_TIME = time.time()
 _LAST_ERROR = None  # most recent local exception message, if any (sample() or the report request itself)
@@ -484,6 +484,15 @@ def main():
     # for a sidecar-file config specifically.
     server = args.server or (embedded_cfg.get('server') if is_fresh_embedded else None) or existing_cfg.get('server')
     token = args.token or (embedded_cfg.get('token') if is_fresh_embedded else None) or existing_cfg.get('token')
+
+    # Hide as early as possible -- not just right before the report loop --
+    # whenever server/token are already resolved, so a double-clicked
+    # one-click installer or sidecar-config exe never shows even a brief
+    # flash while it relocates and relaunches itself below. Skipped here
+    # when server/token are still missing: that path falls through to
+    # prompt_for_config() further down, which needs a visible window.
+    if server and token:
+        hide_console_window()
 
     if is_fresh_embedded and relocate_and_relaunch_if_needed(server, token):
         return  # the relocated copy takes over from here; this process is done

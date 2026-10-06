@@ -2606,23 +2606,22 @@ function renderRegisterSkeleton(){
           </div>
 
           <div id="agent-command-box" class="card" style="display:none;margin-top:16px;background:var(--surface-2);border-style:dashed">
-            <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px">등록 완료. 아래 두 파일을 <b>해당 PC</b>의 같은 폴더에 받아두고 <b>InfraSightAgent.exe만 더블클릭</b>하면 입력 없이 바로 끝납니다. <b>exe는 한 번만 받아두면 앞으로 등록하는 모든 장비에 재사용</b>할 수 있고, 새 장비를 등록할 때마다 작은 설정 파일만 다시 받으면 됩니다.</div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <a id="agent-download-link" href="#" target="_blank" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">① ⬇ InfraSightAgent.exe (처음 한 번만)</a>
-              <a id="agent-config-link" href="#" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">② ⬇ 이 장비용 설정 파일</a>
-            </div>
-            <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;line-height:1.5">두 파일을 <b>해당 PC</b>의 같은 폴더에 넣고 InfraSightAgent.exe를 실행하세요. Windows가 "알 수 없는 게시자" 경고를 띄우면 "추가 정보 → 실행"을 눌러주세요 (직접 만든 사설 도구라 나오는 정상적인 경고입니다).</p>
+            <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px">등록 완료. 아래 파일 <b>하나만</b> 받아서 <b>해당 PC</b>에서 더블클릭하면 입력 없이, 창도 뜨지 않고 바로 설치가 끝납니다.</div>
+            <a id="agent-installer-link" href="#" target="_blank" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">⬇ InfraSightAgent.exe 다운로드</a>
+            <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;line-height:1.5">Windows가 "알 수 없는 게시자" 경고를 띄우면 "추가 정보 → 실행"을 눌러주세요 (직접 만든 사설 도구라 나오는 정상적인 경고입니다).</p>
             <details style="margin-top:12px">
+              <summary style="cursor:pointer;font-size:11px;color:var(--text-faint)">다른 방법: 장비를 자주 등록한다면 (exe 재사용 + 작은 설정 파일)</summary>
+              <div style="font-size:11px;color:var(--text-faint);margin:8px 0 8px">exe를 한 번만 받아두면 새 장비를 등록할 때마다 작은 설정 파일만 같은 폴더에 받아 넣고 실행하면 됩니다 (exe 재다운로드 불필요).</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <a id="agent-download-link" href="#" target="_blank" class="btn" style="display:inline-block;text-decoration:none">① ⬇ InfraSightAgent.exe</a>
+                <a id="agent-config-link" href="#" class="btn" style="display:inline-block;text-decoration:none">② ⬇ 이 장비용 설정 파일</a>
+              </div>
+            </details>
+            <details style="margin-top:8px">
               <summary style="cursor:pointer;font-size:11px;color:var(--text-faint)">다른 방법: 명령어로 직접 실행</summary>
               <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
                 <code id="agent-command-text" class="mono" style="flex:1;background:var(--surface-2);padding:8px 10px;border-radius:6px;font-size:11.5px;overflow-x:auto;white-space:nowrap;display:block"></code>
                 <button type="button" class="btn" id="agent-copy-btn">복사</button>
-              </div>
-            </details>
-            <details style="margin-top:8px">
-              <summary style="cursor:pointer;font-size:11px;color:var(--text-faint)">다른 방법: 토큰이 이미 포함된 원클릭 설치 파일 (exe까지 장비마다 매번 새로 받음)</summary>
-              <div style="margin-top:8px">
-                <a id="agent-installer-link" href="#" class="btn" style="display:inline-block;text-decoration:none">⬇ 이 장비 전용 설치 파일 받기</a>
               </div>
             </details>
           </div>
