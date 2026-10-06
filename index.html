@@ -4818,8 +4818,8 @@ async function renderGroupsList(){
       const g = j.groups.find(x=>x.name===b.dataset.thGroup);
       openThresholdEditModal({
         scope:'group', title:`"${g.name}" 그룹 임계치 수정`,
-        sub:'이 그룹에 속한 장비에 적용됩니다 (장비별 개별 설정이 있으면 그 설정이 우선합니다). 비워두면 전역 기본값을 따릅니다.',
-        current: g.thresholds, putUrl: '/api/groups/'+encodeURIComponent(g.name)+'/thresholds',
+        sub:'이 그룹에 속한 장비에 적용됩니다 (장비별 개별 설정이 있으면 그 설정이 우선합니다). 비워두면 전역 기본값을 따릅니다 (회색 숫자가 현재 적용 중인 전역 기본값입니다).',
+        current: g.thresholds, placeholders: GLOBAL_THRESHOLDS, putUrl: '/api/groups/'+encodeURIComponent(g.name)+'/thresholds',
         onSaved: renderGroupsList,
       });
     }));
@@ -4863,15 +4863,25 @@ function openGroupEditModal(name, description){
 
 /* ================= 2-2 threshold settings (global/group/device) ================= */
 const THRESHOLD_METRIC_LABEL = {cpu:'CPU', mem:'메모리', disk:'디스크'};
-function thresholdFieldsHtml(prefix, values){
+function thresholdFieldsHtml(prefix, values, placeholders){
   const v = values || {};
+  // placeholders: shown as greyed-out hint text (not a real value) when this
+  // scope has no override of its own yet -- e.g. a freshly-created group's
+  // thresholds are null until someone sets a group-specific override, so
+  // every field here used to render completely blank even though the group
+  // is actively using the current global default. Filling the value=""
+  // itself instead would make saving-without-changes silently pin that
+  // group to today's global numbers forever (no longer following future
+  // global changes), which is not what "비워두면 전역 기본값을 따릅니다"
+  // promises -- so this stays a placeholder, purely informational.
+  const p = placeholders || {};
   return `
     <div class="form-grid">
       ${Object.entries(THRESHOLD_METRIC_LABEL).map(([k,label])=>`
-        <div class="field"><label>${label} 경고 (%)</label><input type="number" min="0" max="100" id="${prefix}-${k}-warn" value="${v[k]&&v[k].warn!=null?v[k].warn:''}"></div>
-        <div class="field"><label>${label} 심각 (%)</label><input type="number" min="0" max="100" id="${prefix}-${k}-crit" value="${v[k]&&v[k].crit!=null?v[k].crit:''}"></div>
+        <div class="field"><label>${label} 경고 (%)</label><input type="number" min="0" max="100" id="${prefix}-${k}-warn" value="${v[k]&&v[k].warn!=null?v[k].warn:''}" placeholder="${p[k]&&p[k].warn!=null?p[k].warn:''}"></div>
+        <div class="field"><label>${label} 심각 (%)</label><input type="number" min="0" max="100" id="${prefix}-${k}-crit" value="${v[k]&&v[k].crit!=null?v[k].crit:''}" placeholder="${p[k]&&p[k].crit!=null?p[k].crit:''}"></div>
       `).join('')}
-      <div class="field" style="grid-column:1/-1"><label>초과 지속 시간 (초, 0=즉시)</label><input type="number" min="0" max="14400" id="${prefix}-sustained" value="${v.sustainedSec!=null?v.sustainedSec:''}"></div>
+      <div class="field" style="grid-column:1/-1"><label>초과 지속 시간 (초, 0=즉시)</label><input type="number" min="0" max="14400" id="${prefix}-sustained" value="${v.sustainedSec!=null?v.sustainedSec:''}" placeholder="${p.sustainedSec!=null?p.sustainedSec:''}"></div>
     </div>`;
 }
 function readThresholdFields(prefix){
@@ -4899,7 +4909,7 @@ function openThresholdEditModal(ctx){
   thresholdEditCtx = ctx;
   $('#thresholdEditTitle').textContent = ctx.title;
   $('#thresholdEditSub').textContent = ctx.sub || '';
-  $('#thresholdEditFields').innerHTML = thresholdFieldsHtml('te', ctx.current);
+  $('#thresholdEditFields').innerHTML = thresholdFieldsHtml('te', ctx.current, ctx.placeholders);
   $('#thresholdEditError').textContent = '';
   $('#thresholdEditOverlay').classList.add('show');
   $('#thresholdEditModal').classList.add('show');
