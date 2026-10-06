@@ -157,22 +157,47 @@ def startup_folder():
 
 
 def startup_bat_path():
+    # Superseded by startup_vbs_path() below -- kept only so uninstall_startup()
+    # can still find and remove a .bat left behind by an older agent version.
     return os.path.join(startup_folder(), 'InfraSightAgent.bat')
+
+
+def startup_vbs_path():
+    return os.path.join(startup_folder(), 'InfraSightAgent.vbs')
 
 
 def install_startup():
     # Uses the per-user Startup folder rather than Task Scheduler: it needs no
     # admin rights and works under locked-down / managed Windows accounts too.
+    #
+    # A .vbs launcher via WScript.Shell.Run(..., 0, False), not a .bat with
+    # `start /min` (the old approach): `/min` only ever asks the shell to
+    # *minimize* the newly-created window after the fact -- the console
+    # window still gets allocated and can flash or stay visible depending on
+    # the exe's build (console- vs GUI-subsystem) and Windows version/timing,
+    # exactly the black "InfraSight agent reporting to..." window a user hit
+    # after a reboot. WScript.Shell.Run's windowStyle=0 tells Windows never
+    # to create the window visible in the first place, which is reliable
+    # regardless of how the target exe was built.
     if not IS_WINDOWS:
         print('[agent] 자동 시작 등록은 현재 Windows에서만 지원됩니다.')
         return
     cmd = this_executable_command()
     cmd_str = ' '.join(f'"{c}"' for c in cmd)
+    vbs_cmd = cmd_str.replace('"', '""')  # escape for embedding inside a VBScript string literal
     try:
         os.makedirs(startup_folder(), exist_ok=True)
-        with open(startup_bat_path(), 'w', encoding='utf-8') as f:
-            f.write('@echo off\r\nstart "" /min ' + cmd_str + '\r\n')
-        print(f"[agent] Windows 로그인 시 자동 시작 등록 완료: {startup_bat_path()}")
+        with open(startup_vbs_path(), 'w', encoding='utf-8') as f:
+            f.write(f'CreateObject("WScript.Shell").Run "{vbs_cmd}", 0, False\r\n')
+        # Migration cleanup: remove a leftover .bat from an older agent
+        # version registered on this same machine, so there's only ever one
+        # active Startup entry (and the old visible-window one stops firing).
+        if os.path.exists(startup_bat_path()):
+            try:
+                os.remove(startup_bat_path())
+            except Exception:
+                pass
+        print(f"[agent] Windows 로그인 시 자동 시작 등록 완료 (창 없이 백그라운드 실행): {startup_vbs_path()}")
     except Exception as e:
         print('[agent] 자동 시작 등록 실패:', e)
 
@@ -181,8 +206,12 @@ def uninstall_startup():
     if not IS_WINDOWS:
         return
     try:
-        if os.path.exists(startup_bat_path()):
-            os.remove(startup_bat_path())
+        removed = False
+        for p in (startup_vbs_path(), startup_bat_path()):
+            if os.path.exists(p):
+                os.remove(p)
+                removed = True
+        if removed:
             print('[agent] 자동 시작 등록 해제 완료')
         else:
             print('[agent] 등록된 자동 시작이 없습니다.')
