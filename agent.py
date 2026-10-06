@@ -39,7 +39,7 @@ IS_WINDOWS = os.name == 'nt'
 # foundation an eventual auto-update feature would compare against; nothing
 # here downloads or applies updates yet, by design (see the directive this
 # was built from).
-AGENT_VERSION = '1.1.1'
+AGENT_VERSION = '1.1.2'
 
 _START_TIME = time.time()
 _LAST_ERROR = None  # most recent local exception message, if any (sample() or the report request itself)
@@ -115,6 +115,33 @@ def relocate_and_relaunch_if_needed():
     except Exception as e:
         print('[agent] 파일을 표준 위치로 복사하지 못해 현재 위치에서 계속 실행합니다:', e)
         return False
+
+
+def hide_console_window():
+    """Hides this process's own console window immediately -- a direct,
+    unconditional fallback for any non-interactive run (one-click installer
+    with embedded config, or a plain re-run off an already-saved config)
+    regardless of whether relocate_and_relaunch_if_needed() above already
+    handed off to a separately-hidden copy or fell back to running in place
+    (e.g. antivirus blocking the copy, a read-only Desktop/Downloads
+    folder, ...). Without this, that fallback path is exactly the visible
+    "InfraSight agent reporting to..." window a user hit after double-
+    clicking a freshly-downloaded InfraSight-Install.exe -- relocation
+    failing silently left the *original* process (the one Explorer already
+    gave a console to just by launching it) running the reporting loop
+    in full view instead of handing off to a hidden copy.
+    GetConsoleWindow() returns NULL if this process has no console at all
+    (already detached/hidden, or non-Windows) -- ShowWindow on a NULL
+    handle is a documented no-op, not an error."""
+    if not IS_WINDOWS:
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass
 
 
 def config_path():
@@ -432,6 +459,14 @@ def main():
         print('[agent] 설정 완료. 모니터링은 백그라운드에서 시작됩니다.')
         return
 
+    # Only an interactive prompt() exchange earns a visible window -- the
+    # user just typed into it, so leave it up so they can see it actually
+    # started. Every other path (embedded-config installer, saved config,
+    # explicit --server/--token) has nothing left for a human to read here;
+    # hide before the loop runs forever, as the guaranteed-to-work fallback
+    # for whatever relocate_and_relaunch_if_needed() above could not do.
+    if not from_prompt:
+        hide_console_window()
     run(server, token, args.interval)
 
 
