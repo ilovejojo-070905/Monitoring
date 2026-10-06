@@ -88,45 +88,45 @@ def _load_or_create_secret_key():
 
 
 app.secret_key = _load_or_create_secret_key()
-# Security hardening Phase B section 2/23: idle-timeout the session (Flask
-# refreshes this on every request by default, so it's a *sliding* 30-minute
-# window -- a dashboard tab left open and actively polling never idles out,
-# but a closed/forgotten one does). SameSite=Lax stops the cookie being sent
-# on cross-site POST/PUT/DELETE, which is most of what CSRF relies on; the
-# explicit CSRF token below covers the rest.
+# Security hardening Phase B section 2/23: idle-timeout the session. The
+# *sliding* part (a dashboard tab left open and actively polling never
+# idles out, but a closed/forgotten one does after 30 min) depends on
+# session.permanent=True at every login site below -- Flask's
+# should_set_cookie() only re-signs (refreshes) the cookie on a response
+# when session.modified is True OR (session.permanent AND
+# SESSION_REFRESH_EACH_REQUEST). A plain polling request that doesn't touch
+# the session dict leaves session.modified False, so without
+# session.permanent the second condition is always False too: the cookie
+# is never resent, its embedded timestamp never advances, and the session
+# hard-expires exactly PERMANENT_SESSION_LIFETIME after login no matter how
+# continuously the dashboard is being used right then. Confirmed as the
+# cause of a real "로그인 중에 갑자기 로그아웃됨" report after a few days of
+# this *not* being set (see the reboot-cookie history below for why it was
+# removed in the first place) -- restored here, sliding-idle-timeout is the
+# actual intent.
 #
-# Reported: after a PC reboot, opening the site logs straight back in as
-# admin with no password prompt. That's the flip side of the sliding window
-# above -- session.permanent=True (at every session['user']=... call site
-# below) makes Flask write an actual Expires/Max-Age onto the cookie, so the
-# browser persists it to disk and it survives the browser (and the whole PC)
-# restarting, same as any other "remember me" cookie. Flask's session
-# decoder verifies the signed cookie's age against PERMANENT_SESSION_LIFETIME
-# on every request *regardless* of the permanent flag (open_session always
-# passes max_age=permanent_session_lifetime) -- so leaving `permanent` unset
-# (defaults False) keeps the exact same 30-minute sliding cap server-side,
-# and only removes the cookie's own Expires/Max-Age, making it a true
-# session cookie the browser discards once it fully closes. A PC reboot
-# closes the browser, so that's now a hard logout boundary too, not just 30
-# idle minutes.
+# SameSite=Lax stops the cookie being sent on cross-site POST/PUT/DELETE,
+# which is most of what CSRF relies on; the explicit CSRF token below
+# covers the rest.
 #
-# Follow-up: still logged in after a reboot even with the above in place.
-# A "true" session cookie is only true in theory -- Chrome/Edge's "continue
-# where you left off" (and Firefox's "restore previous session") deliberately
-# keep session-only cookies alive across what looks like a fresh browser
-# launch, specifically so people aren't logged out of everything on every
-# restart. No cookie attribute can opt back out of that from the server
-# side. So: stop trying to control this through the cookie at all, and
-# instead tie the *session's own validity* to something that actually
-# changes on a reboot and nothing else -- the OS boot time. BOOT_TIME below
-# is captured once when this process starts; every session now carries the
-# BOOT_TIME it was issued under (see session['boot'] at each login site) and
-# require_role() rejects a mismatch exactly like a session_version mismatch.
-# A reboot restarts this process too (the supervisor scheduled task), so the
-# freshly-imported BOOT_TIME is new and every pre-reboot session -- however
-# the browser preserved its cookie -- stops validating immediately. A plain
-# backend crash/auto-restart with no real reboot leaves BOOT_TIME unchanged,
-# so that case still doesn't force everyone to re-login, same as before.
+# Reboot-cookie history (why session.permanent being on does NOT bring back
+# the original "still logged in after a reboot" bug): a permanent cookie
+# carries its own Expires/Max-Age, so the browser persists it to disk and
+# it survives the browser (and the whole PC) restarting -- and separately,
+# even a non-permanent "session cookie" isn't reliably gone after a restart
+# either, since Chrome/Edge's "continue where you left off" (and Firefox's
+# "restore previous session") deliberately keep those alive too, so neither
+# cookie flavor can be trusted to enforce "logged out after reboot" on its
+# own. What actually fixed that report is BOOT_TIME below, independent of
+# any cookie attribute: captured once when this process starts, every
+# session carries the BOOT_TIME it was issued under (session['boot'] at
+# each login site) and require_role() rejects a mismatch exactly like a
+# session_version mismatch. A reboot restarts this process too (the
+# supervisor scheduled task), so the freshly-imported BOOT_TIME is new and
+# every pre-reboot session -- however the browser preserved its cookie --
+# stops validating immediately, regardless of session.permanent. A plain
+# backend crash/auto-restart with no real reboot leaves BOOT_TIME
+# unchanged, so that case still doesn't force everyone to re-login.
 #
 # Bug found the hard way: psutil.boot_time() is NOT bit-for-bit identical
 # across separate process launches on the same, never-rebooted machine --
@@ -368,6 +368,7 @@ def api_login():
     session['sv'] = result['session_version']
     session['csrf'] = csrf_token
     session['boot'] = BOOT_TIME
+    session.permanent = True
     storage.write_audit(result['username'], 'LOGIN', source_ip=ip)
     return jsonify({'ok': True, 'username': result['username'], 'role': result['role'], 'csrfToken': csrf_token,
                      'mustChangePassword': result.get('must_change_password', False)})
@@ -417,6 +418,7 @@ def api_totp_verify():
     session['sv'] = user['session_version']
     session['csrf'] = csrf_token
     session['boot'] = BOOT_TIME
+    session.permanent = True
     storage.write_audit(user['username'], 'LOGIN (TOTP)' if not used_recovery else 'LOGIN (recovery code)', source_ip=ip)
     resp = {'ok': True, 'username': user['username'], 'role': user['role'], 'csrfToken': csrf_token,
             'mustChangePassword': bool(user['must_change_password'])}
