@@ -3821,7 +3821,6 @@ function renderChannelsSkeleton(){
   const el = $('#view-channels');
   el.innerHTML = `
     ${channelCardHtml('smtp', '이메일 (SMTP)', '새/악화된 장애 발생 시 이메일로 알립니다', `
-      <div class="field" style="grid-column:1/-1"><span style="font-size:11px;color:var(--text-faint)">메일플러그(Mailplug) 사용 시 -- 서버: smtp.mailplug.co.kr · 포트: 465 (SSL, 아래 TLS 사용 여부와 무관하게 465는 항상 SSL로 접속합니다). 실제 발송 계정의 비밀번호는 메일플러그 관리자 페이지에서 발급받은 값을 입력하세요.</span></div>
       <div class="field"><label>SMTP 호스트</label><input type="text" id="ch-smtp-host" placeholder="예: smtp.mailplug.co.kr"></div>
       <div class="field"><label>포트</label><input type="number" id="ch-smtp-port" placeholder="465"></div>
       <div class="field"><label>사용자명 (발신 계정)</label><input type="text" id="ch-smtp-username" placeholder="예: alert@yourcompany.com"></div>
