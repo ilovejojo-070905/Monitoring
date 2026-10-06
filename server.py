@@ -2267,7 +2267,7 @@ def download_installer(token):
     with open(exe_path, 'rb') as f:
         exe_bytes = f.read()
     resp = Response(exe_bytes + _AGENT_CONFIG_MARKER + payload, mimetype='application/octet-stream')
-    resp.headers['Content-Disposition'] = 'attachment; filename="InfraSight-Install.exe"'
+    resp.headers['Content-Disposition'] = 'attachment; filename="InfraSightAgent.exe"'
     return resp
 
 
