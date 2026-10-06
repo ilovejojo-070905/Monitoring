@@ -3804,12 +3804,14 @@ let channelsLoaded = false;
 function channelCardHtml(prefix, title, sub, bodyHtml, testable, historyLog){
   return `
     <div class="card">
-      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="card-head collapsible collapsed" data-collapse="ch-${prefix}-body" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>${title}</h3><span class="sub">${sub}</span></div>
         <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
           <input type="checkbox" id="ch-${prefix}-enabled"> 사용
         </label>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </div>
+      <div class="collapse-wrap collapsed" id="ch-${prefix}-body"><div class="collapse-inner" style="padding-top:12px">
       <div class="form-grid">${bodyHtml}</div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
         <button type="button" class="btn primary" id="ch-${prefix}-save">저장</button>
@@ -3818,6 +3820,7 @@ function channelCardHtml(prefix, title, sub, bodyHtml, testable, historyLog){
         <span id="ch-${prefix}-status" style="font-size:11.5px"></span>
       </div>
       ${historyLog ? `<div id="ch-${prefix}-log-panel" style="display:none;margin-top:12px"></div>` : ''}
+      </div></div>
     </div>`;
 }
 function minSeveritySelectHtml(prefix){
@@ -3846,12 +3849,14 @@ function renderChannelsSkeleton(){
       ${minSeveritySelectHtml('teams')}
     `, true)}
     <div class="card">
-      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="card-head collapsible collapsed" data-collapse="ch-kakao-body" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>카카오톡 (알림톡)</h3><span class="sub">연동 구조만 제공 -- 설정값은 저장되지만 실제 발송은 아직 지원되지 않습니다</span></div>
         <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
           <input type="checkbox" id="ch-kakao-enabled"> 사용 (준비 중)
         </label>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </div>
+      <div class="collapse-wrap collapsed" id="ch-kakao-body"><div class="collapse-inner" style="padding-top:12px">
       <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 10px">
         카카오톡 알림톡은 단순 Webhook으로 연동되지 않습니다. ① 카카오톡 채널(비즈니스 계정) 개설 및 발신 프로필 심사, ②
         자유 텍스트가 아닌 사전 승인된 메시지 템플릿, ③ 보통 공식 비즈니스 API 또는 인증된 알림톡 중개사(CPaaS: NHN Toast,
@@ -3865,14 +3870,17 @@ function renderChannelsSkeleton(){
         <button type="button" class="btn primary" id="ch-kakao-save">저장</button>
         <span id="ch-kakao-status" style="font-size:11.5px"></span>
       </div>
+      </div></div>
     </div>
     <div class="card">
-      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="card-head collapsible collapsed" data-collapse="ch-sms-body" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>SMS</h3><span class="sub">연동 구조만 제공 -- 설정값은 저장되지만 실제 발송은 아직 지원되지 않습니다</span></div>
         <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
           <input type="checkbox" id="ch-sms-enabled"> 사용 (준비 중)
         </label>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </div>
+      <div class="collapse-wrap collapsed" id="ch-sms-body"><div class="collapse-inner" style="padding-top:12px">
       <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 10px">
         SMS 발송에는 유료 SMS 게이트웨이 계정(API 키)과, 국내 기준 사전 등록된 발신번호가 필요합니다. 아래 값은 추후 연동을
         위한 설정 보관용입니다.
@@ -3886,14 +3894,17 @@ function renderChannelsSkeleton(){
         <button type="button" class="btn primary" id="ch-sms-save">저장</button>
         <span id="ch-sms-status" style="font-size:11.5px"></span>
       </div>
+      </div></div>
     </div>
     <div class="card" id="escalation-card">
-      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="card-head collapsible collapsed" data-collapse="esc-body" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>알림 에스컬레이션</h3><span class="sub">담당자가 설정 시간 내에 장애를 확인(이벤트/장애 화면의 확인 버튼)하지 않으면 다음 담당자에게 이메일로 자동 전달합니다. 이메일 발송 성공과 담당자의 실제 확인은 별개입니다 -- 확인 전까지는 이메일이 보내졌어도 계속 다음 단계로 넘어갑니다. SMTP 채널이 설정되어 있어야 동작합니다.</span></div>
         <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
           <input type="checkbox" id="esc-enabled"> 사용
         </label>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
       </div>
+      <div class="collapse-wrap collapsed" id="esc-body"><div class="collapse-inner" style="padding-top:12px">
       <div class="form-grid" style="margin-bottom:10px">
         <div class="field"><label>에스컬레이션 발송 기준</label>
           <select id="esc-minseverity"><option value="warn">주의 이상</option><option value="crit">위험만</option></select>
@@ -3914,9 +3925,13 @@ function renderChannelsSkeleton(){
       <div id="esc-tier-list"></div>
       <button type="button" class="btn" id="esc-log-btn" style="margin-top:12px">에스컬레이션 발송 이력</button>
       <div id="esc-log-panel" style="display:none;margin-top:12px"></div>
+      </div></div>
     </div>
     <div class="card" id="report-schedule-card">
-      <div class="card-head"><div><h3>정기 보고서 자동 발송</h3><span class="sub">주간 보고서는 매주 월요일 06:00, 월간 보고서는 매월 1일 06:30에 생성되어 직전 완전한 한 주/한 달을 다루는 보고서가 첨부 이메일로 발송됩니다. SMTP 채널이 설정되어 있어야 하며, 실패 시 같은 발송 주기 내에서 최대 3회까지 자동 재시도합니다.</span></div></div>
+      <div class="card-head collapsible collapsed" data-collapse="rs-body"><div><h3>정기 보고서 자동 발송</h3><span class="sub">주간 보고서는 매주 월요일 06:00, 월간 보고서는 매월 1일 06:30에 생성되어 직전 완전한 한 주/한 달을 다루는 보고서가 첨부 이메일로 발송됩니다. SMTP 채널이 설정되어 있어야 하며, 실패 시 같은 발송 주기 내에서 최대 3회까지 자동 재시도합니다.</span></div>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+      <div class="collapse-wrap collapsed" id="rs-body"><div class="collapse-inner" style="padding-top:12px">
       <form id="rs-create-form" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
         <div class="form-grid">
           <div class="field"><label>보고서 이름</label><input type="text" id="rs-name" placeholder="예: 주간 장애 보고서" maxlength="100" required></div>
@@ -3938,11 +3953,21 @@ function renderChannelsSkeleton(){
       <div id="rs-list"></div>
       <button type="button" class="btn" id="rs-log-btn" style="margin-top:12px">발송 이력</button>
       <div id="rs-log-panel" style="display:none;margin-top:12px"></div>
+      </div></div>
     </div>
   `;
   wireChannelHandlers();
   wireEscalationHandlers();
   wireReportScheduleHandlers();
+  $$('#view-channels .card-head.collapsible').forEach(head=>{
+    const wrap = document.getElementById(head.dataset.collapse);
+    head.addEventListener('click', (e)=>{
+      if(e.target.closest('label')) return; // "사용" 체크박스 클릭은 접고 펴기와 무관하게 동작
+      const collapsed = !head.classList.contains('collapsed');
+      head.classList.toggle('collapsed', collapsed);
+      if(wrap) wrap.classList.toggle('collapsed', collapsed);
+    });
+  });
 }
 function wireChannelHandlers(){
   const setStatus = (prefix, text, ok)=>{
