@@ -2212,9 +2212,9 @@ function renderNetwork(){
       <td>${escapeHtml(n.type||'-')}</td>
       <td class="mono">${n.ip||'-'}</td>
       <td>${n.group ? escapeHtml(n.group) : '<span style="color:var(--text-faint)">—</span>'}</td>
-      <td class="mono">${metricCell(n,'cpu')}</td>
-      <td class="mono">${metricCell(n,'mem')}</td>
-      <td class="mono">${typeof n.trafficIn==='number' ? fmtMbps((n.trafficIn||0)+(n.trafficOut||0))+' Mbps' : '<span style="color:var(--text-faint)">—</span>'}</td>
+      <td class="mono">${n.reachable ? metricCell(n,'cpu') : '<span style="color:var(--text-faint)">—</span>'}</td>
+      <td class="mono">${n.reachable ? metricCell(n,'mem') : '<span style="color:var(--text-faint)">—</span>'}</td>
+      <td class="mono">${n.reachable && typeof n.trafficIn==='number' ? fmtMbps((n.trafficIn||0)+(n.trafficOut||0))+' Mbps' : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono" style="color:${n.reachable?'var(--text-dim)':'var(--crit)'}">${n.reachable? fmt0(n.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
     </tr>`).join('') || `<tr><td colspan="10"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
