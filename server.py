@@ -127,7 +127,19 @@ app.secret_key = _load_or_create_secret_key()
 # the browser preserved its cookie -- stops validating immediately. A plain
 # backend crash/auto-restart with no real reboot leaves BOOT_TIME unchanged,
 # so that case still doesn't force everyone to re-login, same as before.
-BOOT_TIME = psutil.boot_time()
+#
+# Bug found the hard way: psutil.boot_time() is NOT bit-for-bit identical
+# across separate process launches on the same, never-rebooted machine --
+# confirmed directly (three separate `python -c` calls returned
+# 1791284431.2269921 / .226992 / .2269921, a few ULPs apart, likely from
+# how it derives boot time as time.time() minus uptime internally). With
+# exact float equality, that jitter alone made *every* plain backend
+# restart (several a day while iterating on this app -- nothing to do with
+# an actual reboot) silently invalidate every logged-in session. Rounded
+# to whole seconds: a real reboot still differs by minutes at the very
+# least, so this loses none of the real detection while absorbing noise
+# many orders of magnitude smaller than what it's meant to catch.
+BOOT_TIME = round(psutil.boot_time())
 #
 # Security review pass: SESSION_COOKIE_SECURE was left off through Phase E
 # (HTTPS via Caddy) landing -- the comment here used to say "revisit once

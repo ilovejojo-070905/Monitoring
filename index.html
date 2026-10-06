@@ -2535,6 +2535,17 @@ function renderRegisterSkeleton(){
           <button type="button" class="chip-btn" data-cat="db">데이터베이스 (DBMS)</button>
           <button type="button" class="chip-btn" data-cat="net">네트워크 (NMS)</button>
           <button type="button" class="chip-btn" data-cat="fac">전산실 설비 (FMS)</button>
+          <div id="net-bulk-chip-area" style="display:none;margin-left:auto;align-items:center;gap:8px;flex-wrap:wrap">
+            <a id="net-bulk-template-link" href="/download/network-bulk-template" class="btn" style="text-decoration:none;font-size:12px;padding:6px 12px" title="네트워크 장비 엑셀 일괄 등록 양식 다운로드">⬇ 엑셀 양식</a>
+            <input type="file" id="net-bulk-file" accept=".xlsx" style="display:none">
+            <button type="button" class="btn" id="net-bulk-choose-btn" style="font-size:12px;padding:6px 12px">파일 선택</button>
+            <span id="net-bulk-filename" style="font-size:11px;color:var(--text-dim);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+            <button type="button" class="btn primary" id="net-bulk-upload-btn" style="font-size:12px;padding:6px 12px" disabled>엑셀로 일괄 등록</button>
+          </div>
+        </div>
+        <div id="net-bulk-feedback" style="display:none;margin-bottom:12px">
+          <div id="net-bulk-status" style="font-size:11.5px"></div>
+          <div id="net-bulk-results" style="margin-top:8px"></div>
         </div>
         <div class="chip-row" id="reg-mode-chips" style="margin-bottom:16px">
           <button type="button" class="chip-btn active" data-mode="agent" id="mode-btn-agent">Agent 설치 (실측 전체 지표)</button>
@@ -2658,24 +2669,6 @@ function renderRegisterSkeleton(){
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head collapsible collapsed" data-collapse="net-bulk-body">
-          <div><h3>네트워크 장비 엑셀 일괄 등록</h3><span class="sub">엑셀 파일 하나로 네트워크 장비를 여러 대 한 번에 등록합니다 (Ping 또는 SNMP v1/v2c만 지원, Agent·SNMPv3는 개별 등록)</span></div>
-          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
-        </div>
-        <div class="collapse-wrap collapsed" id="net-bulk-body"><div class="collapse-inner" style="padding-top:12px">
-          <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 12px">먼저 양식을 내려받아 장비명/IP 등을 입력한 뒤 업로드해주세요. 한 대씩 등록할 때와 똑같이 실제 연결(Ping 또는 SNMP)을 확인한 뒤에만 등록되므로, 장비 수가 많으면 시간이 걸릴 수 있습니다.</p>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <a id="net-bulk-template-link" href="/download/network-bulk-template" class="btn" style="text-decoration:none">⬇ 양식 다운로드</a>
-            <input type="file" id="net-bulk-file" accept=".xlsx" style="display:none">
-            <button type="button" class="btn" id="net-bulk-choose-btn">파일 선택</button>
-            <span id="net-bulk-filename" style="font-size:11.5px;color:var(--text-dim)"></span>
-            <button type="button" class="btn primary" id="net-bulk-upload-btn" disabled>업로드 및 등록</button>
-          </div>
-          <div id="net-bulk-status" style="font-size:11.5px;margin-top:10px"></div>
-          <div id="net-bulk-results" style="margin-top:10px"></div>
-        </div></div>
-      </div>
     </div>
     <div class="card">
       <div class="card-head collapsible collapsed" data-collapse="grp-card-body"><div><h3>장비 그룹</h3><span class="sub">그룹은 서버·DB·네트워크·설비 전체에 공통으로 적용되며, 그룹별 상태·장애 현황을 볼 수 있습니다</span></div>
@@ -2757,6 +2750,8 @@ function renderRegisterSkeleton(){
 
   function updateFormVisibility(){
     $$('#reg-form [data-group]').forEach(g=>{ g.style.display = g.dataset.group===regCategory ? '' : 'none'; });
+    $('#net-bulk-chip-area').style.display = regCategory==='net' ? 'flex' : 'none';
+    if(regCategory!=='net'){ $('#net-bulk-feedback').style.display = 'none'; }
     $('#mode-btn-agent').style.display = regCategory==='server' ? '' : 'none';
     if(regCategory!=='server' && regMode==='agent') regMode = 'ping';
     $$('#reg-mode-chips .chip-btn').forEach(x=> x.classList.toggle('active', x.dataset.mode===regMode));
@@ -3005,6 +3000,7 @@ function renderRegisterSkeleton(){
     const btn = $('#net-bulk-upload-btn');
     const statusEl = $('#net-bulk-status');
     const resultsEl = $('#net-bulk-results');
+    $('#net-bulk-feedback').style.display = '';
     btn.disabled = true;
     statusEl.style.color = 'var(--text-dim)';
     statusEl.textContent = '등록 중... (장비 수에 따라 시간이 걸릴 수 있습니다)';
@@ -3407,6 +3403,7 @@ function renderRegister(){
     $('#net-bulk-upload-btn').disabled = true;
     $('#net-bulk-status').textContent = '';
     $('#net-bulk-results').innerHTML = '';
+    $('#net-bulk-feedback').style.display = 'none';
   }
 }
 
