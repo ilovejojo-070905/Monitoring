@@ -2654,7 +2654,10 @@ function renderRegisterSkeleton(){
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><div><h3>장비 그룹</h3><span class="sub">그룹은 서버·DB·네트워크·설비 전체에 공통으로 적용되며, 그룹별 상태·장애 현황을 볼 수 있습니다</span></div></div>
+      <div class="card-head collapsible collapsed" data-collapse="grp-card-body"><div><h3>장비 그룹</h3><span class="sub">그룹은 서버·DB·네트워크·설비 전체에 공통으로 적용되며, 그룹별 상태·장애 현황을 볼 수 있습니다</span></div>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+      <div class="collapse-wrap collapsed" id="grp-card-body"><div class="collapse-inner" style="padding-top:12px">
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
         <div class="field" style="flex:1;min-width:160px"><label>새 그룹 이름</label><input type="text" id="grp-new-name" placeholder="예: 3층 서버실" maxlength="60"></div>
         <div class="field" style="flex:1;min-width:160px"><label>설명 (선택)</label><input type="text" id="grp-new-desc" placeholder="예: 3층 전산실 랙"></div>
@@ -2662,23 +2665,31 @@ function renderRegisterSkeleton(){
       </div>
       <div id="grp-error" style="color:var(--crit);font-size:11.5px;margin-bottom:8px"></div>
       <div id="grp-list"></div>
+      </div></div>
     </div>
     <div class="card" id="threshold-global-card">
-      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="card-head collapsible collapsed" data-collapse="threshold-global-body" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>임계치 기본값 (전역)</h3><span class="sub">그룹·장비별 개별 설정이 없으면 이 값이 적용됩니다. 지속 시간을 넘겨 계속 초과해야 장애 이벤트가 발생합니다 (0초 = 즉시)</span></div>
-        <div style="display:flex;gap:8px;margin-left:auto">
+        <div style="display:flex;gap:8px;margin-left:auto;align-items:center">
           <button type="button" class="btn" id="threshold-history-btn">변경 이력</button>
           <button type="button" class="btn primary" id="threshold-global-edit-btn">수정</button>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
         </div>
       </div>
+      <div class="collapse-wrap collapsed" id="threshold-global-body"><div class="collapse-inner" style="padding-top:12px">
       <div id="threshold-global-summary" class="kv-grid"></div>
       <div id="threshold-history-panel" style="display:none;margin-top:12px"></div>
+      </div></div>
     </div>
     <div class="card" id="maint-window-card">
-      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="card-head collapsible collapsed" data-collapse="maint-window-body" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>점검창 자동화</h3><span class="sub">지정한 일정 동안 대상 장비·그룹을 자동으로 유지보수 상태로 전환합니다. 점검 중에도 실제 장애·데이터는 계속 수집되며, 알림만 억제됩니다</span></div>
-        <button type="button" class="btn" id="maint-log-btn" style="margin-left:auto">점검 이력</button>
+        <div style="display:flex;gap:8px;margin-left:auto;align-items:center">
+          <button type="button" class="btn" id="maint-log-btn">점검 이력</button>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+        </div>
       </div>
+      <div class="collapse-wrap collapsed" id="maint-window-body"><div class="collapse-inner" style="padding-top:12px">
       <form id="maint-window-form" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
         <div class="form-grid">
           <div class="field"><label>대상 종류</label>
@@ -2715,6 +2726,7 @@ function renderRegisterSkeleton(){
       </form>
       <div id="mw-list"></div>
       <div id="maint-log-panel" style="display:none;margin-top:12px"></div>
+      </div></div>
     </div>
 
   `;
@@ -3027,7 +3039,11 @@ function renderRegisterSkeleton(){
   });
 
   $$('.card-head.collapsible').forEach(head=>{
-    head.addEventListener('click', ()=>{
+    head.addEventListener('click', (e)=>{
+      // 헤더 안에 들어있는 버튼/링크/체크박스(예: 임계치 카드의 "수정"
+      // 버튼)를 눌렀을 때는 그 자체 동작만 하고, 카드 접기/펼치기는
+      // 건드리지 않는다.
+      if(e.target.closest('button, a, label')) return;
       const wrap = document.getElementById(head.dataset.collapse);
       const collapsed = !head.classList.contains('collapsed');
       head.classList.toggle('collapsed', collapsed);
