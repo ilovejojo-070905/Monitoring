@@ -2032,7 +2032,7 @@ function renderServersSkeleton(){
           <input id="srv-search" placeholder="서버명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>OS</th></tr></thead>
+        <thead><tr><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>그룹</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>OS</th></tr></thead>
         <tbody id="srv-tbody"></tbody>
       </table></div>
     </div>
@@ -2050,16 +2050,17 @@ function renderServers(){
   $('#srv-tbody').innerHTML = rows.map(s=>`
     <tr data-id="${s.id}">
       <td><span class="pill ${s.status}"><span class="dot"></span>${statusLabel(s.status)}</span></td>
-      <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}${groupTag(s)}</td>
+      <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}</td>
       <td class="mono">${s.ip||'-'}</td>
       <td>${escapeHtml(s.role||'-')}</td>
+      <td>${s.group ? escapeHtml(s.group) : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono">${metricCell(s,'cpu')}</td>
       <td class="mono">${metricCell(s,'mem')}</td>
       <td class="mono">${metricCell(s,'disk')}</td>
       <td class="mono">${typeof s.load==='number' ? fmt1(s.load) : '—'}</td>
       <td class="mono">${typeof s.uptime==='number' ? s.uptime+'d' : '—'}</td>
       <td>${osLabel(s.os)}</td>
-    </tr>`).join('') || `<tr><td colspan="10"><div class="empty-note">검색 결과가 없습니다</div></td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="11"><div class="empty-note">검색 결과가 없습니다</div></td></tr>`;
   $$('#srv-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
 }
 function miniBar(pct, lv){
@@ -2164,7 +2165,7 @@ function renderNetworkSkeleton(){
           <input id="net-search" placeholder="장비명 / IP / 그룹 / 태그 검색"></div>
       </div>
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
+        <thead><tr><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>그룹</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
         <tbody id="net-tbody"></tbody>
       </table></div>
     </div>
@@ -2199,15 +2200,16 @@ function renderNetwork(){
   $('#net-tbody').innerHTML = netRows.map(n=>`
     <tr data-id="${n.id}" class="${n.id===selectedNetId?'sel-row':''}">
       <td><span class="pill ${n.status}"><span class="dot"></span>${statusLabel(n.status)}</span></td>
-      <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}${groupTag(n)}</td>
+      <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}</td>
       <td>${escapeHtml(n.type||'-')}</td>
       <td class="mono">${n.ip||'-'}</td>
+      <td>${n.group ? escapeHtml(n.group) : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono">${metricCell(n,'cpu')}</td>
       <td class="mono">${metricCell(n,'mem')}</td>
       <td class="mono">${typeof n.trafficIn==='number' ? fmtMbps((n.trafficIn||0)+(n.trafficOut||0))+' Mbps' : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono" style="color:${n.reachable?'var(--text-dim)':'var(--crit)'}">${n.reachable? fmt0(n.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
-    </tr>`).join('') || `<tr><td colspan="9"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="10"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
   $$('#net-tbody tr[data-id]').forEach(tr=>{
     tr.addEventListener('click', ()=>{ selectedNetId = tr.dataset.id; renderNetwork(); openDrawerFor(tr.dataset.id); });
   });
