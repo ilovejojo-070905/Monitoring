@@ -1044,6 +1044,7 @@ def api_register_device():
         # and Caddy forwards /download/* to this same backend either way.
         resp['agentDownloadUrl'] = '/download/agent'
         resp['agentInstallerUrl'] = f'/download/installer/{token}'
+        resp['agentConfigUrl'] = f'/download/config/{token}'
         # Unaffected by the above: this is the address the agent *process*
         # itself connects back to (a plain HTTP client, not a browser), so
         # it must stay the direct backend host:port, not a relative path.
@@ -1933,6 +1934,7 @@ def api_reissue_token(device_id):
         # resolves against whatever origin (https:8443 via Caddy, or
         # http:5057 direct) the browser making this request is actually on.
         'agentInstallerUrl': f'/download/installer/{new_token}',
+        'agentConfigUrl': f'/download/config/{new_token}',
         'agentCommand': f"InfraSightAgent.exe --server http://{lan_ip}:{PORT} --token {new_token} --install-startup",
     })
 
@@ -2268,6 +2270,29 @@ def download_installer(token):
         exe_bytes = f.read()
     resp = Response(exe_bytes + _AGENT_CONFIG_MARKER + payload, mimetype='application/octet-stream')
     resp.headers['Content-Disposition'] = 'attachment; filename="InfraSightAgent.exe"'
+    return resp
+
+
+@app.get('/download/config/<token>')
+def download_agent_config(token):
+    """A tiny counterpart to /download/installer/<token> above, for the
+    "download the reusable InfraSightAgent.exe once, never again" flow (see
+    index.html's agent-command-box): the exe itself only needs grabbing a
+    single time and can be copied PC to PC, but each new device still needs
+    its own token somehow -- dropping this few-byte file next to that
+    already-downloaded exe (same filename agent.py's read_sidecar_config()
+    looks for) gets the same zero-typing, double-click-and-done result as
+    the embedded installer, without re-downloading the ~8MB exe per device.
+    No @require_role, same as /download/installer/<token>: this is meant to
+    be opened directly on a different PC than the admin's own browser
+    session, so the device token itself (not a login) is what gates it."""
+    device_row = storage.find_device_by_token(token)
+    if not device_row:
+        return jsonify({'error': 'invalid or expired token'}), 404
+    server_url = f"http://{storage.get_lan_ip()}:{PORT}"
+    payload = json.dumps({'server': server_url, 'token': token})
+    resp = Response(payload, mimetype='application/json')
+    resp.headers['Content-Disposition'] = 'attachment; filename="InfraSightAgent.cfg"'
     return resp
 
 

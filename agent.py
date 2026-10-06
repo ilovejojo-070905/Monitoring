@@ -3,9 +3,13 @@ InfraSight agent — run this on any other Windows/Linux/Mac PC you want to
 monitor for real. It reports this machine's real CPU/memory/disk/network
 metrics back to your InfraSight server every few seconds.
 
-First run (either is fine):
+First run (any of these):
     InfraSightAgent.exe --server http://<InfraSight PC IP>:5057 --token <token>
     (or just double-click it and type the server/token when asked)
+    (or drop a small InfraSightAgent.cfg -- {"server":...,"token":...} --
+     downloaded from the dashboard into the same folder as the exe, then
+     just double-click it: no typing, and the exe itself never needs
+     re-downloading for the next device, only that small file does)
 
 The server + token are saved locally after the first run, so every run after
 that needs no arguments at all — just double-click the exe.
@@ -39,7 +43,7 @@ IS_WINDOWS = os.name == 'nt'
 # foundation an eventual auto-update feature would compare against; nothing
 # here downloads or applies updates yet, by design (see the directive this
 # was built from).
-AGENT_VERSION = '1.1.2'
+AGENT_VERSION = '1.2.0'
 
 _START_TIME = time.time()
 _LAST_ERROR = None  # most recent local exception message, if any (sample() or the report request itself)
@@ -68,6 +72,30 @@ def read_embedded_config():
         return None
 
 
+# A tiny per-device {server, token} file placed next to this exe (not baked
+# into its own bytes, unlike EMBEDDED_CONFIG_MARKER above) -- lets the SAME
+# already-downloaded, reusable InfraSightAgent.exe configure itself for a
+# NEW device with zero typing and zero command line: download just this
+# small file (server.py's /download/config/<token>) into the same folder as
+# the exe and double-click the exe, nothing else. Without this, a user who
+# grabbed the plain reusable exe (rather than the per-device one-click
+# installer) hits the interactive "서버 주소 / 토큰" prompt every single time,
+# exactly the friction reusability was supposed to remove.
+SIDECAR_CONFIG_FILENAME = 'InfraSightAgent.cfg'
+
+
+def read_sidecar_config():
+    try:
+        base_dir = os.path.dirname(os.path.abspath(sys.executable if getattr(sys, 'frozen', False) else __file__))
+        path = os.path.join(base_dir, SIDECAR_CONFIG_FILENAME)
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def _stop_other_running_instances():
     """A stale copy already running from a previous install (old token)
     holds the target exe file locked on Windows, which silently breaks the
@@ -90,7 +118,7 @@ def _stop_other_running_instances():
             pass
 
 
-def relocate_and_relaunch_if_needed():
+def relocate_and_relaunch_if_needed(server, token):
     """A one-click installer exe downloaded straight from the dashboard often
     sits in Downloads/Desktop -- fine to run once, but install_startup()
     below points the Windows auto-start entry at *this exact file path*, so
@@ -98,7 +126,16 @@ def relocate_and_relaunch_if_needed():
     ourselves into the same stable per-user folder the old install script
     used, and hand off to that copy, so auto-start keeps working regardless
     of what happens to the originally-downloaded file. Best-effort: any
-    failure here just falls back to running in place."""
+    failure here just falls back to running in place.
+
+    server/token are passed explicitly as --server/--token to the relaunched
+    copy rather than relying on it to rediscover them on its own: that
+    rediscovery works for embedded config (the bytes travel with the file
+    copy below) but NOT for a sidecar InfraSightAgent.cfg sitting next to the
+    *original* exe -- that file never gets copied alongside, so the
+    relaunched copy at the new location would otherwise find no config at
+    all and fall back to the interactive prompt, silently defeating the
+    whole point of the sidecar file."""
     if not IS_WINDOWS or not getattr(sys, 'frozen', False):
         return False
     target_dir = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'InfraSightAgent')
@@ -110,7 +147,8 @@ def relocate_and_relaunch_if_needed():
     try:
         os.makedirs(target_dir, exist_ok=True)
         shutil.copy2(current, target)
-        subprocess.Popen([target] + sys.argv[1:], creationflags=subprocess.CREATE_NO_WINDOW)
+        extra_args = ['--server', server, '--token', token] if (server and token) else []
+        subprocess.Popen([target] + extra_args, creationflags=subprocess.CREATE_NO_WINDOW)
         return True
     except Exception as e:
         print('[agent] 파일을 표준 위치로 복사하지 못해 현재 위치에서 계속 실행합니다:', e)
@@ -424,7 +462,13 @@ def main():
         return
 
     existing_cfg = load_config()
-    embedded_cfg = read_embedded_config()
+    # Either config source counts equally: bytes appended to the exe itself
+    # (the per-device one-click installer) or a small InfraSightAgent.cfg
+    # sitting next to a reused, already-downloaded exe (see
+    # read_sidecar_config's docstring). Embedded wins if somehow both are
+    # present -- that only happens with the one-click installer, which is
+    # already fully self-contained.
+    embedded_cfg = read_embedded_config() or read_sidecar_config()
     # A *different* embedded token than whatever's already saved means this
     # exe was just downloaded for a fresh (re)registration -- re-installing
     # on a machine that already has an old config.json from a previous
@@ -433,11 +477,17 @@ def main():
     # embedded_cfg when there was *no* existing config at all, so a stale
     # saved token always won and the new one was never even read.
     is_fresh_embedded = bool(embedded_cfg) and embedded_cfg.get('token') and embedded_cfg.get('token') != existing_cfg.get('token')
-    if is_fresh_embedded and relocate_and_relaunch_if_needed():
-        return  # the relocated copy takes over from here; this process is done
 
+    # Computed before the relocate call (not after, as before) so the
+    # resolved server/token can be handed to the relaunched copy explicitly
+    # -- see relocate_and_relaunch_if_needed's docstring for why that matters
+    # for a sidecar-file config specifically.
     server = args.server or (embedded_cfg.get('server') if is_fresh_embedded else None) or existing_cfg.get('server')
     token = args.token or (embedded_cfg.get('token') if is_fresh_embedded else None) or existing_cfg.get('token')
+
+    if is_fresh_embedded and relocate_and_relaunch_if_needed(server, token):
+        return  # the relocated copy takes over from here; this process is done
+
     from_prompt = False
 
     if not server or not token:
