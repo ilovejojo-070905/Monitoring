@@ -13,6 +13,7 @@ import secrets
 import socket
 import sqlite3
 import sys
+import threading
 import time
 
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -2717,23 +2718,37 @@ def _get_alert_channels():
 EMAIL_ALERT_RETRY_ATTEMPTS = 3
 
 
+def _dispatch_one_channel(name, channel, destination, severity, source, message):
+    subject = f"[InfraSight] {severity.upper()} - {source}"
+    if name == 'email':
+        ok, err, attempts = False, None, 0
+        for attempts in range(1, EMAIL_ALERT_RETRY_ATTEMPTS + 1):
+            ok, err = channel.send(destination, subject, message)
+            if ok:
+                break
+        record_email_alert(int(time.time() * 1000), severity, source, message, destination,
+                            'success' if ok else 'failed', None if ok else err, attempts)
+        if not ok:
+            add_incident('warn', 'InfraSight', 'SYSTEM',
+                          f"{name} 알림 발송 실패 ({attempts}회 시도): {err}", _no_alert=True)
+    else:
+        ok, err = channel.send(destination, subject, message)
+        if not ok:
+            add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)
+
+
 def _dispatch_alert(severity, source, message):
+    # Channels used to go out one at a time, in sequence -- email first (up
+    # to 3 attempts, each a real SMTP connect+TLS+auth round trip over the
+    # network), then Slack/Teams only once email's attempt(s) finished. A
+    # slow or timing-out mail server didn't just delay the email itself, it
+    # delayed every other channel behind it (and blocked the collector's
+    # poll loop the whole time, since add_incident() calls this inline).
+    # Firing each channel from its own thread means they all start at once,
+    # so Slack/Teams land as soon as their own webhook POST completes
+    # instead of waiting on email's.
     for name, channel, destination, min_severity in _get_alert_channels():
         if _SEVERITY_RANK.get(severity, 0) < _SEVERITY_RANK.get(min_severity, 2):
             continue
-        subject = f"[InfraSight] {severity.upper()} - {source}"
-        if name == 'email':
-            ok, err, attempts = False, None, 0
-            for attempts in range(1, EMAIL_ALERT_RETRY_ATTEMPTS + 1):
-                ok, err = channel.send(destination, subject, message)
-                if ok:
-                    break
-            record_email_alert(int(time.time() * 1000), severity, source, message, destination,
-                                'success' if ok else 'failed', None if ok else err, attempts)
-            if not ok:
-                add_incident('warn', 'InfraSight', 'SYSTEM',
-                              f"{name} 알림 발송 실패 ({attempts}회 시도): {err}", _no_alert=True)
-        else:
-            ok, err = channel.send(destination, subject, message)
-            if not ok:
-                add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)
+        threading.Thread(target=_dispatch_one_channel, args=(name, channel, destination, severity, source, message),
+                          daemon=True).start()
