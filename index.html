@@ -5484,6 +5484,31 @@ $('#logoutBtn').addEventListener('click', async ()=>{
   await fetch('/api/auth/logout', {method:'POST'});
   location.reload();
 });
+/* ================= 5분 무활동 자동 로그아웃 =================
+   서버 쪽 세션은 30분짜리 슬라이딩 윈도우지만, 그건 API 요청이 있으면
+   갱신된다 -- 그리고 대시보드는 사용자가 화면을 안 보고 있어도 2.2초마다
+   계속 폴링(syncState)하므로, 서버만 보면 "탭을 열어둔 채 자리를 비운"
+   상태와 "실제로 보고 있는" 상태를 구분하지 못한다. 여기서는 마우스/키보드/
+   터치 등 사람이 직접 한 행동만 "활동"으로 치고, 그게 5분간 전혀 없으면
+   백그라운드 폴링과 상관없이 강제 로그아웃한다. */
+const IDLE_LOGOUT_MS = 5 * 60 * 1000;
+let idleLogoutTimer = null;
+let lastIdleResetAt = 0;
+function resetIdleLogoutTimer(){
+  const now = Date.now();
+  if(now - lastIdleResetAt < 1000) return;  // mousemove 등이 너무 자주 쏟아지는 것 방지
+  lastIdleResetAt = now;
+  if(idleLogoutTimer) clearTimeout(idleLogoutTimer);
+  idleLogoutTimer = setTimeout(async ()=>{
+    if(!CURRENT_USER) return;  // 이미 로그인 화면이면 할 일 없음
+    await fetch('/api/auth/logout', {method:'POST'}).catch(()=>{});
+    location.reload();
+  }, IDLE_LOGOUT_MS);
+}
+['mousemove','mousedown','keydown','wheel','touchstart'].forEach(evt=>{
+  document.addEventListener(evt, resetIdleLogoutTimer, {passive:true});
+});
+resetIdleLogoutTimer();
 /* ================= main loop ================= */
 initSkeletons();
 tickClock();
