@@ -39,7 +39,7 @@ IS_WINDOWS = os.name == 'nt'
 # foundation an eventual auto-update feature would compare against; nothing
 # here downloads or applies updates yet, by design (see the directive this
 # was built from).
-AGENT_VERSION = '1.1.0'
+AGENT_VERSION = '1.1.1'
 
 _START_TIME = time.time()
 _LAST_ERROR = None  # most recent local exception message, if any (sample() or the report request itself)
