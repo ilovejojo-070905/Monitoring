@@ -20,10 +20,27 @@ function Test-Admin {
 
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $ScriptPath  = Join-Path $PSScriptRoot 'supervisor.ps1'
+$VbsPath     = Join-Path $PSScriptRoot 'run-supervisor-hidden.vbs'
 $TaskName    = 'InfraSight Supervisor'
 
-$action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
-    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$ScriptPath`"" `
+# `powershell.exe -WindowStyle Hidden` as the task's own action is the
+# intuitive way to do this, but it's unreliable specifically for an
+# AtStartup-triggered task: that trigger can fire while the session/window
+# station is still being set up (before explorer.exe is ready), early enough
+# that -WindowStyle Hidden's flag doesn't reliably take -- a black PowerShell
+# window briefly (or persistently) shows after a reboot despite it being set.
+# This is the exact same class of bug agent.py's install_startup() hit and
+# fixed by launching through a .vbs wrapper (WScript.Shell.Run with the
+# window-mode argument set to 0) instead of relying on the flag -- that
+# approach is what actually guarantees no window, so the task now launches
+# this .vbs instead of calling powershell.exe directly.
+$vbsContent = @"
+CreateObject("WScript.Shell").Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$ScriptPath""", 0, False
+"@
+[System.IO.File]::WriteAllText($VbsPath, $vbsContent, (New-Object System.Text.UTF8Encoding $false))
+
+$action  = New-ScheduledTaskAction -Execute 'wscript.exe' `
+    -Argument "`"$VbsPath`"" `
     -WorkingDirectory $ProjectRoot
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -StartWhenAvailable -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
