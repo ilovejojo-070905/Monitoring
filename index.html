@@ -2062,19 +2062,19 @@ function renderServers(){
       <td class="mono">${s.ip||'-'}</td>
       <td>${escapeHtml(s.role||'-')}</td>
       <td>${s.group ? escapeHtml(s.group) : '<span style="color:var(--text-faint)">—</span>'}</td>
-      <td class="mono">${metricCell(s,'cpu')}</td>
-      <td class="mono">${metricCell(s,'mem')}</td>
-      <td class="mono">${metricCell(s,'disk')}</td>
-      <td class="mono">${typeof s.load==='number' ? fmt1(s.load) : '—'}</td>
-      <td class="mono">${typeof s.uptime==='number' ? s.uptime+'d' : '—'}</td>
+      <td class="mono">${s.reachable!==false ? metricCell(s,'cpu') : '<span style="color:var(--text-faint)">—</span>'}</td>
+      <td class="mono">${s.reachable!==false ? metricCell(s,'mem') : '<span style="color:var(--text-faint)">—</span>'}</td>
+      <td class="mono">${s.reachable!==false ? metricCell(s,'disk') : '<span style="color:var(--text-faint)">—</span>'}</td>
+      <td class="mono">${s.reachable!==false && typeof s.load==='number' ? fmt1(s.load) : '—'}</td>
+      <td class="mono">${s.reachable!==false && typeof s.uptime==='number' ? s.uptime+'d' : '—'}</td>
       <td>${osLabel(s.os)}</td>
     </tr>`).join('') || `<tr><td colspan="11"><div class="empty-note">검색 결과가 없습니다</div></td></tr>`;
   $$('#srv-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
 }
 function miniBar(pct, lv){
-  return `<div style="display:inline-flex;align-items:center;gap:8px">
-    <div class="bar ${lv}" style="width:64px"><i style="width:${clamp(pct,0,100)}%"></i></div>
-    <span style="width:38px;text-align:left;color:${levelColor(lv)}">${fmt0(pct)}%</span>
+  return `<div style="display:inline-flex;align-items:center;gap:6px">
+    <div class="bar ${lv}" style="width:48px"><i style="width:${clamp(pct,0,100)}%"></i></div>
+    <span style="width:30px;text-align:left;color:${levelColor(lv)}">${fmt0(pct)}%</span>
   </div>`;
 }
 function metricCell(dev, metric){
@@ -2421,7 +2421,7 @@ function renderFacility(){
       <td>${escapeHtml(f.type||'-')}${f.role? ' · '+escapeHtml(f.role) : ''}</td>
       <td class="mono">${f.ip||'-'}</td>
       <td class="mono" style="color:${f.reachable?'var(--text-dim)':'var(--crit)'}">${f.reachable? fmt0(f.latencyMs||0)+' ms' : '응답없음'}</td>
-      <td class="mono">${typeof f.battPct==='number' ? `<span style="color:${levelColor(levelOf(100-f.battPct,40,75))}">${fmt0(f.battPct)}%</span>` : '<span style="color:var(--text-faint)">—</span>'}</td>
+      <td class="mono">${f.reachable && typeof f.battPct==='number' ? `<span style="color:${levelColor(levelOf(100-f.battPct,40,75))}">${fmt0(f.battPct)}%</span>` : '<span style="color:var(--text-faint)">—</span>'}</td>
     </tr>`).join('') || `<tr><td colspan="6"><div class="empty-note">${FACS.length? '검색 결과가 없습니다' : '등록된 설비가 없습니다. 네트워크 카드가 있는 UPS · 항온항습기 · 분전반이라면 IP를 등록해 도달성을 확인할 수 있습니다.'}</div></td></tr>`;
   $$('#fac-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
 
