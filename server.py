@@ -17,6 +17,7 @@ from collections import defaultdict, deque
 from datetime import timedelta, datetime
 from functools import wraps
 
+import psutil
 from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory, session
 from waitress import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -107,6 +108,25 @@ app.secret_key = _load_or_create_secret_key()
 # session cookie the browser discards once it fully closes. A PC reboot
 # closes the browser, so that's now a hard logout boundary too, not just 30
 # idle minutes.
+#
+# Follow-up: still logged in after a reboot even with the above in place.
+# A "true" session cookie is only true in theory -- Chrome/Edge's "continue
+# where you left off" (and Firefox's "restore previous session") deliberately
+# keep session-only cookies alive across what looks like a fresh browser
+# launch, specifically so people aren't logged out of everything on every
+# restart. No cookie attribute can opt back out of that from the server
+# side. So: stop trying to control this through the cookie at all, and
+# instead tie the *session's own validity* to something that actually
+# changes on a reboot and nothing else -- the OS boot time. BOOT_TIME below
+# is captured once when this process starts; every session now carries the
+# BOOT_TIME it was issued under (see session['boot'] at each login site) and
+# require_role() rejects a mismatch exactly like a session_version mismatch.
+# A reboot restarts this process too (the supervisor scheduled task), so the
+# freshly-imported BOOT_TIME is new and every pre-reboot session -- however
+# the browser preserved its cookie -- stops validating immediately. A plain
+# backend crash/auto-restart with no real reboot leaves BOOT_TIME unchanged,
+# so that case still doesn't force everyone to re-login, same as before.
+BOOT_TIME = psutil.boot_time()
 #
 # Security review pass: SESSION_COOKIE_SECURE was left off through Phase E
 # (HTTPS via Caddy) landing -- the comment here used to say "revisit once
@@ -269,6 +289,9 @@ def require_role(min_role='VIEWER'):
             if current_sv is None or session.get('sv') != current_sv:
                 session.clear()
                 return jsonify({'error': 'session_expired'}), 401
+            if session.get('boot') != BOOT_TIME:
+                session.clear()
+                return jsonify({'error': 'session_expired'}), 401
             if storage.ROLE_RANK.get(session.get('role'), -1) < storage.ROLE_RANK.get(min_role, 0):
                 audit('AUTHORIZATION_FAILURE', target=request.path, details=f"role={session.get('role')} needs {min_role}")
                 return jsonify({'error': 'forbidden'}), 403
@@ -331,6 +354,7 @@ def api_login():
     session['role'] = result['role']
     session['sv'] = result['session_version']
     session['csrf'] = csrf_token
+    session['boot'] = BOOT_TIME
     storage.write_audit(result['username'], 'LOGIN', source_ip=ip)
     return jsonify({'ok': True, 'username': result['username'], 'role': result['role'], 'csrfToken': csrf_token,
                      'mustChangePassword': result.get('must_change_password', False)})
@@ -379,6 +403,7 @@ def api_totp_verify():
     session['role'] = user['role']
     session['sv'] = user['session_version']
     session['csrf'] = csrf_token
+    session['boot'] = BOOT_TIME
     storage.write_audit(user['username'], 'LOGIN (TOTP)' if not used_recovery else 'LOGIN (recovery code)', source_ip=ip)
     resp = {'ok': True, 'username': user['username'], 'role': user['role'], 'csrfToken': csrf_token,
             'mustChangePassword': bool(user['must_change_password'])}
