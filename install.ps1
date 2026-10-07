@@ -284,10 +284,19 @@ if (Test-Path $statusFile) {
         Write-Warn2 "기존 프로세스 종료 중 문제가 있었습니다 (무시하고 계속합니다): $_"
     }
 }
-Start-Process powershell -ArgumentList @(
-    '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-    '-File', (Join-Path $InstallDir 'ops\supervisor.ps1')
-) -WorkingDirectory $InstallDir
+# `Start-Process powershell -WindowStyle Hidden` looks right but isn't
+# reliable -- register-task.ps1 hit this exact problem (see its own long
+# comment on the same thing) and a Patch.exe run surfaced it again live: a
+# blank "Windows PowerShell" window popped up and just sat there after
+# patching, because -WindowStyle Hidden only ever *asks* for a hidden
+# window and Windows doesn't always honor it, especially this soon after
+# the parent process itself was just elevated/launched. WScript.Shell's
+# .Run(cmd, 0, False) -- windowStyle 0 -- is the same reliable mechanism
+# register-task.ps1 already uses via a .vbs file; done here directly
+# through the COM object instead, since there's no reason to drop a .vbs
+# file to disk just for this one relaunch.
+$supervisorCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'ops\supervisor.ps1')`""
+(New-Object -ComObject WScript.Shell).Run($supervisorCmd, 0, $false) | Out-Null
 Start-Sleep -Seconds 4
 
 Write-Host "`n============================================================" -ForegroundColor Green
@@ -303,16 +312,16 @@ Write-Host "%LOCALAPPDATA%\mkcert\rootCA.pem 을 그 기기에 설치하면 경�
 Start-Process "https://localhost:8443"
 
 } catch {
+    # This window is the elevated one (Start-Process -Verb RunAs) where every
+    # message above actually printed -- without a pause here it closes the
+    # instant the script ends, taking the only copy of the error message
+    # with it before anyone can read it. The success path below has no such
+    # pause: nothing left to read there once the success banner and browser
+    # launch are done, so it just closes on its own.
     Write-Host "`n============================================================" -ForegroundColor Red
     Write-Host ' 설치 중 오류가 발생했습니다' -ForegroundColor Red
     Write-Host " $_" -ForegroundColor Red
     Write-Host '============================================================' -ForegroundColor Red
-} finally {
-    # This window is the elevated one (Start-Process -Verb RunAs) where every
-    # message above actually printed -- without a pause here it closes the
-    # instant this script ends, so the success message (and the LAN URL to
-    # give out) -- or, just as importantly, the error message above -- flashes
-    # by and is gone before anyone can read it.
     Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
     [void][System.Console]::ReadKey($true)
 }

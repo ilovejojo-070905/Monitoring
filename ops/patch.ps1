@@ -120,10 +120,18 @@ if (Test-Path $statusFile) {
 } else {
     Write-Warn2 '실행 중인 상태 정보를 찾지 못했습니다 (처음부터 꺼져 있었을 수 있습니다). 계속 진행합니다.'
 }
-Start-Process powershell -ArgumentList @(
-    '-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-    '-File', (Join-Path $InstallDir 'ops\supervisor.ps1')
-) -WorkingDirectory $InstallDir
+# `Start-Process powershell -WindowStyle Hidden` looks right but isn't
+# reliable -- confirmed live: a blank "Windows PowerShell" window popped up
+# and just sat there after patching, because -WindowStyle Hidden only ever
+# *asks* for a hidden window and Windows doesn't always honor it this soon
+# after the parent process itself was elevated/launched (same root cause
+# register-task.ps1's own long comment already documents). WScript.Shell's
+# .Run(cmd, 0, False) -- windowStyle 0 -- is the same reliable mechanism
+# register-task.ps1 uses via a .vbs file; done here directly through the
+# COM object instead, since there's no reason to drop a .vbs file to disk
+# just for this one relaunch.
+$supervisorCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'ops\supervisor.ps1')`""
+(New-Object -ComObject WScript.Shell).Run($supervisorCmd, 0, $false) | Out-Null
 Start-Sleep -Seconds 4
 Write-Ok 'InfraSight를 새 코드로 다시 시작했습니다'
 
@@ -132,11 +140,13 @@ Write-Host " 패치 완료 (커밋 $headNow)" -ForegroundColor Green
 Write-Host '============================================================' -ForegroundColor Green
 
 } catch {
+    # 성공 경로엔 일부러 일시정지를 안 둔다 -- 다 끝나고 더 읽을 내용이
+    # 없으면 그냥 창이 알아서 닫히는 게 맞다. 실패했을 때만, 메시지를 읽을
+    # 틈도 없이 창이 사라지지 않도록 여기서 멈춘다.
     Write-Host "`n============================================================" -ForegroundColor Red
     Write-Host ' 패치 적용 중 오류가 발생했습니다' -ForegroundColor Red
     Write-Host " $_" -ForegroundColor Red
     Write-Host '============================================================' -ForegroundColor Red
-} finally {
     Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
     [void][System.Console]::ReadKey($true)
 }
