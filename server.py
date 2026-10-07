@@ -1348,28 +1348,56 @@ def api_bulk_delete_devices():
     ids = body.get('ids')
     if not isinstance(ids, list) or not ids:
         return jsonify({'error': 'ids 배열이 필요합니다'}), 400
+    # One shared connection/transaction for the whole batch, not one per
+    # device as this originally did (including inside delete_credentials()
+    # and audit()'s own write_audit() call -- 3 separate connect/commit/
+    # close cycles per device). Each one briefly takes SQLite's single
+    # writer lock, racing the live polling scheduler's own metric writes;
+    # confirmed live that selecting enough devices at once made this slow
+    # enough to actually exceed get_db()'s 10s lock-wait timeout and return
+    # a raw 500 partway through. Batching into one transaction cuts that
+    # 3x-per-device lock contention down to twice total for the real DB
+    # writes (once for devices+credentials+audit rows, once implicitly via
+    # the security file-trail calls below, which touch no DB at all).
+    from applog import security_logger, safe_log_value
+    username = _current_username()
+    source_ip = request.remote_addr
     deleted, skipped = [], []
-    for device_id in ids:
-        if not isinstance(device_id, str):
-            continue
-        if device_id == LOCAL_ID:
-            skipped.append(device_id)
-            continue
-        scheduler.remove_device_job(device_id)
-        conn = storage.get_db()
-        cur = conn.execute('DELETE FROM devices WHERE id=?', (device_id,))
+    conn = storage.get_db()
+    try:
+        for device_id in ids:
+            if not isinstance(device_id, str):
+                continue
+            if device_id == LOCAL_ID:
+                skipped.append(device_id)
+                continue
+            scheduler.remove_device_job(device_id)
+            cur = conn.execute('DELETE FROM devices WHERE id=?', (device_id,))
+            if cur.rowcount == 0:
+                skipped.append(device_id)
+                continue
+            conn.execute('DELETE FROM credentials WHERE device_id=?', (device_id,))
+            conn.execute(
+                'INSERT INTO audit_log(username,action,target,ts,source_ip,details) VALUES (?,?,?,?,?,?)',
+                (username, 'DELETE_DEVICE', device_id, int(time.time() * 1000), source_ip, None))
+            with state.LOCK:
+                state.LIVE.pop(device_id, None)
+                state.LAST_REPORT.pop(device_id, None)
+            deleted.append(device_id)
+        summary = f"{len(deleted)}건 삭제, {len(skipped)}건 건너뜀"
+        conn.execute(
+            'INSERT INTO audit_log(username,action,target,ts,source_ip,details) VALUES (?,?,?,?,?,?)',
+            (username, 'BULK_DELETE_DEVICES', None, int(time.time() * 1000), source_ip, summary))
         conn.commit()
+    finally:
         conn.close()
-        if cur.rowcount == 0:
-            skipped.append(device_id)
-            continue
-        storage.delete_credentials(device_id)
-        with state.LOCK:
-            state.LIVE.pop(device_id, None)
-            state.LAST_REPORT.pop(device_id, None)
-        audit('DELETE_DEVICE', target=device_id)
-        deleted.append(device_id)
-    audit('BULK_DELETE_DEVICES', details=f"{len(deleted)}건 삭제, {len(skipped)}건 건너뜀")
+    for device_id in deleted:
+        security_logger.info('user=%s action=%s target=%s ip=%s details=%s',
+                              safe_log_value(username), safe_log_value('DELETE_DEVICE'), safe_log_value(device_id),
+                              safe_log_value(source_ip), safe_log_value(None))
+    security_logger.info('user=%s action=%s target=%s ip=%s details=%s',
+                          safe_log_value(username), safe_log_value('BULK_DELETE_DEVICES'), safe_log_value(None),
+                          safe_log_value(source_ip), safe_log_value(summary))
     return jsonify({'ok': True, 'deletedCount': len(deleted), 'deletedIds': deleted, 'skippedIds': skipped})
 
 
