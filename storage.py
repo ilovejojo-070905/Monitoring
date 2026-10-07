@@ -162,10 +162,16 @@ LOCK_MINUTES = 10
 def get_db():
     # Code review pass, finding #1: default timeout (5s) is the only thing
     # standing between concurrent writers and "database is locked" --
-    # doubled here as defense in depth. The real fix is journal_mode=WAL,
-    # set once on the file itself in init_db() (a persistent file property,
-    # not a per-connection one, so it doesn't need repeating here).
-    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    # doubled here as defense in depth. The real fix for the dominant
+    # write source (per-device metric writes, one connection per device
+    # per poll tick) is collector/metrics.py's single background writer
+    # thread -- this timeout is just margin for whatever lower-frequency
+    # writes (device CRUD, incidents, audit) still open their own
+    # connection and happen to land at the same instant. journal_mode=WAL,
+    # set once on the file itself in init_db(), is what makes that fast
+    # rather than concurrent (a persistent file property, not a
+    # per-connection one, so it doesn't need repeating here).
+    conn = sqlite3.connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     return conn
 
