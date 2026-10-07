@@ -2039,6 +2039,7 @@ function refreshTopologyView(){
 /* ================= SERVERS ================= */
 let srvFilter = 'all';
 let srvGroupFilter = '';
+let srvSort = {col:null, dir:1};
 function renderServersSkeleton(){
   const el = $('#view-servers');
   el.innerHTML = `
@@ -2052,7 +2053,15 @@ function renderServersSkeleton(){
       </div>
       ${selectBarHtml('srv')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th style="width:30px">${selectAllHeaderHtml('srv')}</th><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>그룹</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>OS</th></tr></thead>
+        <thead><tr>
+          <th style="width:30px">${selectAllHeaderHtml('srv')}</th>
+          <th data-sort-col="status">상태<span class="sort-arrow" id="srv-sort-status"></span></th>
+          <th data-sort-col="name">서버명<span class="sort-arrow" id="srv-sort-name"></span></th>
+          <th data-sort-col="ip">IP<span class="sort-arrow" id="srv-sort-ip"></span></th>
+          <th data-sort-col="role">역할<span class="sort-arrow" id="srv-sort-role"></span></th>
+          <th data-sort-col="group">그룹<span class="sort-arrow" id="srv-sort-group"></span></th>
+          <th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>OS</th>
+        </tr></thead>
         <tbody id="srv-tbody"></tbody>
       </table></div>
     </div>
@@ -2062,13 +2071,14 @@ function renderServersSkeleton(){
   $('#srv-group-filter').addEventListener('change', ()=>{ srvGroupFilter = $('#srv-group-filter').value; renderServers(); });
   wireSelectBar('srv', renderServers);
   wireSelectAll('srv', 'srv-tbody', renderServers);
+  wireSortableHeaders('#view-servers thead', srvSort, renderServers);
 }
 function renderServers(){
   const q = ($('#srv-search')?.value||'').toLowerCase();
   const groupSel = $('#srv-group-filter');
   if(groupSel){ groupSel.innerHTML = groupFilterOptionsHtml(); groupSel.value = srvGroupFilter; }
-  const rows = applyStatusFilter(SERVERS, srvFilter)
-    .filter(s=> matchesEntitySearch(s, q) && (!srvGroupFilter || s.group===srvGroupFilter));
+  const rows = applySort(applyStatusFilter(SERVERS, srvFilter)
+    .filter(s=> matchesEntitySearch(s, q) && (!srvGroupFilter || s.group===srvGroupFilter)), srvSort);
   $('#srv-tbody').innerHTML = rows.map(s=>`
     <tr data-id="${s.id}">
       <td class="select-col">${selectColHtml(s.id)}</td>
@@ -2088,6 +2098,7 @@ function renderServers(){
   wireRowCheckboxes('srv-tbody', 'srv');
   updateSelectBar('srv');
   updateSelectAll('srv', 'srv-tbody');
+  updateSortArrows('srv', srvSort, ['status','name','ip','role','group']);
 }
 function miniBar(pct, lv){
   return `<div style="display:inline-flex;align-items:center;gap:6px">
@@ -2113,6 +2124,50 @@ function wireStatusFilter(id, setter, rerender){
 }
 function applyStatusFilter(list, filterVal){
   return filterVal==='all' ? list : list.filter(x=>x.status===filterVal);
+}
+/* ================= 목록 헤더 클릭 정렬 ================= */
+// 상태는 심각도 순(위험->주의->정상)으로, IP는 문자열이 아니라 옥텟 기준
+// 숫자로 비교한다 (그 외 IP 정렬 쓰는 곳과 같은 이유 -- "250"이 "30"보다
+// 문자열로는 앞에 오는 식으로 어긋나는 걸 피하기 위해서).
+function compareForSort(a, b, col){
+  if(col==='status'){
+    const rank = {crit:0, warn:1, good:2};
+    return (rank[a.status] ?? 9) - (rank[b.status] ?? 9);
+  }
+  if(col==='ip'){
+    const toNum = ip => (ip||'').split('.').map(Number)
+      .reduce((n,p,i)=> isNaN(p) ? n : n + p*Math.pow(1000,3-i), 0);
+    return toNum(a.ip) - toNum(b.ip);
+  }
+  const av = (a[col]||'').toString().toLowerCase();
+  const bv = (b[col]||'').toString().toLowerCase();
+  if(!av && bv) return 1;
+  if(av && !bv) return -1;
+  return av.localeCompare(bv, 'ko');
+}
+function applySort(list, sortState){
+  if(!sortState.col) return list;
+  return [...list].sort((a,b)=> compareForSort(a,b,sortState.col) * sortState.dir);
+}
+// 클릭 리스너는 skeleton에서 한 번만 연결한다 (매 렌더마다 다시 연결하면
+// 쌓임) -- 화살표 표시만 매 렌더마다 updateSortArrows로 갱신한다.
+function wireSortableHeaders(theadSelector, sortState, rerenderFn){
+  $$(`${theadSelector} th[data-sort-col]`).forEach(th=>{
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', ()=>{
+      const col = th.dataset.sortCol;
+      if(sortState.col===col) sortState.dir *= -1;
+      else { sortState.col = col; sortState.dir = 1; }
+      rerenderFn();
+    });
+  });
+}
+function updateSortArrows(prefix, sortState, cols){
+  cols.forEach(col=>{
+    const el = $(`#${prefix}-sort-${col}`);
+    if(!el) return;
+    el.textContent = sortState.col===col ? (sortState.dir===1 ? ' ▲' : ' ▼') : '';
+  });
 }
 // 2-1: shared by every list view's search box -- name/IP substring match,
 // plus group and tags, so "3층" finds every device in that group without
