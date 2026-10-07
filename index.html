@@ -2151,7 +2151,7 @@ function selectBarHtml(prefix){
   return `<div class="select-bar" id="${prefix}-selectbar" style="display:none;align-items:center;gap:10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius-sm);padding:8px 12px;margin:10px 0;font-size:12.5px">
     <span><b id="${prefix}-select-count">0</b>개 선택됨</span>
     <button type="button" class="btn" id="${prefix}-select-clear-btn">선택 해제</button>
-    <button type="button" class="btn" id="${prefix}-bulk-delete-btn" style="margin-left:auto;color:var(--crit)">선택 삭제</button>
+    <button type="button" class="btn" id="${prefix}-bulk-delete-btn" style="color:var(--crit)">선택 삭제</button>
   </div>`;
 }
 function wireSelectBar(prefix, rerenderFn){
