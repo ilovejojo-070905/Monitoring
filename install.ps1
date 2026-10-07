@@ -28,6 +28,28 @@ function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow }
 
+# git/winget/mkcert/pip all routinely write normal progress or status text
+# to STDERR (e.g. git fetch's own "From https://..." line) -- with
+# $ErrorActionPreference='Stop' in effect, PowerShell can treat that stderr
+# output as a terminating error and abort the whole script even though the
+# command actually succeeded (exit code 0). Confirmed live: a Patch.exe run
+# died right after printing git fetch's completely normal "From
+# https://github.com/..." status line, with no real failure at all -- this
+# turned out to be the real cause behind several "installed/patched but
+# nothing happened" reports this session, not just coincidence. Every native
+# exe call below goes through this so stderr chatter can't be mistaken for
+# a real failure; callers still check $LASTEXITCODE themselves afterward to
+# catch an ACTUAL failure. SilentlyContinue (not just Continue) also hides
+# the resulting "ERROR: From https://..." lines from the console entirely --
+# confirmed live that even non-terminating, these still print in red and
+# look exactly like a real failure to someone just trying to double-click
+# their way through an install.
+function Invoke-Native([scriptblock]$Command) {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try { & $Command } finally { $ErrorActionPreference = $prevEAP }
+}
+
 # ---------------------------------------------------------------- elevation --
 # Needed for New-NetFirewallRule later; everything else here works fine
 # without it. One prompt up front beats a silent firewall-rule failure at
@@ -87,7 +109,7 @@ function Install-IfMissing([string]$cmd, [string]$wingetId, [string]$label) {
         return
     }
     Write-Host "    $label 설치 중 (winget install $wingetId)..."
-    winget install --id $wingetId -e --source winget --accept-package-agreements --accept-source-agreements | Out-Null
+    Invoke-Native { winget install --id $wingetId -e --source winget --accept-package-agreements --accept-source-agreements | Out-Null }
 }
 
 Install-IfMissing 'git' 'Git.Git' 'Git'
@@ -155,9 +177,9 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
     # 수정할 일이 없는 배포 전용 디렉터리이므로, 머지를 시도할 이유 없이
     # 매번 origin/main과 완전히 똑같은 상태로 강제로 맞추는 게 더 맞고,
     # 실패하면 바로 알 수 있게 명시적으로 중단한다.
-    & $gitExe fetch origin main
+    Invoke-Native { & $gitExe fetch origin main }
     if ($LASTEXITCODE -ne 0) { throw "git fetch 실패 (종료 코드 $LASTEXITCODE). 네트워크 연결을 확인해주세요." }
-    & $gitExe reset --hard origin/main
+    Invoke-Native { & $gitExe reset --hard origin/main }
     if ($LASTEXITCODE -ne 0) { throw "git reset --hard 실패 (종료 코드 $LASTEXITCODE)." }
     Pop-Location
 } else {
@@ -165,23 +187,23 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
         throw "설치 위치($InstallDir)가 이미 있고 비어있지 않은데 git 저장소도 아닙니다. 다른 -InstallDir 경로를 지정해주세요."
     }
     New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir -Parent) | Out-Null
-    & $gitExe clone $RepoUrl $InstallDir
+    Invoke-Native { & $gitExe clone $RepoUrl $InstallDir }
     if ($LASTEXITCODE -ne 0) { throw "git clone 실패 (종료 코드 $LASTEXITCODE). 네트워크 연결을 확인해주세요." }
     Write-Ok '클론 완료'
 }
 
 # ------------------------------------------------------- [3] 파이썬 패키지 --
 Write-Step '[3/8] 파이썬 패키지 설치 (requirements.txt)'
-& $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt')
+Invoke-Native { & $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt') }
 Write-Ok '설치 완료'
 
 # ------------------------------------------------------------- [4] 인증서 --
 Write-Step '[4/8] HTTPS 인증서 발급 (이 PC의 LAN IP 기준)'
 Push-Location $InstallDir
-& $mkcertExe -install
+Invoke-Native { & $mkcertExe -install }
 $lanIp = (& $pythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'certs') | Out-Null
-& $mkcertExe -cert-file 'certs\infrasight.crt' -key-file 'certs\infrasight.key' $lanIp localhost infrasight.local
+Invoke-Native { & $mkcertExe -cert-file 'certs\infrasight.crt' -key-file 'certs\infrasight.key' $lanIp localhost infrasight.local }
 Write-Ok "인증서 발급 완료 (LAN IP: $lanIp)"
 Pop-Location
 

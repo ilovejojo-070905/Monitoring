@@ -28,6 +28,26 @@ function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow }
 
+# git/pip routinely write normal progress or status text to STDERR (e.g.
+# git fetch's own "From https://..." line) -- with $ErrorActionPreference
+# ='Stop' in effect, PowerShell can treat that as a terminating error and
+# abort the whole script even though the command actually succeeded (exit
+# code 0). Confirmed live: a Patch.exe run died right after printing git
+# fetch's completely normal "From https://github.com/..." status line, with
+# no real failure at all. Every native exe call below goes through this so
+# stderr chatter can't be mistaken for a real failure; callers still check
+# $LASTEXITCODE themselves afterward to catch an ACTUAL failure.
+# SilentlyContinue (not just Continue) also hides the resulting "ERROR:
+# From https://..." lines from the console entirely -- confirmed live that
+# even non-terminating, these still print in red and look exactly like a
+# real failure to someone just trying to double-click their way through a
+# patch.
+function Invoke-Native([scriptblock]$Command) {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try { & $Command } finally { $ErrorActionPreference = $prevEAP }
+}
+
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host ' InfraSight 패치 적용' -ForegroundColor Cyan
 Write-Host " 설치 위치: $InstallDir"
@@ -67,16 +87,16 @@ $pythonExe = Resolve-ExeAndAddToPath 'python' @("$env:LOCALAPPDATA\Programs\Pyth
 
 Write-Step '[1/3] 최신 코드 받기 (git fetch + reset --hard)'
 Push-Location $InstallDir
-& $gitExe fetch origin main
+Invoke-Native { & $gitExe fetch origin main }
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "git fetch 실패 (종료 코드 $LASTEXITCODE). 네트워크 연결을 확인해주세요." }
-& $gitExe reset --hard origin/main
+Invoke-Native { & $gitExe reset --hard origin/main }
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "git reset --hard 실패 (종료 코드 $LASTEXITCODE)." }
 $headNow = (& $gitExe rev-parse --short HEAD).Trim()
 Pop-Location
 Write-Ok "최신 커밋으로 갱신됨: $headNow"
 
 Write-Step '[2/3] 파이썬 패키지 확인 (requirements.txt)'
-& $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt')
+Invoke-Native { & $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt') }
 Write-Ok '확인 완료'
 
 Write-Step '[3/3] 실행 중인 프로세스 재시작'
