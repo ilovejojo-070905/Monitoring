@@ -53,7 +53,16 @@ Write-Host '============================================================' -Foreg
 Write-Step '[1/8] 필수 도구 확인 (Git / Python / Caddy / mkcert)'
 
 function Install-IfMissing([string]$cmd, [string]$wingetId, [string]$label) {
-    if (Get-Command $cmd -ErrorAction SilentlyContinue) {
+    # Same WindowsApps-stub trap Resolve-ExeAndAddToPath guards against below
+    # (see its own comment for the full story) -- without this check here
+    # too, this function sees the fake python.exe alias on PATH, concludes
+    # Python is "already installed", and skips the winget install entirely.
+    # Resolve-ExeAndAddToPath then correctly rejects that same stub and finds
+    # nothing real to fall back on, throwing "python 를 설치 후에도 찾을 수
+    # 없습니다" -- confirmed live on a fresh PC with the Store alias enabled
+    # (Windows 11's default) and no real Python ever installed.
+    $existing = Get-Command $cmd -ErrorAction SilentlyContinue
+    if ($existing -and $existing.Source -notmatch '\\WindowsApps\\') {
         Write-Ok "$label 이미 설치됨"
         return
     }
