@@ -2509,6 +2509,36 @@ let regCategory = 'server', regMode = 'agent', editingDeviceId = null;
 // gate (the update endpoint never re-checks reachability either, same as
 // before this feature), so it only matters for fresh registrations.
 let snmpTestPassed = false;
+// 스캔 결과는 "등록 후보 목록"일 뿐 실제로 등록된 데이터가 아닌데, 한 번
+// 스캔해두면 다른 메뉴 갔다 오거나 한참 방치해도 화면에 계속 남아있었다 --
+// 오래된 스캔 결과를 보고 지금도 그 상태인 줄 착각하기 쉬워서, 1분간
+// 조치가 없으면 자동으로 지우고, 다른 메뉴로 이동할 때도 바로 지운다
+// (전역 5분 무활동 로그아웃과 같은 "실제 사람 조작만 활동으로 친다" 원칙을
+// 재사용 -- resetIdleLogoutTimer 안에서 bumpScanResetOnActivity를 같이
+// 호출한다). renderRegisterSkeleton() 안이 아니라 바깥(이 스코프)에 둬야
+// switchView()/renderRegister()에서도 clearScanResults()를 호출할 수 있다.
+const SCAN_RESET_MS = 60 * 1000;
+let scanResetTimer = null;
+function clearScanResults(){
+  if(scanResetTimer){ clearTimeout(scanResetTimer); scanResetTimer = null; }
+  const resultsEl = $('#scan-results');
+  if(!resultsEl) return;
+  resultsEl.innerHTML = '';
+  const errEl = $('#scan-error'); if(errEl) errEl.textContent = '';
+  const historyPanel = $('#scan-history-panel');
+  if(historyPanel){ historyPanel.style.display = 'none'; historyPanel.innerHTML = ''; }
+  const rangeEl = $('#scan-range'); if(rangeEl) rangeEl.value = '';
+}
+function scheduleScanReset(){
+  if(scanResetTimer) clearTimeout(scanResetTimer);
+  scanResetTimer = setTimeout(clearScanResults, SCAN_RESET_MS);
+}
+// 활동이 있을 때마다 호출되지만, 지울 스캔 결과가 아예 없으면(타이머가
+// 안 걸려 있으면) 아무 것도 하지 않는다 -- 스캔한 적 없는 사람한테까지
+// 불필요한 타이머를 계속 재설정할 이유가 없다.
+function bumpScanResetOnActivity(){
+  if(scanResetTimer) scheduleScanReset();
+}
 function renderRegisterSkeleton(){
   const el = $('#view-register');
   el.innerHTML = `
@@ -2987,6 +3017,7 @@ function renderRegisterSkeleton(){
       if(!r.ok) throw new Error(j.error || '스캔에 실패했습니다');
       resultsEl.innerHTML = scanResultsTableHtml(j.results);
       wireFillButtons(resultsEl);
+      scheduleScanReset();
     }catch(err){
       errEl.textContent = err.message;
       resultsEl.innerHTML = '';
@@ -3103,6 +3134,7 @@ function renderRegisterSkeleton(){
           ${new Date(detail.started_at).toLocaleString('ko-KR')} · ${escapeHtml(detail.range_text)} 스캔 결과</div>`
           + scanResultsTableHtml(mapped);
         wireFillButtons(resultsEl);
+        scheduleScanReset();
         resultsEl.scrollIntoView({behavior:'smooth', block:'start'});
       }));
     }catch(err){
@@ -3412,6 +3444,12 @@ function renderRegister(){
     $('#net-bulk-results').innerHTML = '';
     $('#net-bulk-feedback').style.display = 'none';
   }
+  // clearScanResults()는 여기(renderRegister)가 아니라 switchView()에서만
+  // 호출한다 -- renderRegister()는 이 화면을 "다시 보여줄 때"뿐 아니라
+  // 메인 폴링 루프(pollTick, 2.2초마다)가 이 화면에 머무는 동안에도 계속
+  // 호출한다 (VIEWS[currentView].render()). 여기서 지우면 스캔 결과가
+  // 1분은커녕 2~3초 만에 사라져버린다 -- switchView()는 실제로 "다른
+  // 화면으로 이동"하는 순간에만 실행되므로 거기서 지우는 게 맞다.
 }
 
 /* ================= 5-1/5-2 보안: 2FA + API 토큰 ================= */
@@ -5432,6 +5470,7 @@ function switchView(name){
   if(currentView==='register' && name!=='register'){
     if(editingDeviceId && !confirm('수정을 취소할까요?')) return;
     if(typeof window.exitRegisterEditMode==='function') window.exitRegisterEditMode();
+    if(typeof clearScanResults==='function') clearScanResults();
   }
   // Each search box lives in a skeleton built once at startup (see
   // initSkeletons()) and never rebuilt, so a leftover search term from a
@@ -5505,6 +5544,7 @@ function resetIdleLogoutTimer(){
   const now = Date.now();
   if(now - lastIdleResetAt < 1000) return;  // mousemove 등이 너무 자주 쏟아지는 것 방지
   lastIdleResetAt = now;
+  if(typeof bumpScanResetOnActivity==='function') bumpScanResetOnActivity();
   if(idleLogoutTimer) clearTimeout(idleLogoutTimer);
   idleLogoutTimer = setTimeout(async ()=>{
     if(!CURRENT_USER) return;  // 이미 로그인 화면이면 할 일 없음
