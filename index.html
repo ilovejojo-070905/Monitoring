@@ -2050,8 +2050,9 @@ function renderServersSkeleton(){
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="srv-search" placeholder="서버명 / IP / 그룹 / 태그 검색"></div>
       </div>
+      ${selectBarHtml('srv')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>그룹</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>OS</th></tr></thead>
+        <thead><tr><th style="width:30px"></th><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>그룹</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>OS</th></tr></thead>
         <tbody id="srv-tbody"></tbody>
       </table></div>
     </div>
@@ -2059,6 +2060,7 @@ function renderServersSkeleton(){
   $('#srv-search').addEventListener('input', renderServers);
   wireStatusFilter('srv-filters', v=>srvFilter=v, renderServers);
   $('#srv-group-filter').addEventListener('change', ()=>{ srvGroupFilter = $('#srv-group-filter').value; renderServers(); });
+  wireSelectBar('srv', renderServers);
 }
 function renderServers(){
   const q = ($('#srv-search')?.value||'').toLowerCase();
@@ -2068,6 +2070,7 @@ function renderServers(){
     .filter(s=> matchesEntitySearch(s, q) && (!srvGroupFilter || s.group===srvGroupFilter));
   $('#srv-tbody').innerHTML = rows.map(s=>`
     <tr data-id="${s.id}">
+      <td class="select-col">${selectColHtml(s.id)}</td>
       <td><span class="pill ${s.status}"><span class="dot"></span>${statusLabel(s.status)}</span></td>
       <td class="name">${escapeHtml(s.name)}${regTag(s)}${maintTag(s)}</td>
       <td class="mono">${s.ip||'-'}</td>
@@ -2079,8 +2082,10 @@ function renderServers(){
       <td class="mono">${s.reachable!==false && typeof s.load==='number' ? fmt1(s.load) : '—'}</td>
       <td class="mono">${s.reachable!==false && typeof s.uptime==='number' ? s.uptime+'d' : '—'}</td>
       <td>${osLabel(s.os)}</td>
-    </tr>`).join('') || `<tr><td colspan="11"><div class="empty-note">검색 결과가 없습니다</div></td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="12"><div class="empty-note">검색 결과가 없습니다</div></td></tr>`;
   $$('#srv-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
+  wireRowCheckboxes('srv-tbody', 'srv');
+  updateSelectBar('srv');
 }
 function miniBar(pct, lv){
   return `<div style="display:inline-flex;align-items:center;gap:6px">
@@ -2125,6 +2130,70 @@ function groupFilterOptionsHtml(){
   const names = [...new Set(all.map(e=>e.group).filter(Boolean))].sort();
   return '<option value="">전체 그룹</option>' + names.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
 }
+/* ================= 장비 다중 선택 삭제 (ADMIN 전용) =================
+   서버/DB/네트워크/설비 4개 목록이 공유하는 체크박스 선택 + 일괄삭제 바.
+   선택 상태(selectedDeviceIds)는 화면을 벗어나면(switchView) 지워지지만,
+   같은 화면에 머무는 동안의 재렌더(2.2초 폴링 등)에는 영향받지 않는다 --
+   renderRegister()의 폴링발 상태 초기화 버그(일괄 등록 버튼이 선택 직후
+   꺼지던 문제)와 같은 함정이라 똑같이 switchView()에서만 지운다. */
+let selectedDeviceIds = new Set();
+function clearDeviceSelection(){ selectedDeviceIds.clear(); }
+// 체크박스 자체는 서버 쪽에서도 @require_role('ADMIN')으로 막혀있는
+// /api/devices/bulk-delete를 호출하는 용도일 뿐이라, ADMIN이 아니면 애초에
+// 렌더링하지 않는다 (OPERATOR/VIEWER는 지금처럼 장비 클릭 -> 상세창에서만
+// 삭제). 열은 항상 그리되(colspan 정렬 유지) 내용만 비워둔다.
+function selectColHtml(id){
+  return CURRENT_ROLE==='ADMIN' ? `<input type="checkbox" class="row-select" data-id="${escapeHtml(id)}" ${selectedDeviceIds.has(id)?'checked':''}>` : '';
+}
+function selectBarHtml(prefix){
+  return `<div class="select-bar" id="${prefix}-selectbar" style="display:none;align-items:center;gap:10px;background:var(--accent-soft);border:1px solid var(--accent);border-radius:var(--radius-sm);padding:8px 12px;margin:10px 0;font-size:12.5px">
+    <span><b id="${prefix}-select-count">0</b>개 선택됨</span>
+    <button type="button" class="btn" id="${prefix}-select-clear-btn">선택 해제</button>
+    <button type="button" class="btn" id="${prefix}-bulk-delete-btn" style="margin-left:auto;color:var(--crit)">선택 삭제</button>
+  </div>`;
+}
+function wireSelectBar(prefix, rerenderFn){
+  const clearBtn = $(`#${prefix}-select-clear-btn`);
+  if(clearBtn) clearBtn.addEventListener('click', ()=>{ clearDeviceSelection(); rerenderFn(); });
+  const delBtn = $(`#${prefix}-bulk-delete-btn`);
+  if(delBtn) delBtn.addEventListener('click', async ()=>{
+    const ids = [...selectedDeviceIds];
+    if(!ids.length) return;
+    const ok = await showConfirm(`선택한 ${ids.length}개 장비를 삭제할까요? 삭제한 장비는 되돌릴 수 없습니다.`, {title:'장비 일괄 삭제', okText:'삭제'});
+    if(!ok) return;
+    delBtn.disabled = true;
+    try{
+      const r = await apiFetch('/api/devices/bulk-delete', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ids}),
+      });
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error || '삭제 실패');
+      clearDeviceSelection();
+      await afterDeviceChange();
+    }catch(err){
+      alert(err.message);
+    }finally{
+      delBtn.disabled = false;
+    }
+  });
+}
+function updateSelectBar(prefix){
+  const bar = $(`#${prefix}-selectbar`);
+  if(!bar) return;
+  const n = selectedDeviceIds.size;
+  bar.style.display = n>0 ? 'flex' : 'none';
+  const c = $(`#${prefix}-select-count`); if(c) c.textContent = n;
+}
+function wireRowCheckboxes(tbodyId, prefix){
+  $$(`#${tbodyId} .row-select`).forEach(cb=>{
+    cb.addEventListener('click', e=> e.stopPropagation());
+    cb.addEventListener('change', ()=>{
+      if(cb.checked) selectedDeviceIds.add(cb.dataset.id); else selectedDeviceIds.delete(cb.dataset.id);
+      updateSelectBar(prefix);
+    });
+  });
+}
 /* ================= DATABASE ================= */
 let dbFilter = 'all';
 let dbGroupFilter = '';
@@ -2139,8 +2208,9 @@ function renderDatabaseSkeleton(){
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="db-search" placeholder="인스턴스명 / IP / 그룹 / 태그 검색"></div>
       </div>
+      ${selectBarHtml('db')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
+        <thead><tr><th style="width:30px"></th><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
         <tbody id="db-tbody"></tbody>
       </table></div>
     </div>
@@ -2148,6 +2218,7 @@ function renderDatabaseSkeleton(){
   $('#db-search').addEventListener('input', renderDatabase);
   wireStatusFilter('db-filters', v=>dbFilter=v, renderDatabase);
   $('#db-group-filter').addEventListener('change', ()=>{ dbGroupFilter = $('#db-group-filter').value; renderDatabase(); });
+  wireSelectBar('db', renderDatabase);
 }
 function renderDatabase(){
   const q = ($('#db-search')?.value||'').toLowerCase();
@@ -2157,6 +2228,7 @@ function renderDatabase(){
     .filter(d=> matchesEntitySearch(d, q) && (!dbGroupFilter || d.group===dbGroupFilter));
   $('#db-tbody').innerHTML = rows.map(d=>`
     <tr data-id="${d.id}">
+      <td class="select-col">${selectColHtml(d.id)}</td>
       <td><span class="pill ${d.status}"><span class="dot"></span>${statusLabel(d.status)}</span></td>
       <td class="name">${escapeHtml(d.name)}${regTag(d)}${maintTag(d)}${groupTag(d)}</td>
       <td>${escapeHtml(d.engine||'-')}</td>
@@ -2164,8 +2236,10 @@ function renderDatabase(){
       <td class="mono">${d.ip||'-'}</td>
       <td class="mono" style="color:${d.reachable?'var(--text-dim)':'var(--crit)'}">${d.reachable? fmt0(d.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${d.createdAt ? new Date(d.createdAt).toLocaleDateString('ko-KR') : '-'}</td>
-    </tr>`).join('') || `<tr><td colspan="7"><div class="empty-note">${DBS.length? '검색 결과가 없습니다' : '등록된 데이터베이스가 없습니다. "장비 등록"에서 DB 호스트의 IP를 등록해보세요.'}</div></td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="8"><div class="empty-note">${DBS.length? '검색 결과가 없습니다' : '등록된 데이터베이스가 없습니다. "장비 등록"에서 DB 호스트의 IP를 등록해보세요.'}</div></td></tr>`;
   $$('#db-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
+  wireRowCheckboxes('db-tbody', 'db');
+  updateSelectBar('db');
 }
 
 /* ================= NETWORK ================= */
@@ -2183,8 +2257,9 @@ function renderNetworkSkeleton(){
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="net-search" placeholder="장비명 / IP / 그룹 / 태그 검색"></div>
       </div>
+      ${selectBarHtml('net')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>그룹</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
+        <thead><tr><th style="width:30px"></th><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>그룹</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
         <tbody id="net-tbody"></tbody>
       </table></div>
     </div>
@@ -2209,6 +2284,7 @@ function renderNetworkSkeleton(){
   $('#net-search').addEventListener('input', renderNetwork);
   wireStatusFilter('net-filters', v=>netFilter=v, renderNetwork);
   $('#net-group-filter').addEventListener('change', ()=>{ netGroupFilter = $('#net-group-filter').value; renderNetwork(); });
+  wireSelectBar('net', renderNetwork);
 }
 function renderNetwork(){
   const q = ($('#net-search')?.value||'').toLowerCase();
@@ -2218,6 +2294,7 @@ function renderNetwork(){
     .filter(n=> matchesEntitySearch(n, q) && (!netGroupFilter || n.group===netGroupFilter));
   $('#net-tbody').innerHTML = netRows.map(n=>`
     <tr data-id="${n.id}" class="${n.id===selectedNetId?'sel-row':''}">
+      <td class="select-col">${selectColHtml(n.id)}</td>
       <td><span class="pill ${n.status}"><span class="dot"></span>${statusLabel(n.status)}</span></td>
       <td class="name">${escapeHtml(n.name)}${regTag(n)}${maintTag(n)}</td>
       <td>${escapeHtml(n.type||'-')}</td>
@@ -2228,10 +2305,12 @@ function renderNetwork(){
       <td class="mono">${n.reachable && typeof n.trafficIn==='number' ? fmtMbps((n.trafficIn||0)+(n.trafficOut||0))+' Mbps' : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono" style="color:${n.reachable?'var(--text-dim)':'var(--crit)'}">${n.reachable? fmt0(n.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
-    </tr>`).join('') || `<tr><td colspan="10"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="11"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
   $$('#net-tbody tr[data-id]').forEach(tr=>{
     tr.addEventListener('click', ()=>{ selectedNetId = tr.dataset.id; renderNetwork(); openDrawerFor(tr.dataset.id); });
   });
+  wireRowCheckboxes('net-tbody', 'net');
+  updateSelectBar('net');
   if(!selectedNetId && NETS.length) selectedNetId = NETS[0].id;
   const n = NETS.find(x=>x.id===selectedNetId);
   if(n && charts.net_chart){
@@ -2406,8 +2485,9 @@ function renderFacilitySkeleton(){
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="fac-search" placeholder="설비명 / IP / 그룹 / 태그 검색"></div>
       </div>
+      ${selectBarHtml('fac')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
+        <thead><tr><th style="width:30px"></th><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
         <tbody id="fac-tbody"></tbody>
       </table></div>
     </div>
@@ -2418,6 +2498,7 @@ function renderFacilitySkeleton(){
   $('#fac-search').addEventListener('input', renderFacility);
   wireStatusFilter('fac-filters', v=>facFilter=v, renderFacility);
   $('#fac-group-filter').addEventListener('change', ()=>{ facGroupFilter = $('#fac-group-filter').value; renderFacility(); });
+  wireSelectBar('fac', renderFacility);
 }
 function renderFacility(){
   const q = ($('#fac-search')?.value||'').toLowerCase();
@@ -2427,14 +2508,17 @@ function renderFacility(){
     .filter(f=> matchesEntitySearch(f, q) && (!facGroupFilter || f.group===facGroupFilter));
   $('#fac-tbody').innerHTML = facRows.map(f=>`
     <tr data-id="${f.id}">
+      <td class="select-col">${selectColHtml(f.id)}</td>
       <td><span class="pill ${f.status}"><span class="dot"></span>${statusLabel(f.status)}</span></td>
       <td class="name">${escapeHtml(f.name)}${regTag(f)}${maintTag(f)}${groupTag(f)}</td>
       <td>${escapeHtml(f.type||'-')}${f.role? ' · '+escapeHtml(f.role) : ''}</td>
       <td class="mono">${f.ip||'-'}</td>
       <td class="mono" style="color:${f.reachable?'var(--text-dim)':'var(--crit)'}">${f.reachable? fmt0(f.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${f.reachable && typeof f.battPct==='number' ? `<span style="color:${levelColor(levelOf(100-f.battPct,40,75))}">${fmt0(f.battPct)}%</span>` : '<span style="color:var(--text-faint)">—</span>'}</td>
-    </tr>`).join('') || `<tr><td colspan="6"><div class="empty-note">${FACS.length? '검색 결과가 없습니다' : '등록된 설비가 없습니다. 네트워크 카드가 있는 UPS · 항온항습기 · 분전반이라면 IP를 등록해 도달성을 확인할 수 있습니다.'}</div></td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="7"><div class="empty-note">${FACS.length? '검색 결과가 없습니다' : '등록된 설비가 없습니다. 네트워크 카드가 있는 UPS · 항온항습기 · 분전반이라면 IP를 등록해 도달성을 확인할 수 있습니다.'}</div></td></tr>`;
   $$('#fac-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
+  wireRowCheckboxes('fac-tbody', 'fac');
+  updateSelectBar('fac');
 
   const facInc = INCIDENTS.filter(i=>i.category==='FMS').slice(0,6);
   $('#fac-events').innerHTML = facInc.map(i=>`
@@ -5473,6 +5557,9 @@ let currentView = 'overview';
 function initSkeletons(){ Object.values(VIEWS).forEach(v=>v.skeleton()); }
 function switchView(name){
   if(!VIEWS[name]) return;
+  // 장비 다중 선택도 같은 원칙 -- 실제로 다른 화면으로 이동할 때만 지운다
+  // (같은 화면에 머무는 동안의 폴링 재렌더에는 영향받지 않아야 함).
+  if(name!==currentView && typeof clearDeviceSelection==='function') clearDeviceSelection();
   if(currentView==='register' && name!=='register'){
     if(editingDeviceId && !confirm('수정을 취소할까요?')) return;
     if(typeof window.exitRegisterEditMode==='function') window.exitRegisterEditMode();

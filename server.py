@@ -1337,6 +1337,42 @@ def api_delete_device(device_id):
     return jsonify({'ok': True})
 
 
+@app.post('/api/devices/bulk-delete')
+@require_role('ADMIN')
+def api_bulk_delete_devices():
+    # ADMIN-only on purpose, stricter than the single-device DELETE above
+    # (OPERATOR+) -- deleting several devices in one click is much easier to
+    # fat-finger than deleting one at a time via its own detail drawer, so
+    # this one explicitly needs the higher bar.
+    body = request.get_json(silent=True) or {}
+    ids = body.get('ids')
+    if not isinstance(ids, list) or not ids:
+        return jsonify({'error': 'ids 배열이 필요합니다'}), 400
+    deleted, skipped = [], []
+    for device_id in ids:
+        if not isinstance(device_id, str):
+            continue
+        if device_id == LOCAL_ID:
+            skipped.append(device_id)
+            continue
+        scheduler.remove_device_job(device_id)
+        conn = storage.get_db()
+        cur = conn.execute('DELETE FROM devices WHERE id=?', (device_id,))
+        conn.commit()
+        conn.close()
+        if cur.rowcount == 0:
+            skipped.append(device_id)
+            continue
+        storage.delete_credentials(device_id)
+        with state.LOCK:
+            state.LIVE.pop(device_id, None)
+            state.LAST_REPORT.pop(device_id, None)
+        audit('DELETE_DEVICE', target=device_id)
+        deleted.append(device_id)
+    audit('BULK_DELETE_DEVICES', details=f"{len(deleted)}건 삭제, {len(skipped)}건 건너뜀")
+    return jsonify({'ok': True, 'deletedCount': len(deleted), 'deletedIds': deleted, 'skippedIds': skipped})
+
+
 # ------------------------------------------------------------- 2-1 groups --
 @app.get('/api/groups')
 @require_role('VIEWER')
