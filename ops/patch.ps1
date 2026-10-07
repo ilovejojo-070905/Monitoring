@@ -33,6 +33,14 @@ Write-Host ' InfraSight 패치 적용' -ForegroundColor Cyan
 Write-Host " 설치 위치: $InstallDir"
 Write-Host '============================================================' -ForegroundColor Cyan
 
+# 아래 전체를 try/finally로 감싸는 이유: 중간에 오류가 나면
+# $ErrorActionPreference='Stop' 때문에 즉시 종료되는데, 끝의 "아무 키나
+# 누르면 창이 닫힙니다" 일시정지는 성공 경로에만 있어서 실패 시엔 거치지도
+# 못하고 오류 메시지를 읽을 틈도 없이 창이 사라졌다 (install.ps1에서
+# 실제로 겪은 것과 같은 문제). finally에 일시정지를 두면 성공/실패 어느
+# 쪽이든 창이 남는다.
+try {
+
 if (-not (Test-Path (Join-Path $InstallDir '.git'))) {
     throw "'$InstallDir' 에 설치된 InfraSight(git 저장소)를 찾을 수 없습니다. 처음 설치라면 install.ps1(Setup.exe)을 사용해주세요."
 }
@@ -103,5 +111,12 @@ Write-Host "`n============================================================" -For
 Write-Host " 패치 완료 (커밋 $headNow)" -ForegroundColor Green
 Write-Host '============================================================' -ForegroundColor Green
 
-Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
-[void][System.Console]::ReadKey($true)
+} catch {
+    Write-Host "`n============================================================" -ForegroundColor Red
+    Write-Host ' 패치 적용 중 오류가 발생했습니다' -ForegroundColor Red
+    Write-Host " $_" -ForegroundColor Red
+    Write-Host '============================================================' -ForegroundColor Red
+} finally {
+    Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
+    [void][System.Console]::ReadKey($true)
+}

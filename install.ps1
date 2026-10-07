@@ -40,9 +40,29 @@ if (-not (Test-Admin)) {
     Write-Host "관리자 권한이 필요합니다 (인증서 신뢰 등록 · 방화벽 설정). UAC 승인 창을 확인해주세요..." -ForegroundColor Yellow
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
                  '-InstallDir', $InstallDir, '-RepoUrl', $RepoUrl)
-    Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
+    try {
+        Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
+    } catch {
+        # UAC 승인을 취소하면 Start-Process 자체가 예외를 던진다 -- 이걸 못
+        # 잡으면 이 창(관리자 권한 없는 원래 창)이 아무 메시지 없이 그냥
+        # 닫혀버려서, 더블클릭한 사람 입장에서는 "실행했는데 아무 일도 안
+        # 일어남"으로만 보인다 (실제로 겪은 문제: 설치/패치가 조용히 실패
+        # 해도 창이 바로 닫혀 원인을 알 길이 없었음).
+        Write-Host "`n관리자 권한 승인이 취소되었거나 실패했습니다." -ForegroundColor Red
+        Write-Host "이 파일을 다시 실행한 뒤, UAC 창에서 '예'를 눌러주세요." -ForegroundColor Yellow
+        Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
+        [void][System.Console]::ReadKey($true)
+    }
     exit
 }
+
+# 아래 설치 단계 전체를 try/finally로 감싸는 이유: 어디서든 오류(throw)가
+# 나면 $ErrorActionPreference='Stop' 때문에 스크립트가 그 즉시 종료되는데,
+# 끝에 있는 "아무 키나 누르면 창이 닫힙니다" 일시정지는 성공 경로에만
+# 있었어서 실패 시엔 거치지도 못하고 창이 바로 닫혔다 -- 실제로 다른 PC에
+# 설치하다 이 증상(오류 메시지를 읽을 틈도 없이 창이 사라짐)을 겪었다.
+# finally에 일시정지를 두면 성공/실패 어느 쪽이든 창이 안 닫히고 남는다.
+try {
 
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host ' InfraSight 설치' -ForegroundColor Cyan
@@ -260,9 +280,17 @@ Write-Host "%LOCALAPPDATA%\mkcert\rootCA.pem 을 그 기기에 설치하면 경�
 
 Start-Process "https://localhost:8443"
 
-# This window is the elevated one (Start-Process -Verb RunAs) where every
-# message above actually printed -- without a pause here it closes the
-# instant this script ends, so the success message (and the LAN URL to give
-# out) flashes by and is gone before anyone can read it.
-Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
-[void][System.Console]::ReadKey($true)
+} catch {
+    Write-Host "`n============================================================" -ForegroundColor Red
+    Write-Host ' 설치 중 오류가 발생했습니다' -ForegroundColor Red
+    Write-Host " $_" -ForegroundColor Red
+    Write-Host '============================================================' -ForegroundColor Red
+} finally {
+    # This window is the elevated one (Start-Process -Verb RunAs) where every
+    # message above actually printed -- without a pause here it closes the
+    # instant this script ends, so the success message (and the LAN URL to
+    # give out) -- or, just as importantly, the error message above -- flashes
+    # by and is gone before anyone can read it.
+    Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
+    [void][System.Console]::ReadKey($true)
+}
