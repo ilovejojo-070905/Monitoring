@@ -2052,7 +2052,7 @@ function renderServersSkeleton(){
       </div>
       ${selectBarHtml('srv')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th style="width:30px"></th><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>그룹</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>OS</th></tr></thead>
+        <thead><tr><th style="width:30px">${selectAllHeaderHtml('srv')}</th><th>상태</th><th>서버명</th><th>IP</th><th>역할</th><th>그룹</th><th>CPU</th><th>MEM</th><th>DISK</th><th>Load</th><th>Uptime</th><th>OS</th></tr></thead>
         <tbody id="srv-tbody"></tbody>
       </table></div>
     </div>
@@ -2061,6 +2061,7 @@ function renderServersSkeleton(){
   wireStatusFilter('srv-filters', v=>srvFilter=v, renderServers);
   $('#srv-group-filter').addEventListener('change', ()=>{ srvGroupFilter = $('#srv-group-filter').value; renderServers(); });
   wireSelectBar('srv', renderServers);
+  wireSelectAll('srv', 'srv-tbody', renderServers);
 }
 function renderServers(){
   const q = ($('#srv-search')?.value||'').toLowerCase();
@@ -2086,6 +2087,7 @@ function renderServers(){
   $$('#srv-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
   wireRowCheckboxes('srv-tbody', 'srv');
   updateSelectBar('srv');
+  updateSelectAll('srv', 'srv-tbody');
 }
 function miniBar(pct, lv){
   return `<div style="display:inline-flex;align-items:center;gap:6px">
@@ -2167,8 +2169,14 @@ function wireSelectBar(prefix, rerenderFn){
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ids}),
       });
-      const j = await r.json();
-      if(!r.ok) throw new Error(j.error || '삭제 실패');
+      // r.json()이 던지는 "Unexpected token '<' ... is not valid JSON"은
+      // 서버가 이 라우트를 아예 모를 때(구버전 백엔드가 404 HTML 페이지를
+      // 돌려줄 때) 그대로 사용자에게 노출되는 원인 불명의 메시지였다 --
+      // 실제로 겪은 문제. JSON이 아니면 상태 코드 기반의 읽을 수 있는
+      // 메시지로 대체한다.
+      let j = null;
+      try{ j = await r.json(); }catch{ /* 응답이 JSON이 아님 (예: 404 HTML) */ }
+      if(!r.ok) throw new Error((j && j.error) || `삭제 실패 (HTTP ${r.status}) -- 서버가 최신 버전인지 확인해주세요`);
       clearDeviceSelection();
       await afterDeviceChange();
     }catch(err){
@@ -2191,8 +2199,36 @@ function wireRowCheckboxes(tbodyId, prefix){
     cb.addEventListener('change', ()=>{
       if(cb.checked) selectedDeviceIds.add(cb.dataset.id); else selectedDeviceIds.delete(cb.dataset.id);
       updateSelectBar(prefix);
+      updateSelectAll(prefix, tbodyId);
     });
   });
+}
+// 헤더의 "전체 선택" 체크박스 -- 지금 화면(검색/필터 적용된)에 보이는
+// 행만 대상으로 한다 (숨겨진 행까지 선택하면 "몇 개 선택됨" 숫자와 실제
+// 화면에 체크된 개수가 안 맞아 혼란스럽다). change 리스너는 skeleton에서
+// 한 번만 연결하고(wireSelectAll), 체크/부분선택 표시 상태 갱신은 매
+// 렌더마다 updateSelectAll로 한다.
+function selectAllHeaderHtml(prefix){
+  return `<input type="checkbox" class="select-all-cb" id="${prefix}-select-all" style="display:none">`;
+}
+function wireSelectAll(prefix, tbodyId, rerenderFn){
+  const cb = $(`#${prefix}-select-all`);
+  if(!cb) return;
+  cb.addEventListener('change', ()=>{
+    const ids = $$(`#${tbodyId} .row-select`).map(x=>x.dataset.id);
+    if(cb.checked) ids.forEach(id=>selectedDeviceIds.add(id));
+    else ids.forEach(id=>selectedDeviceIds.delete(id));
+    rerenderFn();
+  });
+}
+function updateSelectAll(prefix, tbodyId){
+  const cb = $(`#${prefix}-select-all`);
+  if(!cb) return;
+  cb.style.display = CURRENT_ROLE==='ADMIN' ? '' : 'none';
+  const ids = $$(`#${tbodyId} .row-select`).map(x=>x.dataset.id);
+  const allSelected = ids.length>0 && ids.every(id=>selectedDeviceIds.has(id));
+  cb.checked = allSelected;
+  cb.indeterminate = !allSelected && ids.some(id=>selectedDeviceIds.has(id));
 }
 /* ================= DATABASE ================= */
 let dbFilter = 'all';
@@ -2210,7 +2246,7 @@ function renderDatabaseSkeleton(){
       </div>
       ${selectBarHtml('db')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th style="width:30px"></th><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
+        <thead><tr><th style="width:30px">${selectAllHeaderHtml('db')}</th><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
         <tbody id="db-tbody"></tbody>
       </table></div>
     </div>
@@ -2219,6 +2255,7 @@ function renderDatabaseSkeleton(){
   wireStatusFilter('db-filters', v=>dbFilter=v, renderDatabase);
   $('#db-group-filter').addEventListener('change', ()=>{ dbGroupFilter = $('#db-group-filter').value; renderDatabase(); });
   wireSelectBar('db', renderDatabase);
+  wireSelectAll('db', 'db-tbody', renderDatabase);
 }
 function renderDatabase(){
   const q = ($('#db-search')?.value||'').toLowerCase();
@@ -2240,6 +2277,7 @@ function renderDatabase(){
   $$('#db-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
   wireRowCheckboxes('db-tbody', 'db');
   updateSelectBar('db');
+  updateSelectAll('db', 'db-tbody');
 }
 
 /* ================= NETWORK ================= */
@@ -2259,7 +2297,7 @@ function renderNetworkSkeleton(){
       </div>
       ${selectBarHtml('net')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th style="width:30px"></th><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>그룹</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
+        <thead><tr><th style="width:30px">${selectAllHeaderHtml('net')}</th><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>그룹</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
         <tbody id="net-tbody"></tbody>
       </table></div>
     </div>
@@ -2285,6 +2323,7 @@ function renderNetworkSkeleton(){
   wireStatusFilter('net-filters', v=>netFilter=v, renderNetwork);
   $('#net-group-filter').addEventListener('change', ()=>{ netGroupFilter = $('#net-group-filter').value; renderNetwork(); });
   wireSelectBar('net', renderNetwork);
+  wireSelectAll('net', 'net-tbody', renderNetwork);
 }
 function renderNetwork(){
   const q = ($('#net-search')?.value||'').toLowerCase();
@@ -2311,6 +2350,7 @@ function renderNetwork(){
   });
   wireRowCheckboxes('net-tbody', 'net');
   updateSelectBar('net');
+  updateSelectAll('net', 'net-tbody');
   if(!selectedNetId && NETS.length) selectedNetId = NETS[0].id;
   const n = NETS.find(x=>x.id===selectedNetId);
   if(n && charts.net_chart){
@@ -2487,7 +2527,7 @@ function renderFacilitySkeleton(){
       </div>
       ${selectBarHtml('fac')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th style="width:30px"></th><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
+        <thead><tr><th style="width:30px">${selectAllHeaderHtml('fac')}</th><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
         <tbody id="fac-tbody"></tbody>
       </table></div>
     </div>
@@ -2499,6 +2539,7 @@ function renderFacilitySkeleton(){
   wireStatusFilter('fac-filters', v=>facFilter=v, renderFacility);
   $('#fac-group-filter').addEventListener('change', ()=>{ facGroupFilter = $('#fac-group-filter').value; renderFacility(); });
   wireSelectBar('fac', renderFacility);
+  wireSelectAll('fac', 'fac-tbody', renderFacility);
 }
 function renderFacility(){
   const q = ($('#fac-search')?.value||'').toLowerCase();
@@ -2519,6 +2560,7 @@ function renderFacility(){
   $$('#fac-tbody tr[data-id]').forEach(tr=> tr.addEventListener('click', ()=> openDrawerFor(tr.dataset.id)));
   wireRowCheckboxes('fac-tbody', 'fac');
   updateSelectBar('fac');
+  updateSelectAll('fac', 'fac-tbody');
 
   const facInc = INCIDENTS.filter(i=>i.category==='FMS').slice(0,6);
   $('#fac-events').innerHTML = facInc.map(i=>`
