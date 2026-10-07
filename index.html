@@ -5508,6 +5508,12 @@ function resetIdleLogoutTimer(){
   if(idleLogoutTimer) clearTimeout(idleLogoutTimer);
   idleLogoutTimer = setTimeout(async ()=>{
     if(!CURRENT_USER) return;  // 이미 로그인 화면이면 할 일 없음
+    // 조회자(VIEWER)는 읽기 전용이라 자리를 비워도 상태 화면만 띄워두는
+    // 용도로 쓰이는 경우가 많다 -- 5분마다 로그아웃되면 그 용도에 오히려
+    // 방해가 되므로 무활동 로그아웃에서 제외한다. 서버 쪽 30분 세션은
+    // 조회자에게도 그대로 적용된다 (여기서 빼는 건 이 5분짜리 클라이언트
+    // 타이머뿐).
+    if(CURRENT_ROLE === 'VIEWER') return;
     await fetch('/api/auth/logout', {method:'POST'}).catch(()=>{});
     location.reload();
   }, IDLE_LOGOUT_MS);
