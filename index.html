@@ -1044,6 +1044,12 @@ function applyRoleUI(){
   // permanently hide the option even for a real admin.
   const adminOpt = $('#u-role-admin-opt');
   if(adminOpt) adminOpt.style.display = isAdmin ? '' : 'none';
+  // 등록된 네트워크 장비를 엑셀로 내보내는 기능은 SNMP Community(사실상
+  // 비밀번호)가 평문으로 담긴 파일을 만들어내므로 일괄 등록보다 더 민감하다
+  // -- ADMIN만 보이게 한다 (서버 쪽도 @require_role('ADMIN')으로 동일하게
+  // 막혀있어, 이건 UI를 깔끔하게 하기 위한 것일 뿐 실제 보안 경계는 아니다).
+  const netBulkExportLink = $('#net-bulk-export-link');
+  if(netBulkExportLink) netBulkExportLink.style.display = isAdmin ? 'inline-block' : 'none';
 }
 
 /* ================= backend-driven live state ================= */
@@ -2541,6 +2547,7 @@ function renderRegisterSkeleton(){
             <button type="button" class="btn" id="net-bulk-choose-btn" style="font-size:12px;padding:6px 12px">파일 선택</button>
             <span id="net-bulk-filename" style="font-size:11px;color:var(--text-dim);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
             <button type="button" class="btn primary" id="net-bulk-upload-btn" style="font-size:12px;padding:6px 12px" disabled>엑셀로 일괄 등록</button>
+            <a id="net-bulk-export-link" href="/api/devices/export/network" class="btn" style="display:none;text-decoration:none;font-size:12px;padding:6px 12px" title="등록된 네트워크 장비를 다른 PC의 InfraSight에 그대로 올릴 수 있는 엑셀로 내보냅니다 (관리자 전용)">⬇ 등록된 장비 내보내기</a>
           </div>
         </div>
         <div id="net-bulk-feedback" style="display:none;margin-bottom:12px">

@@ -26,25 +26,29 @@ SUPPORTED_MODES = ('ping', 'snmp')
 SUPPORTED_SNMP_VERSIONS = ('v1', 'v2c')
 
 
+def _style_header_row(ws, header_count):
+    header_font = Font(bold=True, color='FFFFFF')
+    header_fill = PatternFill(start_color='4C3DB8', end_color='4C3DB8', fill_type='solid')
+    for col_idx in range(1, header_count + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+    widths = [18, 16, 14, 10, 20, 16, 12, 22]
+    for col_idx, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+
 def build_template_xlsx():
     """Returns (bytes, filename). Called by GET /download/network-bulk-template."""
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '네트워크 장비 일괄등록'
 
-    header_font = Font(bold=True, color='FFFFFF')
-    header_fill = PatternFill(start_color='4C3DB8', end_color='4C3DB8', fill_type='solid')
     ws.append(TEMPLATE_HEADERS)
-    for col_idx in range(1, len(TEMPLATE_HEADERS) + 1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal='center', vertical='center')
+    _style_header_row(ws, len(TEMPLATE_HEADERS))
     for row in TEMPLATE_EXAMPLE_ROWS:
         ws.append(row)
-    widths = [18, 16, 14, 10, 20, 16, 12, 22]
-    for col_idx, width in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     notes = wb.create_sheet('안내')
     notes.append(['네트워크 장비 일괄 등록 안내'])
@@ -118,3 +122,34 @@ def parse_xlsx(file_bytes):
     if not results:
         raise ValueError('입력된 장비 데이터가 없습니다 (2행부터 입력해주세요).')
     return results
+
+
+def build_export_xlsx(devices):
+    """Returns (bytes, filename). devices: list of dicts with
+    name/ip/type/group/mode/community/snmpPort/snmpVersion -- the caller
+    (server.py) is responsible for pulling the actual device rows + their
+    decrypted SNMP community credentials and filtering out anything this
+    export can't represent (SNMPv3, Agent mode -- same scope boundary as
+    the bulk-import template, see its own SUPPORTED_MODES/
+    SUPPORTED_SNMP_VERSIONS comment above).
+
+    Same 8-column layout as build_template_xlsx() on purpose: the file this
+    produces can be fed straight into POST /api/devices/bulk-import/network
+    on a different InfraSight install with no editing, which is the whole
+    point -- "move my currently-registered network devices onto another
+    PC's monitoring in one shot"."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '네트워크 장비 내보내기'
+
+    ws.append(TEMPLATE_HEADERS)
+    _style_header_row(ws, len(TEMPLATE_HEADERS))
+    for d in devices:
+        ws.append([
+            d['name'], d['ip'], d.get('type') or '', d.get('group') or '',
+            d['mode'], d.get('community') or '', d.get('snmpPort') or '', d.get('snmpVersion') or '',
+        ])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue(), 'InfraSight-네트워크장비-내보내기.xlsx'

@@ -1174,6 +1174,50 @@ def api_bulk_import_network_devices():
     return jsonify({'total': len(rows), 'successCount': success_count, 'results': results})
 
 
+@app.get('/api/devices/export/network')
+@require_role('ADMIN')
+def api_export_network_devices():
+    """등록된 네트워크 장비 전체를, 위 bulk-import 엔드포인트가 그대로 받아
+    들일 수 있는 동일한 엑셀 양식으로 내보낸다 -- 이 PC에 등록된 네트워크
+    장비들을 그대로 다른 PC의 InfraSight로 옮길 때 쓴다 (다운로드한 파일을
+    편집 없이 그 PC의 "엑셀로 일괄 등록"에 바로 올리면 끝).
+
+    ADMIN 전용인 이유: SNMP Community 문자열(사실상 비밀번호)이 평문으로
+    담긴 파일을 만들어내는 기능이라, 일괄 등록(OPERATOR+)보다 더 민감하다.
+
+    SNMPv3 장비와 Agent 장비는 내보내기에서 빠진다 -- 둘 다 이 엑셀 양식
+    자체가 표현 못 하는 정보가 필요해서(v3는 사용자명/인증·암호화 프로토콜/
+    비밀번호, Agent는 토큰 발급 + 해당 PC에서의 설치) 애초에 bulk-import가
+    지원하지 않는 범위와 정확히 같다."""
+    devices = [d for d in storage.load_devices() if d['category'] == 'net']
+    rows = []
+    skipped = 0
+    for d in devices:
+        fields = d.get('fields') or {}
+        mode = d['mode']
+        if mode not in network_bulk_import.SUPPORTED_MODES:
+            skipped += 1  # Agent 모드 네트워크 장비는 등록 화면 자체가 안 만들지만, 혹시 몰라 방어적으로 건너뜀
+            continue
+        row = {'name': d['name'], 'ip': d['ip'] or '', 'type': fields.get('type'), 'group': fields.get('group'), 'mode': mode}
+        if mode == 'snmp':
+            snmp_version = fields.get('snmpVersion') or 'v2c'
+            if snmp_version not in network_bulk_import.SUPPORTED_SNMP_VERSIONS:
+                skipped += 1
+                continue
+            row['community'] = storage.get_credential(d['id'], 'snmp_community') or ''
+            row['snmpPort'] = fields.get('snmpPort') or 161
+            row['snmpVersion'] = snmp_version
+        rows.append(row)
+    data, filename = network_bulk_import.build_export_xlsx(rows)
+    audit('EXPORT_NETWORK_DEVICES', details=f'{len(rows)}대 내보냄, {skipped}대 제외(SNMPv3)')
+    import io
+    resp = send_file(io.BytesIO(data),
+                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                      as_attachment=True, download_name=filename)
+    resp.headers['X-Export-Skipped-Count'] = str(skipped)
+    return resp
+
+
 @app.put('/api/devices/<device_id>')
 @require_role('OPERATOR')
 def api_update_device(device_id):
