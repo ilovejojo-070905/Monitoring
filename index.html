@@ -2539,6 +2539,21 @@ function scheduleScanReset(){
 function bumpScanResetOnActivity(){
   if(scanResetTimer) scheduleScanReset();
 }
+// 네트워크 엑셀 일괄 등록 카드(파일 선택/업로드 결과)를 초기 상태로 되돌린다
+// -- switchView()가 "다른 화면 -> 장비 등록"으로 실제 이동할 때만 호출해야
+// 한다 (위 renderRegister()의 코멘트 참고). 여기도 clearScanResults()와
+// 마찬가지로 renderRegisterSkeleton() 안이 아니라 바깥에 둬야 switchView()
+// 에서 호출할 수 있다.
+function resetNetBulkUi(){
+  const bulkFileEl = $('#net-bulk-file');
+  if(!bulkFileEl) return;
+  bulkFileEl.value = '';
+  $('#net-bulk-filename').textContent = '';
+  $('#net-bulk-upload-btn').disabled = true;
+  $('#net-bulk-status').textContent = '';
+  $('#net-bulk-results').innerHTML = '';
+  $('#net-bulk-feedback').style.display = 'none';
+}
 function renderRegisterSkeleton(){
   const el = $('#view-register');
   el.innerHTML = `
@@ -3430,26 +3445,14 @@ function renderRegister(){
   renderGlobalThresholdsSummary();
   renderMaintWindowsList();
   renderMaintWindowTargetOptions();
-  // 장비 등록 화면의 skeleton은 앱 시작 시 한 번만 만들어지고(initSkeletons),
-  // 이 화면을 나갔다 들어와도 다시 만들어지지 않는다 -- 그래서 네트워크 엑셀
-  // 일괄 등록 카드에서 파일을 선택해두고 다른 메뉴에 갔다 돌아오면, 선택했던
-  // 파일/업로드 결과가 그대로 남아있었다. renderRegister()는 이 화면을 다시
-  // 보여줄 때마다 실행되므로, 여기서 매번 초기 상태로 되돌린다.
-  const bulkFileEl = $('#net-bulk-file');
-  if(bulkFileEl){
-    bulkFileEl.value = '';
-    $('#net-bulk-filename').textContent = '';
-    $('#net-bulk-upload-btn').disabled = true;
-    $('#net-bulk-status').textContent = '';
-    $('#net-bulk-results').innerHTML = '';
-    $('#net-bulk-feedback').style.display = 'none';
-  }
-  // clearScanResults()는 여기(renderRegister)가 아니라 switchView()에서만
+  // resetNetBulkUi()/clearScanResults()는 여기(renderRegister)가 아니라 switchView()에서만
   // 호출한다 -- renderRegister()는 이 화면을 "다시 보여줄 때"뿐 아니라
   // 메인 폴링 루프(pollTick, 2.2초마다)가 이 화면에 머무는 동안에도 계속
-  // 호출한다 (VIEWS[currentView].render()). 여기서 지우면 스캔 결과가
-  // 1분은커녕 2~3초 만에 사라져버린다 -- switchView()는 실제로 "다른
-  // 화면으로 이동"하는 순간에만 실행되므로 거기서 지우는 게 맞다.
+  // 호출한다 (VIEWS[currentView].render()). 여기서 초기화하면, 엑셀 파일을
+  // 선택해서 "일괄 등록" 버튼이 막 활성화된 순간에도 다음 폴링 틱(최대
+  // 2.2초 뒤)이 바로 비활성화 상태로 되돌려버려서 버튼을 누를 틈이 없다
+  // (실제로 겪은 문제) -- switchView()는 실제로 "다른 화면으로 이동"하는
+  // 순간에만 실행되므로 거기서 초기화하는 게 맞다.
 }
 
 /* ================= 5-1/5-2 보안: 2FA + API 토큰 ================= */
@@ -5474,6 +5477,9 @@ function switchView(name){
     if(editingDeviceId && !confirm('수정을 취소할까요?')) return;
     if(typeof window.exitRegisterEditMode==='function') window.exitRegisterEditMode();
     if(typeof clearScanResults==='function') clearScanResults();
+  }
+  if(name==='register' && currentView!=='register'){
+    if(typeof resetNetBulkUi==='function') resetNetBulkUi();
   }
   // Each search box lives in a skeleton built once at startup (see
   // initSkeletons()) and never rebuilt, so a leftover search term from a
