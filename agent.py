@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -43,7 +44,7 @@ IS_WINDOWS = os.name == 'nt'
 # foundation an eventual auto-update feature would compare against; nothing
 # here downloads or applies updates yet, by design (see the directive this
 # was built from).
-AGENT_VERSION = '1.2.1'
+AGENT_VERSION = '1.3.0'
 
 _START_TIME = time.time()
 _LAST_ERROR = None  # most recent local exception message, if any (sample() or the report request itself)
@@ -232,6 +233,9 @@ def startup_vbs_path():
 
 
 def install_startup():
+    if not IS_WINDOWS:
+        install_startup_linux()
+        return
     # Uses the per-user Startup folder rather than Task Scheduler: it needs no
     # admin rights and works under locked-down / managed Windows accounts too.
     #
@@ -244,9 +248,6 @@ def install_startup():
     # after a reboot. WScript.Shell.Run's windowStyle=0 tells Windows never
     # to create the window visible in the first place, which is reliable
     # regardless of how the target exe was built.
-    if not IS_WINDOWS:
-        print('[agent] 자동 시작 등록은 현재 Windows에서만 지원됩니다.')
-        return
     cmd = this_executable_command()
     cmd_str = ' '.join(f'"{c}"' for c in cmd)
     vbs_cmd = cmd_str.replace('"', '""')  # escape for embedding inside a VBScript string literal
@@ -269,6 +270,7 @@ def install_startup():
 
 def uninstall_startup():
     if not IS_WINDOWS:
+        uninstall_startup_linux()
         return
     try:
         removed = False
@@ -280,6 +282,70 @@ def uninstall_startup():
             print('[agent] 자동 시작 등록 해제 완료')
         else:
             print('[agent] 등록된 자동 시작이 없습니다.')
+    except Exception as e:
+        print('[agent] 자동 시작 해제 실패:', e)
+
+
+# Linux had no auto-start at all before this (install_startup() used to just
+# print "Windows에서만 지원됩니다" and return) -- after a reboot, monitoring
+# silently stopped until someone noticed and re-ran the agent by hand. A
+# per-*user* crontab @reboot entry mirrors the Windows Startup-folder
+# approach in every way that matters here: no root/sudo needed (crontab -e
+# only ever touches the calling user's own table, confirmed -- it cannot
+# see or modify root's or any other user's crontab), nothing system-wide
+# changes, and it only ever runs this exact command as this same user would
+# have run it by hand. The one real limitation -- cron itself must already
+# be installed and running, which this never installs or starts -- matches
+# the Windows side equally only ever using what's already there (the
+# Startup folder mechanism), never touching services.
+_CRON_MARKER = '# InfraSightAgent (auto-added -- do not edit this line by hand)'
+
+
+def _read_user_crontab():
+    """Returns the current user's crontab as a list of lines, or [] if there
+    is none yet (a nonzero exit from `crontab -l` almost always just means
+    "no crontab for this user", not a real error -- there's nothing to
+    distinguish further and nothing destructive about treating it as empty)."""
+    try:
+        result = subprocess.run(['crontab', '-l'], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None  # cron isn't installed on this system at all
+    if result.returncode != 0:
+        return []
+    return result.stdout.splitlines()
+
+
+def install_startup_linux():
+    cmd_str = ' '.join(shlex.quote(c) for c in this_executable_command())
+    cron_line = f'@reboot {cmd_str} >/dev/null 2>&1 {_CRON_MARKER}'
+    lines = _read_user_crontab()
+    if lines is None:
+        print('[agent] crontab 명령을 찾을 수 없습니다 (cron이 설치되어 있지 않은 것 같습니다). '
+              '재부팅 시 자동 시작을 쓰려면 cron을 설치해주세요 (예: apt install cron).')
+        return
+    try:
+        lines = [l for l in lines if _CRON_MARKER not in l]  # replace, don't duplicate, on re-run
+        lines.append(cron_line)
+        new_crontab = '\n'.join(lines) + '\n'
+        subprocess.run(['crontab', '-'], input=new_crontab, text=True, check=True)
+        print('[agent] 리눅스 재부팅 시 자동 시작 등록 완료 (현재 사용자의 crontab @reboot)')
+    except Exception as e:
+        print('[agent] 자동 시작 등록 실패:', e)
+
+
+def uninstall_startup_linux():
+    lines = _read_user_crontab()
+    if not lines:
+        print('[agent] 등록된 자동 시작이 없습니다.')
+        return
+    new_lines = [l for l in lines if _CRON_MARKER not in l]
+    if len(new_lines) == len(lines):
+        print('[agent] 등록된 자동 시작이 없습니다.')
+        return
+    try:
+        new_crontab = ('\n'.join(new_lines) + '\n') if new_lines else ''
+        subprocess.run(['crontab', '-'], input=new_crontab, text=True, check=True)
+        print('[agent] 자동 시작 등록 해제 완료')
     except Exception as e:
         print('[agent] 자동 시작 해제 실패:', e)
 
