@@ -35,6 +35,14 @@ OID_SYS_NAME = '1.3.6.1.2.1.1.5.0'
 OID_SYS_DESCR = '1.3.6.1.2.1.1.1.0'
 OID_SYS_UPTIME = '1.3.6.1.2.1.1.3.0'
 OID_IF_DESCR = '1.3.6.1.2.1.2.2.1.2'
+# ifXTable's ifAlias, NOT ifTable's ifDescr above -- ifDescr is the interface's
+# own fixed technical name ("GigabitEthernet0/1", what's already shown as the
+# interface row's name), ifAlias is the free-text description an admin can
+# set per-port ("3층 스위치 업링크" etc.), which is what "interface
+# description" means in day-to-day network-engineering usage. Most switches
+# leave this blank unless someone's deliberately documented their ports, so
+# it's normal for this to come back empty for many/most interfaces.
+OID_IF_ALIAS = '1.3.6.1.2.1.31.1.1.1.18'
 OID_IF_OPER_STATUS = '1.3.6.1.2.1.2.2.1.8'
 OID_IF_IN_OCTETS = '1.3.6.1.2.1.2.2.1.10'
 OID_IF_OUT_OCTETS = '1.3.6.1.2.1.2.2.1.16'
@@ -157,6 +165,7 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
     profile = snmp_profiles.resolve_profile(vendor_profile, result['sysDescr'])
     if category == 'net':
         result['ifDescr'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_DESCR, timeout=timeout)
+        result['ifAlias'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_ALIAS, timeout=timeout)
         result['oper'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OPER_STATUS, timeout=timeout)
         result['in_oct'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_OCTETS, timeout=timeout)
         result['out_oct'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OUT_OCTETS, timeout=timeout)
@@ -306,6 +315,7 @@ def sample_snmp(entity, device_row):
             entity['_snmpIfacePrev'] = {idx: {'in': int(v), 'out': int(out_oct.get(idx, 0))} for idx, v in in_oct.items()}
 
             ifdescr = result.get('ifDescr') or {}
+            ifalias = result.get('ifAlias') or {}
             iface_hist = entity.setdefault('_ifaceHist', {})
             ifaces = []
             for idx, name in ifdescr.items():
@@ -314,6 +324,7 @@ def sample_snmp(entity, device_row):
                 push_cap(iface_hist[idx], round(rate['inMbps'] + rate['outMbps'], 3))
                 ifaces.append({
                     'idx': idx, 'name': str(name),
+                    'description': str(ifalias.get(idx) or '').strip(),
                     'status': 'up' if str(oper.get(idx, '2')) == '1' else 'down',
                     'inMbps': rate['inMbps'], 'outMbps': rate['outMbps'],
                     'hist': list(iface_hist[idx]),

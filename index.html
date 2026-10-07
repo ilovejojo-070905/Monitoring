@@ -5258,7 +5258,7 @@ function renderIfaceModal(){
   if(!entity || !f){ closeIfaceModal(); return; }
   destroyChart('ifaceModalChart');
   $('#ifaceModalTitle').textContent = f.name;
-  $('#ifaceModalSub').textContent = `${entity.name} · SNMP 실측`;
+  $('#ifaceModalSub').textContent = f.description ? `${entity.name} · ${f.description}` : `${entity.name} · SNMP 실측`;
   $('#ifaceModalBody').innerHTML = `
     <div class="kv-grid">
       <div class="kv"><span>상태</span><b style="color:${f.status==='up'?'var(--good)':'var(--text-faint)'}">${f.status==='up'?'Up':'Down'}</b></div>
@@ -5367,7 +5367,10 @@ function drawPingDevice(e, catLabel){
     <div class="card"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
       <div id="iface-list" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
         ${ifaces.map(f=>`<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
-          <span class="mono" style="color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:10px">${escapeHtml(f.name)}</span>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:10px">
+            <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
+            ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
+          </span>
           <span style="display:flex;align-items:center;gap:8px;flex:none">
             ${f.status==='up' ? `<span class="mono" style="font-size:10px;color:var(--text-faint)">${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps</span>` : ''}
             <span class="pill ${f.status==='up'?'good':'neutral'}"><span class="dot"></span>${f.status==='up'?'Up':'Down'}</span>
