@@ -60,7 +60,7 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 # first, and only if that specific registration fails for a permissions
 # reason, fall back to the AtLogOn-only version, which never needs elevation.
 #
-# Recurring trigger (every 5 min, forever) added after a real incident:
+# Recurring trigger (every 1 min, forever) added after a real incident:
 # AtStartup/AtLogOn both only fire on an actual boot or logon event, and
 # this process tree has been observed dying mid-session with *no* reboot
 # and *no* log line about why (confirmed directly: Get-ScheduledTaskInfo's
@@ -72,8 +72,8 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 # check does. This reuses the exact same action (the .vbs wrapper) rather
 # than a separate watchdog script: supervisor.ps1 already has its own
 # duplicate-run guard (exits immediately if the lock file's PID is still
-# alive), so firing this every 5 minutes is a harmless near-instant no-op
-# when supervisor is already running, and a real relaunch within 5 minutes
+# alive), so firing this every 1 minute is a harmless near-instant no-op
+# when supervisor is already running, and a real relaunch within 1 minute
 # when it isn't. It also doesn't collide with the AtLogOn/AtStartup-
 # triggered instance in Task Scheduler's own instance tracking: wscript.exe
 # (what Task Scheduler actually watches) exits right after detaching
@@ -82,8 +82,14 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
 # regardless of whether supervisor.ps1 itself keeps running for hours
 # afterward. No elevation needed, so this is included in both the
 # with-startup and logon-only registrations below.
+# [TimeSpan]::MaxValue looks like the obvious choice for "repeat forever,"
+# but Task Scheduler's XML schema rejects it outright (tested directly:
+# "The task XML contains a value which is incorrectly formatted or out of
+# range" on a ~29247-year duration) -- 10 years is comfortably past
+# "forever" for this machine's purposes and well inside whatever the real
+# upper bound is.
 $recurringTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
-    -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue)
+    -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
 
 $bothTriggers = @(
     New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
@@ -101,7 +107,7 @@ try {
         -RunLevel Limited -Force | Out-Null
     $registeredWithStartup = $true
 } catch {
-    Write-Host "(시스템 시작 트리거는 관리자 권한이 필요해 건너뜁니다 -- 로그인 시 시작 + 5분마다 재확인만 등록합니다)" -ForegroundColor DarkYellow
+    Write-Host "(시스템 시작 트리거는 관리자 권한이 필요해 건너뜁니다 -- 로그인 시 시작 + 1분마다 재확인만 등록합니다)" -ForegroundColor DarkYellow
     try {
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $logonOnlyTriggers -Settings $settings `
             -RunLevel Limited -Force | Out-Null
@@ -112,9 +118,9 @@ try {
 }
 
 if ($registeredWithStartup) {
-    Write-Host "'$TaskName' 작업을 등록했습니다 -- 다음 로그인 또는 시스템 시작 시 자동으로 시작되고, 실행 중에도 5분마다 살아있는지 재확인해 죽어있으면 다시 띄웁니다." -ForegroundColor Green
+    Write-Host "'$TaskName' 작업을 등록했습니다 -- 다음 로그인 또는 시스템 시작 시 자동으로 시작되고, 실행 중에도 1분마다 살아있는지 재확인해 죽어있으면 다시 띄웁니다." -ForegroundColor Green
 } else {
-    Write-Host "'$TaskName' 작업을 등록했습니다 (로그인 시 시작 + 5분마다 재확인) -- 다음 로그인부터 자동으로 시작됩니다." -ForegroundColor Green
+    Write-Host "'$TaskName' 작업을 등록했습니다 (로그인 시 시작 + 1분마다 재확인) -- 다음 로그인부터 자동으로 시작됩니다." -ForegroundColor Green
     if (Test-Admin) {
         Write-Host "참고: 관리자 권한으로 실행했는데도 시스템 시작 트리거 등록에 실패했습니다. 위 오류 메시지를 확인해주세요." -ForegroundColor Yellow
     } else {
