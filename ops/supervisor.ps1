@@ -59,7 +59,35 @@ function Write-Log([string]$Level, [string]$Message) {
 # Backend+Caddy on top of the other's -- a silent double-bind of 5057/8443.
 # Liveness alone (matching installer.py's own guard) is what actually
 # matters here; the lock file's second line is only for clearer logging.
-if (Test-Path $LockFile) {
+# The old guard was Test-Path (read) followed, several lines later, by a
+# separate Out-File (write) -- not atomic, and it showed in the wild: a
+# manual restart landing in the same instant as the 1-minute recurring
+# scheduler trigger produced FIVE near-simultaneous supervisor.ps1
+# launches, every one of which saw "no lock file yet" and proceeded,
+# since none of them had written theirs yet when the others checked. Four
+# of the five then raced for port 5057/8443, lost, and sat there as dead
+# weight -- exactly the zombie-process pileup this guard exists to
+# prevent in the first place. [System.IO.File]::Open(..., CreateNew, ...)
+# is atomic at the OS level (only one process can ever win it for a given
+# path), so that's the real mutex now; Get-Process liveness on top of it
+# is only for recovering from a stale lock a crash left behind, which
+# isn't gameable the same way.
+function Try-AcquireLock {
+    try {
+        $fs = [System.IO.File]::Open($LockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+        $writer = New-Object System.IO.StreamWriter($fs)
+        $writer.WriteLine($PID)
+        $writer.WriteLine('ps1')
+        $writer.Flush()
+        $writer.Dispose()
+        $fs.Dispose()
+        return $true
+    } catch [System.IO.IOException] {
+        return $false  # someone else already holds it (or won the race just now)
+    }
+}
+
+if (-not (Try-AcquireLock)) {
     $lockLines = Get-Content $LockFile -ErrorAction SilentlyContinue
     $oldPid = $lockLines | Select-Object -First 1
     $oldKind = if ($lockLines.Count -ge 2) { $lockLines[1] } else { 'unknown' }
@@ -67,12 +95,16 @@ if (Test-Path $LockFile) {
     if ($existing) {
         Write-Log 'INFO' "이미 실행 중인 supervisor(PID $oldPid, $oldKind)를 발견해 이번 실행은 종료합니다 (중복 실행 방지)."
         exit 0
-    } else {
-        Write-Log 'WARN' "이전 lock 파일이 남아있었지만 해당 PID($oldPid)는 더 이상 실행 중이 아닙니다. 새로 시작합니다."
+    }
+    Write-Log 'WARN' "이전 lock 파일이 남아있었지만 해당 PID($oldPid)는 더 이상 실행 중이 아닙니다. 새로 시작합니다."
+    Remove-Item $LockFile -ErrorAction SilentlyContinue
+    if (-not (Try-AcquireLock)) {
+        # 극히 드문 재경쟁(그 사이에 다른 인스턴스가 또 잡음) -- 조용히 양보한다.
+        Write-Log 'INFO' "잠금 재획득 경쟁에서 졌습니다. 이번 실행은 종료합니다."
+        exit 0
     }
 }
 Remove-Item $StopMarker -ErrorAction SilentlyContinue
-"$PID`nps1" | Out-File -FilePath $LockFile -Encoding ascii -Force
 
 Write-Log 'INFO' "===== supervisor 시작 (PID $PID) ====="
 
