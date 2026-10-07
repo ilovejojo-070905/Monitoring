@@ -59,50 +59,54 @@ function Write-Log([string]$Level, [string]$Message) {
 # Backend+Caddy on top of the other's -- a silent double-bind of 5057/8443.
 # Liveness alone (matching installer.py's own guard) is what actually
 # matters here; the lock file's second line is only for clearer logging.
-# The old guard was Test-Path (read) followed, several lines later, by a
-# separate Out-File (write) -- not atomic, and it showed in the wild: a
-# manual restart landing in the same instant as the 1-minute recurring
-# scheduler trigger produced FIVE near-simultaneous supervisor.ps1
-# launches, every one of which saw "no lock file yet" and proceeded,
-# since none of them had written theirs yet when the others checked. Four
-# of the five then raced for port 5057/8443, lost, and sat there as dead
-# weight -- exactly the zombie-process pileup this guard exists to
-# prevent in the first place. [System.IO.File]::Open(..., CreateNew, ...)
-# is atomic at the OS level (only one process can ever win it for a given
-# path), so that's the real mutex now; Get-Process liveness on top of it
-# is only for recovering from a stale lock a crash left behind, which
-# isn't gameable the same way.
+# First attempt (CreateNew-only, atomic at the OS level) fixed the common
+# case live, but a second bug showed up right after: when the lock WAS
+# stale (old PID dead), recovery was "delete it, then CreateNew again" --
+# two separate steps, not one. Two processes that both detect the exact
+# same stale lock each independently delete-then-recreate, and since
+# neither re-checks whether the file it's about to delete is still the
+# stale one it inspected (or has since become a DIFFERENT process's
+# freshly-won lock), either order lets both win: confirmed live, three
+# supervisor.ps1 instances started within 6 seconds of each other, all
+# past the guard, two of them presumably deleting a lock a sibling had
+# *just* legitimately claimed. FileShare.None on OpenOrCreate is the fix:
+# it's a single handle that EXCLUDES every other process (new lock or
+# stale-recovery alike) for the entire span from "open it" to "write our
+# own PID and close it" -- there's no longer a gap between inspecting the
+# old PID and claiming the file for another process to slip into.
 function Try-AcquireLock {
     try {
-        $fs = [System.IO.File]::Open($LockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
-        $writer = New-Object System.IO.StreamWriter($fs)
-        $writer.WriteLine($PID)
-        $writer.WriteLine('ps1')
-        $writer.Flush()
-        $writer.Dispose()
-        $fs.Dispose()
-        return $true
+        $fs = [System.IO.File]::Open($LockFile, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     } catch [System.IO.IOException] {
-        return $false  # someone else already holds it (or won the race just now)
+        return $false  # someone else currently holds this exact handle
+    }
+    try {
+        $existingPid = $null
+        if ($fs.Length -gt 0) {
+            $buf = New-Object byte[] $fs.Length
+            [void]$fs.Read($buf, 0, $buf.Length)
+            $existingPid = ([System.Text.Encoding]::ASCII.GetString($buf) -split "`n")[0].Trim()
+        }
+        if ($existingPid -and $existingPid -match '^\d+$') {
+            if (Get-Process -Id $existingPid -ErrorAction SilentlyContinue) {
+                return $false  # genuinely still running -- not ours to take
+            }
+            Write-Log 'WARN' "이전 lock 파일이 남아있었지만 해당 PID($existingPid)는 더 이상 실행 중이 아닙니다. 새로 시작합니다."
+        }
+        $fs.SetLength(0)
+        $fs.Position = 0
+        $bytes = [System.Text.Encoding]::ASCII.GetBytes("$PID`nps1`n")
+        $fs.Write($bytes, 0, $bytes.Length)
+        $fs.Flush()
+        return $true
+    } finally {
+        $fs.Dispose()
     }
 }
 
 if (-not (Try-AcquireLock)) {
-    $lockLines = Get-Content $LockFile -ErrorAction SilentlyContinue
-    $oldPid = $lockLines | Select-Object -First 1
-    $oldKind = if ($lockLines.Count -ge 2) { $lockLines[1] } else { 'unknown' }
-    $existing = if ($oldPid) { Get-Process -Id $oldPid -ErrorAction SilentlyContinue } else { $null }
-    if ($existing) {
-        Write-Log 'INFO' "이미 실행 중인 supervisor(PID $oldPid, $oldKind)를 발견해 이번 실행은 종료합니다 (중복 실행 방지)."
-        exit 0
-    }
-    Write-Log 'WARN' "이전 lock 파일이 남아있었지만 해당 PID($oldPid)는 더 이상 실행 중이 아닙니다. 새로 시작합니다."
-    Remove-Item $LockFile -ErrorAction SilentlyContinue
-    if (-not (Try-AcquireLock)) {
-        # 극히 드문 재경쟁(그 사이에 다른 인스턴스가 또 잡음) -- 조용히 양보한다.
-        Write-Log 'INFO' "잠금 재획득 경쟁에서 졌습니다. 이번 실행은 종료합니다."
-        exit 0
-    }
+    Write-Log 'INFO' "이미 실행 중인 supervisor를 발견해 이번 실행은 종료합니다 (중복 실행 방지)."
+    exit 0
 }
 Remove-Item $StopMarker -ErrorAction SilentlyContinue
 
