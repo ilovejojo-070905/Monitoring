@@ -2154,6 +2154,13 @@ function applySort(list, sortState){
 function wireSortableHeaders(theadSelector, sortState, rerenderFn){
   $$(`${theadSelector} th[data-sort-col]`).forEach(th=>{
     th.style.cursor = 'pointer';
+    // 실제 마우스로는 클릭 중 커서가 1px만 움직여도 브라우저가 "클릭"이
+    // 아니라 "텍스트 드래그 선택 시작"으로 처리해서 click 이벤트 자체가
+    // 아예 안 뜨는 경우가 있다 (좌표를 정확히 찍는 자동화 클릭에서는 재현이
+    // 안 되지만, 실제 마우스에서는 흔한 문제) -- 그래서 "두 번째 클릭에야
+    // 정렬됨"처럼 보일 수 있다. user-select:none으로 애초에 선택 가능한
+    // 텍스트가 아니게 만들면 이 문제 자체가 생기지 않는다.
+    th.style.userSelect = 'none';
     th.addEventListener('click', ()=>{
       const col = th.dataset.sortCol;
       if(sortState.col===col) sortState.dir *= -1;
@@ -2288,6 +2295,7 @@ function updateSelectAll(prefix, tbodyId){
 /* ================= DATABASE ================= */
 let dbFilter = 'all';
 let dbGroupFilter = '';
+let dbSort = {col:null, dir:1};
 function renderDatabaseSkeleton(){
   const el = $('#view-database');
   el.innerHTML = `
@@ -2301,7 +2309,15 @@ function renderDatabaseSkeleton(){
       </div>
       ${selectBarHtml('db')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th style="width:30px">${selectAllHeaderHtml('db')}</th><th>상태</th><th>인스턴스</th><th>엔진</th><th>용도</th><th>IP</th><th>응답시간</th><th>등록일</th></tr></thead>
+        <thead><tr>
+          <th style="width:30px">${selectAllHeaderHtml('db')}</th>
+          <th data-sort-col="status">상태<span class="sort-arrow" id="db-sort-status"></span></th>
+          <th data-sort-col="name">인스턴스<span class="sort-arrow" id="db-sort-name"></span></th>
+          <th data-sort-col="engine">엔진<span class="sort-arrow" id="db-sort-engine"></span></th>
+          <th data-sort-col="role">용도<span class="sort-arrow" id="db-sort-role"></span></th>
+          <th data-sort-col="ip">IP<span class="sort-arrow" id="db-sort-ip"></span></th>
+          <th>응답시간</th><th>등록일</th>
+        </tr></thead>
         <tbody id="db-tbody"></tbody>
       </table></div>
     </div>
@@ -2311,13 +2327,14 @@ function renderDatabaseSkeleton(){
   $('#db-group-filter').addEventListener('change', ()=>{ dbGroupFilter = $('#db-group-filter').value; renderDatabase(); });
   wireSelectBar('db', renderDatabase);
   wireSelectAll('db', 'db-tbody', renderDatabase);
+  wireSortableHeaders('#view-database thead', dbSort, renderDatabase);
 }
 function renderDatabase(){
   const q = ($('#db-search')?.value||'').toLowerCase();
   const groupSel = $('#db-group-filter');
   if(groupSel){ groupSel.innerHTML = groupFilterOptionsHtml(); groupSel.value = dbGroupFilter; }
-  const rows = applyStatusFilter(DBS, dbFilter)
-    .filter(d=> matchesEntitySearch(d, q) && (!dbGroupFilter || d.group===dbGroupFilter));
+  const rows = applySort(applyStatusFilter(DBS, dbFilter)
+    .filter(d=> matchesEntitySearch(d, q) && (!dbGroupFilter || d.group===dbGroupFilter)), dbSort);
   $('#db-tbody').innerHTML = rows.map(d=>`
     <tr data-id="${d.id}">
       <td class="select-col">${selectColHtml(d.id)}</td>
@@ -2333,12 +2350,14 @@ function renderDatabase(){
   wireRowCheckboxes('db-tbody', 'db');
   updateSelectBar('db');
   updateSelectAll('db', 'db-tbody');
+  updateSortArrows('db', dbSort, ['status','name','engine','role','ip']);
 }
 
 /* ================= NETWORK ================= */
 let selectedNetId = null;
 let netFilter = 'all';
 let netGroupFilter = '';
+let netSort = {col:null, dir:1};
 function renderNetworkSkeleton(){
   const el = $('#view-network');
   el.innerHTML = `
@@ -2352,7 +2371,15 @@ function renderNetworkSkeleton(){
       </div>
       ${selectBarHtml('net')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th style="width:30px">${selectAllHeaderHtml('net')}</th><th>상태</th><th>장비명</th><th>유형</th><th>IP</th><th>그룹</th><th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th></tr></thead>
+        <thead><tr>
+          <th style="width:30px">${selectAllHeaderHtml('net')}</th>
+          <th data-sort-col="status">상태<span class="sort-arrow" id="net-sort-status"></span></th>
+          <th data-sort-col="name">장비명<span class="sort-arrow" id="net-sort-name"></span></th>
+          <th data-sort-col="type">유형<span class="sort-arrow" id="net-sort-type"></span></th>
+          <th data-sort-col="ip">IP<span class="sort-arrow" id="net-sort-ip"></span></th>
+          <th data-sort-col="group">그룹<span class="sort-arrow" id="net-sort-group"></span></th>
+          <th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th>
+        </tr></thead>
         <tbody id="net-tbody"></tbody>
       </table></div>
     </div>
@@ -2379,13 +2406,14 @@ function renderNetworkSkeleton(){
   $('#net-group-filter').addEventListener('change', ()=>{ netGroupFilter = $('#net-group-filter').value; renderNetwork(); });
   wireSelectBar('net', renderNetwork);
   wireSelectAll('net', 'net-tbody', renderNetwork);
+  wireSortableHeaders('#view-network thead', netSort, renderNetwork);
 }
 function renderNetwork(){
   const q = ($('#net-search')?.value||'').toLowerCase();
   const netGroupSel = $('#net-group-filter');
   if(netGroupSel){ netGroupSel.innerHTML = groupFilterOptionsHtml(); netGroupSel.value = netGroupFilter; }
-  const netRows = applyStatusFilter(NETS, netFilter)
-    .filter(n=> matchesEntitySearch(n, q) && (!netGroupFilter || n.group===netGroupFilter));
+  const netRows = applySort(applyStatusFilter(NETS, netFilter)
+    .filter(n=> matchesEntitySearch(n, q) && (!netGroupFilter || n.group===netGroupFilter)), netSort);
   $('#net-tbody').innerHTML = netRows.map(n=>`
     <tr data-id="${n.id}" class="${n.id===selectedNetId?'sel-row':''}">
       <td class="select-col">${selectColHtml(n.id)}</td>
@@ -2406,6 +2434,7 @@ function renderNetwork(){
   wireRowCheckboxes('net-tbody', 'net');
   updateSelectBar('net');
   updateSelectAll('net', 'net-tbody');
+  updateSortArrows('net', netSort, ['status','name','type','ip','group']);
   if(!selectedNetId && NETS.length) selectedNetId = NETS[0].id;
   const n = NETS.find(x=>x.id===selectedNetId);
   if(n && charts.net_chart){
@@ -2569,6 +2598,7 @@ async function renderFlow(){
 /* ================= FACILITY ================= */
 let facFilter = 'all';
 let facGroupFilter = '';
+let facSort = {col:null, dir:1};
 function renderFacilitySkeleton(){
   const el = $('#view-facility');
   el.innerHTML = `
@@ -2582,7 +2612,14 @@ function renderFacilitySkeleton(){
       </div>
       ${selectBarHtml('fac')}
       <div class="table-wrap"><table class="data reg-device-table">
-        <thead><tr><th style="width:30px">${selectAllHeaderHtml('fac')}</th><th>상태</th><th>설비명</th><th>유형</th><th>IP</th><th>응답시간</th><th>배터리</th></tr></thead>
+        <thead><tr>
+          <th style="width:30px">${selectAllHeaderHtml('fac')}</th>
+          <th data-sort-col="status">상태<span class="sort-arrow" id="fac-sort-status"></span></th>
+          <th data-sort-col="name">설비명<span class="sort-arrow" id="fac-sort-name"></span></th>
+          <th data-sort-col="type">유형<span class="sort-arrow" id="fac-sort-type"></span></th>
+          <th data-sort-col="ip">IP<span class="sort-arrow" id="fac-sort-ip"></span></th>
+          <th>응답시간</th><th>배터리</th>
+        </tr></thead>
         <tbody id="fac-tbody"></tbody>
       </table></div>
     </div>
@@ -2595,13 +2632,14 @@ function renderFacilitySkeleton(){
   $('#fac-group-filter').addEventListener('change', ()=>{ facGroupFilter = $('#fac-group-filter').value; renderFacility(); });
   wireSelectBar('fac', renderFacility);
   wireSelectAll('fac', 'fac-tbody', renderFacility);
+  wireSortableHeaders('#view-facility thead', facSort, renderFacility);
 }
 function renderFacility(){
   const q = ($('#fac-search')?.value||'').toLowerCase();
   const facGroupSel = $('#fac-group-filter');
   if(facGroupSel){ facGroupSel.innerHTML = groupFilterOptionsHtml(); facGroupSel.value = facGroupFilter; }
-  const facRows = applyStatusFilter(FACS, facFilter)
-    .filter(f=> matchesEntitySearch(f, q) && (!facGroupFilter || f.group===facGroupFilter));
+  const facRows = applySort(applyStatusFilter(FACS, facFilter)
+    .filter(f=> matchesEntitySearch(f, q) && (!facGroupFilter || f.group===facGroupFilter)), facSort);
   $('#fac-tbody').innerHTML = facRows.map(f=>`
     <tr data-id="${f.id}">
       <td class="select-col">${selectColHtml(f.id)}</td>
@@ -2616,6 +2654,7 @@ function renderFacility(){
   wireRowCheckboxes('fac-tbody', 'fac');
   updateSelectBar('fac');
   updateSelectAll('fac', 'fac-tbody');
+  updateSortArrows('fac', facSort, ['status','name','type','ip']);
 
   const facInc = INCIDENTS.filter(i=>i.category==='FMS').slice(0,6);
   $('#fac-events').innerHTML = facInc.map(i=>`
