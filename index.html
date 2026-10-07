@@ -2071,7 +2071,7 @@ function renderServersSkeleton(){
   $('#srv-group-filter').addEventListener('change', ()=>{ srvGroupFilter = $('#srv-group-filter').value; renderServers(); });
   wireSelectBar('srv', renderServers);
   wireSelectAll('srv', 'srv-tbody', renderServers);
-  wireSortableHeaders('#view-servers thead', srvSort, renderServers);
+  wireSortableHeaders('#view-servers thead', 'srv-tbody', srvSort, renderServers);
 }
 function renderServers(){
   const q = ($('#srv-search')?.value||'').toLowerCase();
@@ -2151,7 +2151,27 @@ function applySort(list, sortState){
 }
 // 클릭 리스너는 skeleton에서 한 번만 연결한다 (매 렌더마다 다시 연결하면
 // 쌓임) -- 화살표 표시만 매 렌더마다 updateSortArrows로 갱신한다.
-function wireSortableHeaders(theadSelector, sortState, rerenderFn){
+//
+// 처음 클릭했을 때 화면이 안 바뀐 것처럼 보인다는 피드백 확인 결과: 버그가
+// 아니라 그 목록이 우연히 기본 상태에서도 이미 오름차순과 같은 순서였던
+// 것뿐이었다 (예: 장비가 2대뿐이고 이미 알파벳 순으로 등록돼 있던 경우) --
+// 화살표는 첫 클릭에 바로 뜨지만 행 순서 자체는 똑같아 보이니 "눌렀는데
+// 안 됐나?" 싶은 게 당연하다. 데이터가 우연히 같은 순서인 것까지는 어쩔
+// 수 없지만, 클릭했다는 사실 자체는 매번 눈에 보이게 tbody를 짧게
+// 반짝여서 순서가 바뀌었든 아니든 "방금 정렬됐다"는 걸 확인시켜준다.
+function flashTbody(tbodyId){
+  const tb = document.getElementById(tbodyId);
+  if(!tb) return;
+  tb.style.transition = 'none';
+  tb.style.backgroundColor = 'var(--accent-soft)';
+  requestAnimationFrame(()=>{
+    requestAnimationFrame(()=>{
+      tb.style.transition = 'background-color .5s';
+      tb.style.backgroundColor = 'transparent';
+    });
+  });
+}
+function wireSortableHeaders(theadSelector, tbodyId, sortState, rerenderFn){
   $$(`${theadSelector} th[data-sort-col]`).forEach(th=>{
     th.style.cursor = 'pointer';
     // 실제 마우스로는 클릭 중 커서가 1px만 움직여도 브라우저가 "클릭"이
@@ -2166,6 +2186,7 @@ function wireSortableHeaders(theadSelector, sortState, rerenderFn){
       if(sortState.col===col) sortState.dir *= -1;
       else { sortState.col = col; sortState.dir = 1; }
       rerenderFn();
+      flashTbody(tbodyId);
     });
   });
 }
@@ -2327,7 +2348,7 @@ function renderDatabaseSkeleton(){
   $('#db-group-filter').addEventListener('change', ()=>{ dbGroupFilter = $('#db-group-filter').value; renderDatabase(); });
   wireSelectBar('db', renderDatabase);
   wireSelectAll('db', 'db-tbody', renderDatabase);
-  wireSortableHeaders('#view-database thead', dbSort, renderDatabase);
+  wireSortableHeaders('#view-database thead', 'db-tbody', dbSort, renderDatabase);
 }
 function renderDatabase(){
   const q = ($('#db-search')?.value||'').toLowerCase();
@@ -2406,7 +2427,7 @@ function renderNetworkSkeleton(){
   $('#net-group-filter').addEventListener('change', ()=>{ netGroupFilter = $('#net-group-filter').value; renderNetwork(); });
   wireSelectBar('net', renderNetwork);
   wireSelectAll('net', 'net-tbody', renderNetwork);
-  wireSortableHeaders('#view-network thead', netSort, renderNetwork);
+  wireSortableHeaders('#view-network thead', 'net-tbody', netSort, renderNetwork);
 }
 function renderNetwork(){
   const q = ($('#net-search')?.value||'').toLowerCase();
@@ -2632,7 +2653,7 @@ function renderFacilitySkeleton(){
   $('#fac-group-filter').addEventListener('change', ()=>{ facGroupFilter = $('#fac-group-filter').value; renderFacility(); });
   wireSelectBar('fac', renderFacility);
   wireSelectAll('fac', 'fac-tbody', renderFacility);
-  wireSortableHeaders('#view-facility thead', facSort, renderFacility);
+  wireSortableHeaders('#view-facility thead', 'fac-tbody', facSort, renderFacility);
 }
 function renderFacility(){
   const q = ($('#fac-search')?.value||'').toLowerCase();
