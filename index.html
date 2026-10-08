@@ -5506,16 +5506,15 @@ function renderIfaceModal(){
   const hasErrDisc = f.inErrors!=null || f.outErrors!=null || f.inDiscards!=null || f.outDiscards!=null;
   $('#ifaceModalBody').innerHTML = `
     <div class="kv-grid">
+      <div class="kv" style="grid-column:span 2"><span>합계</span><b>${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps</b></div>
       <div class="kv"><span>상태</span><b style="color:${f.status==='up'?'var(--good)':'var(--text-faint)'}">${f.status==='up'?'Up':'Down'}${f.adminStatus==='down' ? ' (관리자 비활성화)' : ''}</b></div>
       <div class="kv"><span>링크 속도</span><b>${f.speedMbps!=null ? fmt0(f.speedMbps)+' Mbps' : '-'}</b></div>
-      <div class="kv"><span>합계</span><b>${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps</b></div>
       <div class="kv"><span>In</span><b style="color:var(--info)">${fmtMbps(f.inMbps||0)} Mbps${f.utilInPct!=null ? ` (${fmt1(f.utilInPct)}%)` : ''}</b></div>
       <div class="kv"><span>Out</span><b style="color:#ff3ec9">${fmtMbps(f.outMbps||0)} Mbps${f.utilOutPct!=null ? ` (${fmt1(f.utilOutPct)}%)` : ''}</b></div>
-    </div>
-    ${hasErrDisc ? `<div class="kv-grid">
+      ${hasErrDisc ? `
       <div class="kv"><span>In 에러/드랍</span><b style="color:${(f.inErrors||0)+(f.inDiscards||0)>0?'var(--warn)':'inherit'}">${fmt0(f.inErrors||0)} / ${fmt0(f.inDiscards||0)}</b></div>
-      <div class="kv"><span>Out 에러/드랍</span><b style="color:${(f.outErrors||0)+(f.outDiscards||0)>0?'var(--warn)':'inherit'}">${fmt0(f.outErrors||0)} / ${fmt0(f.outDiscards||0)}</b></div>
-    </div>` : ''}
+      <div class="kv"><span>Out 에러/드랍</span><b style="color:${(f.outErrors||0)+(f.outDiscards||0)>0?'var(--warn)':'inherit'}">${fmt0(f.outErrors||0)} / ${fmt0(f.outDiscards||0)}</b></div>` : ''}
+    </div>
     <div class="card"><div class="card-head"><h3>트래픽 추이</h3><span class="sub">SNMP 실측 · 최근 60초 · Mbps</span></div>
       <div style="height:200px"><canvas id="ifaceModalCanvas"></canvas></div>
     </div>
