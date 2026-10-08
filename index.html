@@ -5663,15 +5663,64 @@ function drawPingDevice(e, catLabel){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
   }
 }
+// 재발급 결과는 메모리에 캐시해둔다 -- 드로어가 열려있는 동안에도 2.2초
+// 폴링마다 refreshOpenDrawer()가 openDrawerFor()를 다시 불러 #drawerBody를
+// 통째로 새로 그리는데(스캔 결과/일괄등록 UI에서 이미 겪은 것과 같은
+// 함정), 그게 drawAgentPending()도 매번 처음부터 다시 그리면서 방금 뜬
+// 재발급 결과를 몇 초 안에 지워버렸다 -- 실제로 겪은 문제. 장비 id별로
+// 마지막 결과를 들고 있다가, 다시 그릴 때 있으면 그대로 복원한다.
+const agentReissueCache = {};
 function drawAgentPending(e, catLabel){
   $('#drawerTitle').textContent = e.name;
   $('#drawerRole').textContent = `${catLabel} · Agent 연결 대기 중`;
+  // 등록 직후 딱 한 번 뜨는 설치 안내 박스를 놓쳤거나(다른 메뉴로 이동,
+  // 새로고침 등), 장비를 삭제했다가 다시 등록해서 예전 PC에 설치된
+  // 에이전트가 이제는 폐기된 옛 토큰을 들고 있는 경우(바로 이 상황) --
+  // 둘 다 "에이전트 미연결" 상태로 영원히 멈춰있는데 명령어를 다시 볼
+  // 방법이 화면에 없었다. 백엔드엔 재발급 라우트
+  // (/api/devices/<id>/token/reissue)가 이미 있었는데 프론트엔드 어디서도
+  // 호출하지 않고 있었다 -- 여기서 호출하도록 연결한다.
+  const canReissue = CURRENT_ROLE_RANK >= 1;
+  const cached = agentReissueCache[e.id];
   $('#drawerBody').innerHTML = `
     <div class="kv-grid"><div class="kv" style="grid-column:span 2"><span>상태</span><b style="color:var(--warn)">에이전트 미연결</b></div></div>
     <div class="card"><div class="card-head"><h3>설치 안내</h3></div>
-      <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">등록 시 안내된 명령어를 해당 PC의 터미널에서 실행하면 몇 초 내로 실시간 지표가 표시됩니다.</p>
+      <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">등록 시 안내된 명령어를 해당 PC의 터미널에서 실행하면 몇 초 내로 실시간 지표가 표시됩니다. 명령어를 놓치셨거나, 삭제했다가 다시 등록해서 예전 PC의 에이전트가 더 이상 안 먹히는 토큰을 쓰고 있다면 ${canReissue ? '아래에서 새로 받아' : '운영자 이상 권한으로'} 다시 설치해주세요.</p>
+      ${canReissue ? `
+        <button type="button" class="btn primary" id="agent-reissue-btn" style="margin-top:10px">설치 명령 다시 받기</button>
+        <div id="agent-reissue-result" style="margin-top:12px${cached ? '' : ';display:none'}">${cached || ''}</div>
+      ` : ''}
     </div>
   `;
+  if(canReissue){
+    $('#agent-reissue-btn').addEventListener('click', async ()=>{
+      const btn = $('#agent-reissue-btn');
+      btn.disabled = true; btn.textContent = '발급 중...';
+      try{
+        const r = await apiFetch(`/api/devices/${e.id}/token/reissue`, {method:'POST'});
+        const j = await r.json();
+        if(!r.ok) throw new Error(j.error || '재발급 실패');
+        const html = `
+          <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:6px">
+            아래 명령어를 <b>${escapeHtml(e.name)}</b> PC의 PowerShell(또는 명령 프롬프트)에서 실행하세요 -- 기존에 설치돼 있었다면 자동으로 새 토큰으로 갱신됩니다:
+          </div>
+          <div class="mono" style="background:var(--surface-2);padding:10px;border-radius:8px;font-size:11.5px;word-break:break-all;user-select:all">${escapeHtml(j.agentCommand)}</div>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+            <a href="${j.agentInstallerUrl}" class="btn" style="text-decoration:none">⬇ 이 장비 전용 설치 파일(exe)</a>
+            <a href="${j.agentConfigUrl}" class="btn" style="text-decoration:none">⬇ 설정 파일만(.cfg)</a>
+          </div>
+        `;
+        agentReissueCache[e.id] = html;
+        const resultEl = $('#agent-reissue-result');
+        resultEl.style.display = '';
+        resultEl.innerHTML = html;
+      }catch(err){
+        alert(err.message);
+      }finally{
+        btn.disabled = false; btn.textContent = '설치 명령 다시 받기';
+      }
+    });
+  }
 }
 
 /* ================= topbar pills / badges ================= */
