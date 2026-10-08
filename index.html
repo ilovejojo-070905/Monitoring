@@ -4232,30 +4232,29 @@ function renderChannelsSkeleton(){
       <div class="field" style="grid-column:1/-1"><label>Webhook URL</label><input type="text" id="ch-teams-url" placeholder="https://....webhook.office.com/... (변경하려면 입력)"></div>
       ${minSeveritySelectHtml('teams')}
     `, true)}
-    <div class="card">
-      <div class="card-head collapsible collapsed" data-collapse="ch-kakao-body" style="align-items:center;flex-wrap:wrap;gap:10px">
-        <div><h3>카카오톡 (알림톡)</h3><span class="sub">연동 구조만 제공 -- 설정값은 저장되지만 실제 발송은 아직 지원되지 않습니다</span></div>
-        <label style="display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12.5px;color:var(--text-dim)">
-          <input type="checkbox" id="ch-kakao-enabled"> 사용 (준비 중)
-        </label>
-        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
-      </div>
-      <div class="collapse-wrap collapsed" id="ch-kakao-body"><div class="collapse-inner" style="padding-top:12px">
-      <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 10px">
-        카카오톡 알림톡은 단순 Webhook으로 연동되지 않습니다. ① 카카오톡 채널(비즈니스 계정) 개설 및 발신 프로필 심사, ②
-        자유 텍스트가 아닌 사전 승인된 메시지 템플릿, ③ 보통 공식 비즈니스 API 또는 인증된 알림톡 중개사(CPaaS: NHN Toast,
-        알리고, 솔라피 등)를 통한 유료 연동이 필요합니다. 아래 값은 추후 연동을 위한 설정 보관용입니다.
+    ${channelCardHtml('kakao', '카카오톡 (나에게 보내기)', '카카오 계정 본인에게 장애 알림을 전송합니다 -- 여러 사람에게 보내려면 별도의 비즈니스 알림톡 연동이 필요합니다 (아래 안내 참고)', `
+      <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 4px;grid-column:1/-1">
+        Kakao Developers(developers.kakao.com)에서 앱을 만들고 REST API 키를 발급받아 입력하세요. 카카오 로그인 활성화 후
+        아래 Redirect URI를 그 앱의 Redirect URI로 등록하고, 동의항목에서 "카카오톡 메시지 전송"을 켜야 연결이 됩니다.
       </p>
-      <div class="form-grid">
-        <div class="field"><label>발신 프로필 키 (선택)</label><input type="text" id="ch-kakao-senderkey" maxlength="100"></div>
-        <div class="field"><label>알림톡 템플릿 코드 (선택)</label><input type="text" id="ch-kakao-templatecode" maxlength="100"></div>
+      <div class="field"><label>REST API 키</label><input type="text" id="ch-kakao-restapikey" placeholder="Kakao Developers 앱의 REST API 키" maxlength="100"></div>
+      <div class="field"><label>Client Secret (선택)</label><input type="password" id="ch-kakao-clientsecret" placeholder="앱에서 활성화한 경우만 입력" maxlength="100"></div>
+      ${minSeveritySelectHtml('kakao')}
+      <div class="field" style="grid-column:1/-1">
+        <label>Redirect URI (Kakao Developers &gt; 카카오 로그인 &gt; Redirect URI에 등록)</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="ch-kakao-redirecturi" readonly style="flex:1;font-family:var(--font-mono);font-size:11px">
+          <button type="button" class="btn" id="ch-kakao-copyuri">복사</button>
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
-        <button type="button" class="btn primary" id="ch-kakao-save">저장</button>
-        <span id="ch-kakao-status" style="font-size:11.5px"></span>
+      <div class="field" style="grid-column:1/-1">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span id="ch-kakao-connstatus" class="pill neutral"><span class="dot"></span>확인 중...</span>
+          <button type="button" class="btn primary" id="ch-kakao-connect">카카오 계정 연결하기</button>
+          <button type="button" class="btn" id="ch-kakao-disconnect" style="display:none">연결 해제</button>
+        </div>
       </div>
-      </div></div>
-    </div>
+    `, true)}
     <div class="card">
       <div class="card-head collapsible collapsed" data-collapse="ch-sms-body" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>SMS</h3><span class="sub">연동 구조만 제공 -- 설정값은 저장되지만 실제 발송은 아직 지원되지 않습니다</span></div>
@@ -4436,12 +4435,42 @@ function wireChannelHandlers(){
   $('#ch-kakao-save').addEventListener('click', async ()=>{
     const body = {
       enabled: $('#ch-kakao-enabled').checked,
-      senderKey: $('#ch-kakao-senderkey').value.trim(),
-      templateCode: $('#ch-kakao-templatecode').value.trim(),
+      restApiKey: $('#ch-kakao-restapikey').value.trim() || null,
+      clientSecret: $('#ch-kakao-clientsecret').value.trim() || null,
+      minSeverity: $('#ch-kakao-minseverity').value,
     };
     const r = await apiFetch('/api/settings/kakao', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
     const j = await r.json();
-    setStatus('kakao', r.ok ? '저장되었습니다' : (j.error||'저장 실패'), r.ok);
+    if(!r.ok){ setStatus('kakao', j.error||'저장 실패', false); return; }
+    setStatus('kakao', '저장되었습니다', true);
+    $('#ch-kakao-restapikey').value = '';
+    $('#ch-kakao-clientsecret').value = '';
+    loadChannelSettings();
+  });
+  $('#ch-kakao-test').addEventListener('click', async ()=>{
+    setStatus('kakao', '발송 중...', true);
+    const r = await apiFetch('/api/settings/kakao/test', {method:'POST'});
+    const j = await r.json();
+    setStatus('kakao', r.ok ? '테스트 발송 성공 -- 카카오톡을 확인하세요' : (j.error||'발송 실패'), r.ok);
+  });
+  $('#ch-kakao-connect').addEventListener('click', ()=>{
+    // Full-page navigation on purpose -- this leaves InfraSight to show the
+    // user's own Kakao login/consent screen, then Kakao redirects back to
+    // /api/kakao/callback, which redirects back here with ?kakaoAuth=.
+    window.location.href = '/api/kakao/authorize';
+  });
+  $('#ch-kakao-disconnect').addEventListener('click', async ()=>{
+    const ok = await showConfirm('카카오 계정 연결을 해제할까요? 다시 연결하기 전까지 카카오톡 알림이 발송되지 않습니다.', {title:'카카오 연결 해제', okText:'해제'});
+    if(!ok) return;
+    await apiFetch('/api/settings/kakao/disconnect', {method:'POST'});
+    setStatus('kakao', '연결이 해제되었습니다', true);
+    loadChannelSettings();
+  });
+  $('#ch-kakao-copyuri').addEventListener('click', async ()=>{
+    const val = $('#ch-kakao-redirecturi').value;
+    if(!val) return;
+    try{ await navigator.clipboard.writeText(val); setStatus('kakao', 'Redirect URI가 복사되었습니다', true); }
+    catch(e){ setStatus('kakao', '복사 실패 -- 직접 선택해 복사해주세요', false); }
   });
   $('#ch-sms-save').addEventListener('click', async ()=>{
     const body = {
@@ -4547,11 +4576,11 @@ async function renderEscalationTiers(){
   }
 }
 async function loadChannelSettings(){
-  const [smtpR, slackR, teamsR, kakaoR, smsR] = await Promise.all([
+  const [smtpR, slackR, teamsR, kakaoR, kakaoUriR, smsR] = await Promise.all([
     apiFetch('/api/settings/smtp'), apiFetch('/api/settings/slack'), apiFetch('/api/settings/teams'),
-    apiFetch('/api/settings/kakao'), apiFetch('/api/settings/sms'),
+    apiFetch('/api/settings/kakao'), apiFetch('/api/settings/kakao/redirect-uri'), apiFetch('/api/settings/sms'),
   ]);
-  const [smtp, slack, teams, kakao, sms] = await Promise.all([smtpR.json(), slackR.json(), teamsR.json(), kakaoR.json(), smsR.json()]);
+  const [smtp, slack, teams, kakao, kakaoUri, sms] = await Promise.all([smtpR.json(), slackR.json(), teamsR.json(), kakaoR.json(), kakaoUriR.json(), smsR.json()]);
   $('#ch-smtp-enabled').checked = smtp.enabled;
   $('#ch-smtp-host').value = smtp.host || '';
   $('#ch-smtp-port').value = smtp.port || '';
@@ -4566,8 +4595,20 @@ async function loadChannelSettings(){
     $('#ch-'+prefix+'-minseverity').value = cfg.minSeverity || 'crit';
   }
   $('#ch-kakao-enabled').checked = kakao.enabled;
-  $('#ch-kakao-senderkey').value = kakao.senderKey || '';
-  $('#ch-kakao-templatecode').value = kakao.templateCode || '';
+  $('#ch-kakao-restapikey').placeholder = kakao.restApiKeySet ? '설정됨 -- 변경하려면 새 값 입력' : 'REST API 키 입력';
+  $('#ch-kakao-clientsecret').placeholder = kakao.clientSecretSet ? '설정됨 -- 변경하려면 새 값 입력' : 'Client Secret (선택)';
+  $('#ch-kakao-minseverity').value = kakao.minSeverity || 'crit';
+  $('#ch-kakao-redirecturi').value = kakaoUri.redirectUri || '';
+  const kakaoConnEl = $('#ch-kakao-connstatus');
+  if(kakao.connected){
+    kakaoConnEl.className = 'pill good'; kakaoConnEl.innerHTML = '<span class="dot"></span>연결됨';
+    $('#ch-kakao-disconnect').style.display = '';
+    $('#ch-kakao-connect').textContent = '다시 연결하기';
+  }else{
+    kakaoConnEl.className = 'pill neutral'; kakaoConnEl.innerHTML = '<span class="dot"></span>연결 안 됨';
+    $('#ch-kakao-disconnect').style.display = 'none';
+    $('#ch-kakao-connect').textContent = '카카오 계정 연결하기';
+  }
   $('#ch-sms-enabled').checked = sms.enabled;
   $('#ch-sms-provider').value = sms.provider || '';
   $('#ch-sms-sendernumber').value = sms.senderNumber || '';
@@ -5896,7 +5937,27 @@ setInterval(tickClock, 1000);
   await loadGlobalThresholds();
   await syncState();
   refreshBadges();
-  switchView('overview');
+  // Kakao OAuth consent happens as a full-page redirect away to Kakao and
+  // back (see the 카카오 계정 연결하기 handler in wireChannelHandlers) -- the
+  // app reloads from scratch on return, so this is where that round trip
+  // lands: jump straight to the channel settings and show the result
+  // instead of leaving the user on the overview screen wondering if it worked.
+  const kakaoAuthResult = new URLSearchParams(location.search).get('kakaoAuth');
+  if(kakaoAuthResult){
+    history.replaceState(null, '', location.pathname);
+    switchView('channels');
+    const kakaoHead = $('#view-channels [data-collapse="ch-kakao-body"]');
+    const kakaoWrap = $('#ch-kakao-body');
+    if(kakaoHead) kakaoHead.classList.remove('collapsed');
+    if(kakaoWrap) kakaoWrap.classList.remove('collapsed');
+    const kakaoStatusEl = $('#ch-kakao-status');
+    if(kakaoStatusEl){
+      kakaoStatusEl.textContent = kakaoAuthResult === 'success' ? '카카오 계정이 연결되었습니다' : '카카오 연결에 실패했습니다. 감사 로그를 확인하세요';
+      kakaoStatusEl.style.color = kakaoAuthResult === 'success' ? 'var(--good)' : 'var(--crit)';
+    }
+  }else{
+    switchView('overview');
+  }
   async function pollTick(){
     const ok = await syncState();
     if(ok){

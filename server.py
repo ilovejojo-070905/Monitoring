@@ -12,13 +12,16 @@ import json
 import os
 import secrets
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from collections import defaultdict, deque
 from datetime import timedelta, datetime
 from functools import wraps
 
 import psutil
-from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory, session
+from flask import Flask, Response, g, jsonify, redirect, request, send_file, send_from_directory, session
 from waitress import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -2376,17 +2379,113 @@ def api_get_kakao_settings():
 @app.put('/api/settings/kakao')
 @require_role('OPERATOR')
 def api_set_kakao_settings():
-    # 카카오 알림톡은 webhook 한 번으로 끝나는 연동이 아니라 카카오톡 채널(비즈니스
-    # 계정) 개설, 발신 프로필 심사, 사전 승인된 템플릿이 모두 필요한 공식 API/CPaaS
-    # 연동이다 (storage.get_kakao_config_public 주석 참고) -- 이 엔드포인트는 그
-    # 값들을 저장만 하며, 실제 발송 경로는 아직 구현되어 있지 않다.
     body = request.get_json(force=True)
-    sender_key = (body.get('senderKey') or '').strip()
-    template_code = (body.get('templateCode') or '').strip()
-    if len(sender_key) > 100 or len(template_code) > 100:
-        return jsonify({'error': '발신 프로필 키/템플릿 코드는 100자 이하여야 합니다'}), 400
-    storage.set_kakao_config(bool(body.get('enabled', False)), sender_key, template_code)
+    rest_api_key = (body.get('restApiKey') or '').strip() or None
+    client_secret = (body.get('clientSecret') or '').strip() or None
+    if rest_api_key and len(rest_api_key) > 100:
+        return jsonify({'error': 'REST API 키는 100자 이하여야 합니다'}), 400
+    if client_secret and len(client_secret) > 100:
+        return jsonify({'error': 'Client Secret은 100자 이하여야 합니다'}), 400
+    if not rest_api_key and not storage.get_kakao_config_public()['restApiKeySet']:
+        return jsonify({'error': 'REST API 키를 입력해주세요'}), 400
+    if body.get('minSeverity') not in (None, 'warn', 'crit'):
+        return jsonify({'error': 'minSeverity는 warn 또는 crit이어야 합니다'}), 400
+    storage.set_kakao_config(bool(body.get('enabled', False)), rest_api_key, client_secret,
+                              body.get('minSeverity') or 'crit')
     audit('SET_KAKAO_SETTINGS')
+    return jsonify({'ok': True})
+
+
+@app.get('/api/settings/kakao/redirect-uri')
+@require_role('OPERATOR')
+def api_kakao_redirect_uri():
+    # The exact value the admin needs to register as a Redirect URI in the
+    # Kakao Developers console -- computed from whatever host they're
+    # currently viewing this settings page through (localhost vs. the LAN
+    # IP give different values, and Kakao requires an exact match), rather
+    # than guessed at or hardcoded.
+    return jsonify({'redirectUri': request.url_root.rstrip('/') + '/api/kakao/callback'})
+
+
+@app.get('/api/kakao/authorize')
+@require_role('ADMIN')
+def api_kakao_authorize():
+    rest_api_key = storage.get_setting('kakao_rest_api_key')
+    if not rest_api_key:
+        return jsonify({'error': 'REST API 키를 먼저 저장해주세요'}), 400
+    redirect_uri = request.url_root.rstrip('/') + '/api/kakao/callback'
+    params = {
+        'response_type': 'code',
+        'client_id': rest_api_key,
+        'redirect_uri': redirect_uri,
+        'scope': 'talk_message',
+    }
+    return redirect(f'https://kauth.kakao.com/oauth/authorize?{urllib.parse.urlencode(params)}')
+
+
+@app.get('/api/kakao/callback')
+@require_role('ADMIN')
+def api_kakao_callback():
+    code = request.args.get('code')
+    oauth_error = request.args.get('error')
+    if oauth_error or not code:
+        audit('KAKAO_OAUTH_CALLBACK', details=f"failed: {oauth_error or 'no code'}")
+        return redirect('/?kakaoAuth=error')
+    redirect_uri = request.url_root.rstrip('/') + '/api/kakao/callback'
+    rest_api_key = storage.get_setting('kakao_rest_api_key')
+    client_secret = storage.get_credential(storage.SMTP_SYSTEM_ID, 'kakao_client_secret')
+    params = {
+        'grant_type': 'authorization_code',
+        'client_id': rest_api_key,
+        'redirect_uri': redirect_uri,
+        'code': code,
+    }
+    if client_secret:
+        params['client_secret'] = client_secret
+    try:
+        req = urllib.request.Request(
+            'https://kauth.kakao.com/oauth/token',
+            data=urllib.parse.urlencode(params).encode('utf-8'),
+            headers={'Content-Type': 'application/x-www-form-urlencoded'}, method='POST')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        storage.set_kakao_tokens(data['access_token'], data.get('refresh_token'), data.get('expires_in', 21599))
+        audit('KAKAO_OAUTH_CALLBACK', details='ok')
+        return redirect('/?kakaoAuth=success')
+    except urllib.error.HTTPError as e:
+        # The raw Kakao error body can include request details -- keep it in
+        # the audit log for the admin to look up server-side, same pattern as
+        # TEST_SMTP's smtplib error, not in the redirect URL.
+        detail = e.read().decode('utf-8', 'replace')[:300]
+        audit('KAKAO_OAUTH_CALLBACK', details=f"failed: HTTP {e.code}: {detail}")
+        return redirect('/?kakaoAuth=error')
+    except Exception as e:
+        audit('KAKAO_OAUTH_CALLBACK', details=f"failed: {type(e).__name__}: {e}")
+        return redirect('/?kakaoAuth=error')
+
+
+@app.post('/api/settings/kakao/test')
+@require_role('OPERATOR')
+def api_test_kakao():
+    cfg = storage.get_kakao_config()
+    if not cfg:
+        return jsonify({'error': '카카오 설정이 완료되지 않았거나 비활성화 상태이거나, 계정이 연결되지 않았습니다'}), 400
+    from alerts.kakao_channel import KakaoChannel
+    ok, err, new_tokens = KakaoChannel().send(cfg, '[InfraSight] 테스트 알림',
+                                               'InfraSight 알림 설정이 정상적으로 동작합니다.')
+    if new_tokens:
+        storage.set_kakao_tokens(new_tokens['access_token'], new_tokens.get('refresh_token'), new_tokens['expires_in'])
+    audit('TEST_KAKAO', details='ok' if ok else f'failed: {err}')
+    if not ok:
+        return jsonify({'error': '카카오톡 발송에 실패했습니다. 감사 로그에서 자세한 내용을 확인하세요.'}), 502
+    return jsonify({'ok': True})
+
+
+@app.post('/api/settings/kakao/disconnect')
+@require_role('ADMIN')
+def api_kakao_disconnect():
+    storage.disconnect_kakao()
+    audit('KAKAO_DISCONNECT')
     return jsonify({'ok': True})
 
 
@@ -2560,7 +2659,18 @@ def main():
     startup_msg = f"InfraSight running at http://localhost:{PORT}  (LAN: http://{storage.get_lan_ip()}:{PORT})"
     print(startup_msg)
     app_logger.info(startup_msg)
-    serve(app, host='0.0.0.0', port=PORT)
+    # trusted_proxy/trusted_proxy_headers: without these, waitress discards
+    # every X-Forwarded-* header on every request before WSGI/_TrustedProxyFix
+    # ever sees them (its own untrusted-proxy-spoofing guard, separate from
+    # and in front of the one in _TrustedProxyFix above) -- confirmed live
+    # building the Kakao OAuth redirect_uri, where request.scheme kept coming
+    # back "http" even though Caddy (the only thing allowed to reach this
+    # port un-firewalled) was both sending X-Forwarded-Proto correctly AND
+    # the sole connection this trusts, by address, at the Flask layer. This
+    # mirrors _TrustedProxyFix's own trust boundary (127.0.0.1, i.e. only
+    # Caddy) one layer further out, at the WSGI server itself.
+    serve(app, host='0.0.0.0', port=PORT, trusted_proxy='127.0.0.1',
+          trusted_proxy_headers={'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host'})
 
 
 if __name__ == '__main__':

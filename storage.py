@@ -2639,31 +2639,75 @@ def set_webhook_config(prefix, url=None, enabled=True, min_severity='crit'):
         set_credential(SMTP_SYSTEM_ID, f'{prefix}_webhook_url', url)
 
 
-# 2-4: Kakao 알림톡/SMS are deliberately NOT wired into _dispatch_alert below
-# -- per the ticket's own instruction not to assume a plain-webhook
-# integration works for Kakao, and the research behind this: Kakao's actual
-# "알림톡" product requires a registered 카카오톡 채널 (business account), a
-# sender profile that passes Kakao's own review, and pre-approved message
-# *templates* (free-text isn't allowed) -- normally reached through a
-# certified CPaaS reseller (NHN Toast, Aligo, Solapi, ...) via their own
-# paid API, not a simple incoming webhook. SMS has the same shape of gap: a
-# paid gateway account, an API key, and (in Korea) a pre-registered sender
-# number. Neither is something this app can provision on its own, so these
-# two only ever persist settings -- see get_kakao_config_public/
-# get_sms_config_public and their matching setters. The UI is explicit about
-# this rather than offering a "테스트" button that would silently do nothing.
-def get_kakao_config_public():
+# 2-4 / Kakao Method A: "나에게 보내기" (self-message) via Kakao Login OAuth --
+# see alerts/kakao_channel.py for why this is the one Kakao integration that
+# IS wired into _dispatch_alert below, unlike real 알림톡 (sending to other
+# people). An admin's own Kakao account authorizes once (an OAuth code
+# exchanged for an access_token + refresh_token below); every alert after
+# that is this module refreshing the access_token when it's stale and
+# POSTing to Kakao's own "나에게 보내기" API. Only the account that did the
+# OAuth consent receives anything -- there is no concept of "recipients"
+# here, which is exactly the Method A/B distinction flagged to the user
+# before this was built.
+def get_kakao_config():
+    """Returns the Kakao config dict (including tokens) if enabled and an
+    account has completed the OAuth consent, else None. Same "fully
+    configured or not used" contract as get_smtp_config()."""
+    if get_setting('kakao_enabled') != '1':
+        return None
+    rest_api_key = get_setting('kakao_rest_api_key')
+    refresh_token = get_credential(SMTP_SYSTEM_ID, 'kakao_refresh_token')
+    if not (rest_api_key and refresh_token):
+        return None
     return {
-        'enabled': get_setting('kakao_enabled') == '1',
-        'senderKey': get_setting('kakao_sender_key') or '',
-        'templateCode': get_setting('kakao_template_code') or '',
+        'rest_api_key': rest_api_key,
+        'client_secret': get_credential(SMTP_SYSTEM_ID, 'kakao_client_secret'),
+        'access_token': get_credential(SMTP_SYSTEM_ID, 'kakao_access_token'),
+        'refresh_token': refresh_token,
+        'expires_at': int(get_setting('kakao_token_expires_at') or 0),
+        'min_severity': get_setting('kakao_min_severity', 'crit'),
     }
 
 
-def set_kakao_config(enabled, sender_key, template_code):
+def get_kakao_config_public():
+    return {
+        'enabled': get_setting('kakao_enabled') == '1',
+        'minSeverity': get_setting('kakao_min_severity', 'crit'),
+        'restApiKeySet': bool(get_setting('kakao_rest_api_key')),
+        'clientSecretSet': bool(get_credential(SMTP_SYSTEM_ID, 'kakao_client_secret')),
+        'connected': bool(get_credential(SMTP_SYSTEM_ID, 'kakao_refresh_token')),
+    }
+
+
+def set_kakao_config(enabled, rest_api_key=None, client_secret=None, min_severity='crit'):
     set_setting('kakao_enabled', '1' if enabled else '0')
-    set_setting('kakao_sender_key', (sender_key or '').strip())
-    set_setting('kakao_template_code', (template_code or '').strip())
+    set_setting('kakao_min_severity', min_severity)
+    if rest_api_key:  # blank on an update means "keep the existing one", same as the SMTP password
+        set_setting('kakao_rest_api_key', rest_api_key)
+    if client_secret:
+        set_credential(SMTP_SYSTEM_ID, 'kakao_client_secret', client_secret)
+
+
+def set_kakao_tokens(access_token, refresh_token, expires_in):
+    """Called after the OAuth callback exchanges a code, and again whenever
+    alerts/kakao_channel.py refreshes a stale access_token. refresh_token is
+    None on a plain refresh when Kakao doesn't reissue one (it only does
+    that occasionally) -- kept as-is in that case rather than overwritten
+    with None, since set_credential() already no-ops on None but this makes
+    the intent explicit at the call site."""
+    set_credential(SMTP_SYSTEM_ID, 'kakao_access_token', access_token)
+    if refresh_token:
+        set_credential(SMTP_SYSTEM_ID, 'kakao_refresh_token', refresh_token)
+    # 5-minute safety margin so a near-expiry token gets refreshed proactively
+    # instead of failing mid-send and needing the channel's own retry-after-
+    # refresh fallback (see alerts/kakao_channel.py).
+    set_setting('kakao_token_expires_at', str(int(time.time()) + int(expires_in) - 300))
+
+
+def disconnect_kakao():
+    delete_credential(SMTP_SYSTEM_ID, 'kakao_access_token')
+    delete_credential(SMTP_SYSTEM_ID, 'kakao_refresh_token')
+    set_setting('kakao_token_expires_at', '0')
 
 
 def get_sms_config_public():
@@ -2695,8 +2739,12 @@ def _get_alert_channels():
     every incident is already a DB row the instant add_incident() writes it,
     and the dashboard's existing 2.2s poll (index.html's syncState) picks it
     up and raises a toast for anything new/escalated/recovered. This list is
-    only for channels that need an explicit outbound push. Kakao/SMS are
-    intentionally absent -- see the comment above their settings functions."""
+    only for channels that need an explicit outbound push. SMS is
+    intentionally absent -- see the comment above its settings functions.
+    Kakao's destination is the whole config dict (not a single string like
+    the others) because alerts/kakao_channel.py may need to refresh the
+    access_token mid-send -- see _dispatch_one_channel's kakao branch for
+    where the refreshed token gets persisted back."""
     channels = []
     smtp_cfg = get_smtp_config()
     if smtp_cfg:
@@ -2711,6 +2759,10 @@ def _get_alert_channels():
     if teams_cfg:
         from alerts.teams_channel import TeamsChannel
         channels.append(('teams', TeamsChannel(), teams_cfg['url'], teams_cfg['min_severity']))
+    kakao_cfg = get_kakao_config()
+    if kakao_cfg:
+        from alerts.kakao_channel import KakaoChannel
+        channels.append(('kakao', KakaoChannel(), kakao_cfg, kakao_cfg['min_severity']))
     return channels
 
 
@@ -2737,6 +2789,12 @@ def _dispatch_one_channel(name, channel, destination, severity, source, message)
         if not ok:
             add_incident('warn', 'InfraSight', 'SYSTEM',
                           f"{name} 알림 발송 실패 ({attempts}회 시도): {err}", _no_alert=True)
+    elif name == 'kakao':
+        ok, err, new_tokens = channel.send(destination, subject, message)
+        if new_tokens:
+            set_kakao_tokens(new_tokens['access_token'], new_tokens.get('refresh_token'), new_tokens['expires_in'])
+        if not ok:
+            add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)
     else:
         ok, err = channel.send(destination, subject, message)
         if not ok:
