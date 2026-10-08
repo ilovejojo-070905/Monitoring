@@ -44,9 +44,50 @@ OID_IF_DESCR = '1.3.6.1.2.1.2.2.1.2'
 # it's normal for this to come back empty for many/most interfaces.
 OID_IF_ALIAS = '1.3.6.1.2.1.31.1.1.1.18'
 OID_IF_OPER_STATUS = '1.3.6.1.2.1.2.2.1.8'
+OID_IF_ADMIN_STATUS = '1.3.6.1.2.1.2.2.1.7'
 OID_IF_IN_OCTETS = '1.3.6.1.2.1.2.2.1.10'
 OID_IF_OUT_OCTETS = '1.3.6.1.2.1.2.2.1.16'
+OID_IF_IN_ERRORS = '1.3.6.1.2.1.2.2.1.14'
+OID_IF_OUT_ERRORS = '1.3.6.1.2.1.2.2.1.20'
+OID_IF_IN_DISCARDS = '1.3.6.1.2.1.2.2.1.13'
+OID_IF_OUT_DISCARDS = '1.3.6.1.2.1.2.2.1.19'
+# ifXTable's ifHighSpeed, already in Mbps (32-bit, but wide enough for any
+# link speed likely to show up here) -- used as the utilization-% denominator.
+# ifSpeed (ifTable, bps) saturates at 4.3Gbps on gigabit+ links so it's not used.
+OID_IF_HIGH_SPEED = '1.3.6.1.2.1.31.1.1.1.15'
 OID_UPS_BATTERY_CAPACITY = '1.3.6.1.2.1.33.1.2.4.0'
+
+# HOST-RESOURCES-MIB hrStorageTable -- generic (non-Cisco-specific) memory
+# fallback. The 'generic' SNMP profile only tries Cisco OIDs for memory
+# today (snmp_profiles.py), so any non-Cisco device silently gets no memory
+# reading at all. This walks the storage table and picks out the one row
+# whose hrStorageType is hrStorageRam -- supported by any device implementing
+# the standard MIB, not just Cisco.
+OID_HR_STORAGE_TYPE = '1.3.6.1.2.1.25.2.3.1.2'
+OID_HR_STORAGE_SIZE = '1.3.6.1.2.1.25.2.3.1.5'
+OID_HR_STORAGE_USED = '1.3.6.1.2.1.25.2.3.1.6'
+OID_HR_STORAGE_ALLOC_UNITS = '1.3.6.1.2.1.25.2.3.1.4'
+HR_STORAGE_TYPE_RAM = '1.3.6.1.2.1.25.2.1.2'
+
+# ENTITY-MIB chassis info -- simplified scope: just entPhysicalTable index 1
+# (the chassis entry itself on most devices), not the full entity tree. One
+# cheap extra GET per poll, tried for every category/vendor since it's a
+# standard MIB.
+OID_ENT_PHYSICAL_DESCR = '1.3.6.1.2.1.47.1.1.1.1.2.1'
+OID_ENT_PHYSICAL_MODEL_NAME = '1.3.6.1.2.1.47.1.1.1.1.13.1'
+OID_ENT_PHYSICAL_SERIAL_NUM = '1.3.6.1.2.1.47.1.1.1.1.11.1'
+
+# The 4-3-추가 items below (error/discard counters, admin status, link speed,
+# generic hrStorage memory, ENTITY-MIB, ENVMON) roughly doubled the number of
+# SNMP round trips the 'net' category makes every poll tick. Verified live:
+# polling the real 36-interface Catalyst 2960S at the default 2s tick with
+# all of them enabled every tick made the switch itself stop answering SNMP
+# (and even ICMP) within about two minutes -- its management-plane CPU
+# couldn't keep up with ~15+ requests every 2 seconds, sustained. None of
+# these fields need 2-second freshness (errors/discards/util move slowly;
+# hardware model and environmental sensors barely change at all), so they're
+# walked on this slower cadence instead -- same pattern as LLDP_INTERVAL_SEC.
+EXTENDED_POLL_INTERVAL_SEC = 20
 
 DEFAULT_TIMEOUT_SEC = 1.5
 
@@ -151,8 +192,13 @@ async def _snmp_walk(engine, ip, auth_data, port, base_oid, timeout=1.5, max_row
     return out
 
 
-async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lldp_due):
-    """One SNMP session (one engine, one event loop) per device per poll."""
+async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lldp_due, extended_due):
+    """One SNMP session (one engine, one event loop) per device per poll.
+
+    extended_due gates the slow-changing / purely informational items (error
+    counters, admin status, link speed, hrStorage memory fallback, ENTITY-MIB,
+    ENVMON) so a busy 'net' device isn't hit with ~2x the SNMP round trips on
+    every single 2-second tick -- see EXTENDED_POLL_INTERVAL_SEC above."""
     engine = SnmpEngine()
     result = {'reachable': False, 'latencyMs': None}
     start = time.time()
@@ -179,12 +225,52 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
             result['memUsed'] = await _snmp_walk(engine, ip, auth_data, port, profile['mem_used_oid'], timeout=timeout)
         if profile.get('mem_free_oid'):
             result['memFree'] = await _snmp_walk(engine, ip, auth_data, port, profile['mem_free_oid'], timeout=timeout)
+        if extended_due:
+            result['adminStatus'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_ADMIN_STATUS, timeout=timeout)
+            result['inErrors'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_ERRORS, timeout=timeout)
+            result['outErrors'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OUT_ERRORS, timeout=timeout)
+            result['inDiscards'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_DISCARDS, timeout=timeout)
+            result['outDiscards'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OUT_DISCARDS, timeout=timeout)
+            result['ifHighSpeed'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_HIGH_SPEED, timeout=timeout)
+            if not result.get('memUsed') and not result.get('memFree'):
+                hr_type = await _snmp_walk(engine, ip, auth_data, port, OID_HR_STORAGE_TYPE, timeout=timeout)
+                ram_idx = next((idx for idx, v in hr_type.items() if str(v).lstrip('.') == HR_STORAGE_TYPE_RAM), None)
+                if ram_idx is not None:
+                    hr_size = await _snmp_walk(engine, ip, auth_data, port, OID_HR_STORAGE_SIZE, timeout=timeout)
+                    hr_used = await _snmp_walk(engine, ip, auth_data, port, OID_HR_STORAGE_USED, timeout=timeout)
+                    hr_units = await _snmp_walk(engine, ip, auth_data, port, OID_HR_STORAGE_ALLOC_UNITS, timeout=timeout)
+                    result['hrMemSize'] = hr_size.get(ram_idx)
+                    result['hrMemUsed'] = hr_used.get(ram_idx)
+                    result['hrMemUnits'] = hr_units.get(ram_idx)
+            if profile.get('name') == 'cisco':
+                result['envTempDescr'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_TEMP_DESCR, timeout=timeout)
+                result['envTempValue'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_TEMP_VALUE, timeout=timeout)
+                result['envTempState'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_TEMP_STATE, timeout=timeout)
+                result['envFanState'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_FAN_STATE, timeout=timeout)
+                result['envSupplyState'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_SUPPLY_STATE, timeout=timeout)
+            try:
+                ent = await _snmp_get(engine, ip, auth_data, port,
+                                       [OID_ENT_PHYSICAL_DESCR, OID_ENT_PHYSICAL_MODEL_NAME, OID_ENT_PHYSICAL_SERIAL_NUM],
+                                       timeout=timeout)
+                if ent:
+                    result['entDescr'], result['entModel'], result['entSerial'] = ent[0], ent[1], ent[2]
+            except Exception:
+                pass
         if lldp_due:
             result['lldp'] = await lldp.walk_lldp_neighbors(engine, ip, auth_data, port, timeout=timeout)
     elif category in ('server', 'db'):
         profile_srv = snmp_profiles.resolve_profile(vendor_profile, result['sysDescr'])
         cpu_oid = profile_srv['cpu_oid'] or snmp_profiles.OID_HR_PROCESSOR_LOAD
         result['loads'] = await _snmp_walk(engine, ip, auth_data, port, cpu_oid, timeout=timeout)
+        if extended_due:
+            try:
+                ent = await _snmp_get(engine, ip, auth_data, port,
+                                       [OID_ENT_PHYSICAL_DESCR, OID_ENT_PHYSICAL_MODEL_NAME, OID_ENT_PHYSICAL_SERIAL_NUM],
+                                       timeout=timeout)
+                if ent:
+                    result['entDescr'], result['entModel'], result['entSerial'] = ent[0], ent[1], ent[2]
+            except Exception:
+                pass
     elif category == 'fac':
         result['batt'] = await _snmp_get(engine, ip, auth_data, port, [OID_UPS_BATTERY_CAPACITY], timeout=timeout)
     return result
@@ -192,6 +278,16 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
 
 def snmp_run(coro):
     return asyncio.run(coro)
+
+
+def _safe_int(v):
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+_ENVMON_STATE_LABEL = {'1': 'normal', '2': 'warning', '3': 'critical', '4': 'shutdown', '5': 'notPresent'}
 
 
 def sample_snmp(entity, device_row):
@@ -232,10 +328,13 @@ def sample_snmp(entity, device_row):
     lldp_due = category == 'net' and (now - (entity.get('_lldpLastRun') or 0)) >= lldp.LLDP_INTERVAL_SEC
     if lldp_due:
         entity['_lldpLastRun'] = now
+    extended_due = (now - (entity.get('_extendedLastRun') or 0)) >= EXTENDED_POLL_INTERVAL_SEC
+    if extended_due:
+        entity['_extendedLastRun'] = now
 
     try:
         auth_data = build_auth_data(device_id, version, community)
-        result = snmp_run(_snmp_poll(ip, auth_data, port, category, timeout=timeout_s, vendor_profile=vendor_profile, lldp_due=lldp_due))
+        result = snmp_run(_snmp_poll(ip, auth_data, port, category, timeout=timeout_s, vendor_profile=vendor_profile, lldp_due=lldp_due, extended_due=extended_due))
     except Exception:
         result = {'reachable': False, 'latencyMs': None}
 
@@ -244,6 +343,16 @@ def sample_snmp(entity, device_row):
             lldp.apply_discovered_links(device_id, result['lldp'])
         except Exception:
             pass
+
+    # Extended (slow-cadence) fields only arrive in `result` on ticks where
+    # extended_due was true -- cached here so every other tick keeps
+    # rendering the last known values instead of them flickering to empty.
+    ext_cache = entity.setdefault('_extCache', {})
+    for _k in ('adminStatus', 'inErrors', 'outErrors', 'inDiscards', 'outDiscards', 'ifHighSpeed',
+               'hrMemSize', 'hrMemUsed', 'hrMemUnits', 'entDescr', 'entModel', 'entSerial',
+               'envTempDescr', 'envTempValue', 'envTempState', 'envFanState', 'envSupplyState'):
+        if _k in result:
+            ext_cache[_k] = result[_k]
 
     with state.LOCK:
         entity['reachable'] = result['reachable']
@@ -316,17 +425,33 @@ def sample_snmp(entity, device_row):
 
             ifdescr = result.get('ifDescr') or {}
             ifalias = result.get('ifAlias') or {}
+            admin = ext_cache.get('adminStatus') or {}
+            in_err = ext_cache.get('inErrors') or {}
+            out_err = ext_cache.get('outErrors') or {}
+            in_disc = ext_cache.get('inDiscards') or {}
+            out_disc = ext_cache.get('outDiscards') or {}
+            high_speed = ext_cache.get('ifHighSpeed') or {}
             iface_hist = entity.setdefault('_ifaceHist', {})
             ifaces = []
             for idx, name in ifdescr.items():
                 rate = iface_rates.get(idx, {'inMbps': 0.0, 'outMbps': 0.0})
                 iface_hist.setdefault(idx, hist(0))
                 push_cap(iface_hist[idx], round(rate['inMbps'] + rate['outMbps'], 3))
+                speed_mbps = _safe_int(high_speed.get(idx))
+                util_in = round(rate['inMbps'] / speed_mbps * 100, 1) if speed_mbps else None
+                util_out = round(rate['outMbps'] / speed_mbps * 100, 1) if speed_mbps else None
                 ifaces.append({
                     'idx': idx, 'name': str(name),
                     'description': str(ifalias.get(idx) or '').strip(),
                     'status': 'up' if str(oper.get(idx, '2')) == '1' else 'down',
+                    'adminStatus': 'up' if str(admin.get(idx, '1')) == '1' else 'down',
                     'inMbps': rate['inMbps'], 'outMbps': rate['outMbps'],
+                    'speedMbps': speed_mbps,
+                    'utilInPct': util_in, 'utilOutPct': util_out,
+                    'inErrors': _safe_int(in_err.get(idx)),
+                    'outErrors': _safe_int(out_err.get(idx)),
+                    'inDiscards': _safe_int(in_disc.get(idx)),
+                    'outDiscards': _safe_int(out_disc.get(idx)),
                     'hist': list(iface_hist[idx]),
                 })
             ifaces.sort(key=lambda x: int(x['idx']) if x['idx'].isdigit() else 0)
@@ -347,11 +472,35 @@ def sample_snmp(entity, device_row):
             mem_free = result.get('memFree') or {}
             used_total = sum(int(v) for v in mem_used.values())
             free_total = sum(int(v) for v in mem_free.values())
+            mem_pct = None
             if used_total + free_total > 0:
                 mem_pct = round(used_total / (used_total + free_total) * 100, 1)
+            elif ext_cache.get('hrMemSize') and ext_cache.get('hrMemUsed'):
+                units = _safe_int(ext_cache.get('hrMemUnits')) or 1
+                size_bytes = int(ext_cache['hrMemSize']) * units
+                used_bytes = int(ext_cache['hrMemUsed']) * units
+                if size_bytes > 0:
+                    mem_pct = round(used_bytes / size_bytes * 100, 1)
+            if mem_pct is not None:
                 entity['mem'] = mem_pct
                 entity.setdefault('hist', {}).setdefault('mem', hist(0))
                 push_cap(entity['hist']['mem'], mem_pct)
+        except Exception:
+            pass
+        try:
+            if ext_cache.get('envTempValue') or ext_cache.get('envFanState') or ext_cache.get('envSupplyState'):
+                temp_descr = ext_cache.get('envTempDescr') or {}
+                temp_value = ext_cache.get('envTempValue') or {}
+                temp_state = ext_cache.get('envTempState') or {}
+                fan_state = ext_cache.get('envFanState') or {}
+                supply_state = ext_cache.get('envSupplyState') or {}
+                entity['envTemps'] = [{
+                    'description': str(temp_descr.get(idx) or '').strip(),
+                    'valueC': _safe_int(val),
+                    'state': _ENVMON_STATE_LABEL.get(str(temp_state.get(idx, '')), 'unknown'),
+                } for idx, val in temp_value.items()]
+                entity['envFans'] = [_ENVMON_STATE_LABEL.get(str(v), 'unknown') for v in fan_state.values()]
+                entity['envSupplies'] = [_ENVMON_STATE_LABEL.get(str(v), 'unknown') for v in supply_state.values()]
         except Exception:
             pass
     elif category in ('server', 'db') and 'loads' in result:
@@ -371,6 +520,11 @@ def sample_snmp(entity, device_row):
                 entity['battPct'] = float(batt[0])
         except Exception:
             pass
+
+    if ext_cache.get('entModel') or ext_cache.get('entSerial') or ext_cache.get('entDescr'):
+        entity['hwModel'] = (ext_cache.get('entModel') or '').strip() or None
+        entity['hwSerial'] = (ext_cache.get('entSerial') or '').strip() or None
+        entity['hwDescr'] = (ext_cache.get('entDescr') or '').strip() or None
 
     # 2-2: resource-threshold evaluation -- until now SNMP-polled devices
     # (switches/routers/SNMP-mode servers/DBs) only ever got a status/

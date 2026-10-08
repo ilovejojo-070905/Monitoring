@@ -5503,13 +5503,19 @@ function renderIfaceModal(){
   destroyChart('ifaceModalChart');
   $('#ifaceModalTitle').textContent = f.name;
   $('#ifaceModalSub').textContent = f.description ? `${entity.name} · ${f.description}` : `${entity.name} · SNMP 실측`;
+  const hasErrDisc = f.inErrors!=null || f.outErrors!=null || f.inDiscards!=null || f.outDiscards!=null;
   $('#ifaceModalBody').innerHTML = `
     <div class="kv-grid">
-      <div class="kv"><span>상태</span><b style="color:${f.status==='up'?'var(--good)':'var(--text-faint)'}">${f.status==='up'?'Up':'Down'}</b></div>
+      <div class="kv"><span>상태</span><b style="color:${f.status==='up'?'var(--good)':'var(--text-faint)'}">${f.status==='up'?'Up':'Down'}${f.adminStatus==='down' ? ' (관리자 비활성화)' : ''}</b></div>
+      <div class="kv"><span>링크 속도</span><b>${f.speedMbps!=null ? fmt0(f.speedMbps)+' Mbps' : '-'}</b></div>
       <div class="kv"><span>합계</span><b>${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps</b></div>
-      <div class="kv"><span>In</span><b style="color:var(--info)">${fmtMbps(f.inMbps||0)} Mbps</b></div>
-      <div class="kv"><span>Out</span><b style="color:#ff3ec9">${fmtMbps(f.outMbps||0)} Mbps</b></div>
+      <div class="kv"><span>In</span><b style="color:var(--info)">${fmtMbps(f.inMbps||0)} Mbps${f.utilInPct!=null ? ` (${fmt1(f.utilInPct)}%)` : ''}</b></div>
+      <div class="kv"><span>Out</span><b style="color:#ff3ec9">${fmtMbps(f.outMbps||0)} Mbps${f.utilOutPct!=null ? ` (${fmt1(f.utilOutPct)}%)` : ''}</b></div>
     </div>
+    ${hasErrDisc ? `<div class="kv-grid">
+      <div class="kv"><span>In 에러/드랍</span><b style="color:${(f.inErrors||0)+(f.inDiscards||0)>0?'var(--warn)':'inherit'}">${fmt0(f.inErrors||0)} / ${fmt0(f.inDiscards||0)}</b></div>
+      <div class="kv"><span>Out 에러/드랍</span><b style="color:${(f.outErrors||0)+(f.outDiscards||0)>0?'var(--warn)':'inherit'}">${fmt0(f.outErrors||0)} / ${fmt0(f.outDiscards||0)}</b></div>
+    </div>` : ''}
     <div class="card"><div class="card-head"><h3>트래픽 추이</h3><span class="sub">SNMP 실측 · 최근 60초 · Mbps</span></div>
       <div style="height:200px"><canvas id="ifaceModalCanvas"></canvas></div>
     </div>
@@ -5591,6 +5597,7 @@ function drawPingDevice(e, catLabel){
   if(typeof e.uptime === 'number') extraKv += `<div class="kv"><span>Uptime (SNMP 실측)</span><b>${fmt1(e.uptime)}일</b></div>`;
   if(typeof e.battPct === 'number') extraKv += `<div class="kv"><span>배터리 (SNMP 실측)</span><b>${fmt0(e.battPct)}%</b></div>`;
   if(typeof e.portsTotal === 'number') extraKv += `<div class="kv"><span>인터페이스</span><b>${e.portsUp}/${e.portsTotal} Up</b></div>`;
+  if(isSnmp && (e.hwModel || e.hwSerial)) extraKv += `<div class="kv"><span>모델 / 시리얼 (SNMP ENTITY-MIB)</span><b style="font-size:12px">${escapeHtml(e.hwModel||'-')}${e.hwSerial ? ` · ${escapeHtml(e.hwSerial)}` : ''}</b></div>`;
   if(isSnmp && e.sysDescr) extraKv += `<div class="kv" style="grid-column:span 2"><span>장치 정보 (SNMP sysDescr)</span><b style="font-size:11px;font-weight:500;white-space:normal;line-height:1.4">${escapeHtml(e.sysDescr)}</b></div>`;
 
   const hasCpuMem = isSnmp && e.hist && e.hist.cpu && typeof e.cpu === 'number';
@@ -5610,16 +5617,32 @@ function drawPingDevice(e, catLabel){
   const ifaceCard = ifaces.length ? `
     <div class="card"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
       <div id="iface-list" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
-        ${ifaces.map(f=>`<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
+        ${ifaces.map(f=>{
+          const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
+          const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
+          return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:10px">
             <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
             ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
           </span>
           <span style="display:flex;align-items:center;gap:8px;flex:none">
-            ${f.status==='up' ? `<span class="mono" style="font-size:10px;color:var(--text-faint)">${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps</span>` : ''}
-            <span class="pill ${f.status==='up'?'good':'neutral'}"><span class="dot"></span>${f.status==='up'?'Up':'Down'}</span>
+            ${hasErr ? `<span class="mono" style="font-size:10px;color:var(--warn)" title="에러/드랍 누적 발생">⚠ ${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>` : ''}
+            ${f.status==='up' ? `<span class="mono" style="font-size:10px;color:var(--text-faint)">${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps${utilMax>0 ? ` (${fmt0(utilMax)}%)` : ''}</span>` : ''}
+            <span class="pill ${f.status==='up'?'good':'neutral'}"><span class="dot"></span>${f.status==='up'?'Up':(f.adminStatus==='down'?'비활성화':'Down')}</span>
           </span>
-        </div>`).join('')}
+        </div>`;}).join('')}
+      </div>
+    </div>` : '';
+
+  const hasEnv = isSnmp && (Array.isArray(e.envTemps) && e.envTemps.length || Array.isArray(e.envFans) && e.envFans.length || Array.isArray(e.envSupplies) && e.envSupplies.length);
+  const envStateColor = s => s==='normal' ? 'var(--good)' : (s==='warning' ? 'var(--warn)' : (s==='critical'||s==='shutdown' ? 'var(--crit)' : 'var(--text-faint)'));
+  const envStateLabel = s => ({normal:'정상', warning:'주의', critical:'위험', shutdown:'차단', notPresent:'미설치', unknown:'알수없음'})[s] || s;
+  const envCard = hasEnv ? `
+    <div class="card"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${(e.envTemps||[]).filter(t=>t.state!=='notPresent').map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(t.description||'온도 센서')}${t.valueC!=null ? ` · ${fmt0(t.valueC)}°C` : ''}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(t.state)};color:${envStateColor(t.state)}"><span class="dot" style="background:${envStateColor(t.state)}"></span>${envStateLabel(t.state)}</span></div>`).join('')}
+        ${(e.envFans||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>팬 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
+        ${(e.envSupplies||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>전원 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
       </div>
     </div>` : '';
 
@@ -5634,6 +5657,7 @@ function drawPingDevice(e, catLabel){
     ${cpuMemCard}
     ${trafficCard}
     ${ifaceCard}
+    ${envCard}
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
         ? 'SNMP로 장치 정보와 응답시간을 실측합니다. 인터페이스·CPU·메모리·배터리 등은 장비가 해당 MIB를 지원할 때만 표시됩니다.'
