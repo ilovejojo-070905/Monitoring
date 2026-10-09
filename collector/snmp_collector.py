@@ -372,7 +372,19 @@ def sample_snmp(entity, device_row):
     if not result['reachable']:
         with state.LOCK:
             entity['status'] = status
-        if prev_status == 'good' and status != 'good':
+        # Bug found live (2026-10-09): this used to fire only on the very
+        # first good->bad transition (prev_status == 'good'). evaluate_status
+        # escalates warn->crit after just 2 consecutive failures, but once
+        # prev_status was already 'warn' that condition never fires again --
+        # the incident row (and every alert channel, Kakao included) stayed
+        # stuck at the original 'warn' severity for the rest of the outage,
+        # even though the dashboard correctly showed 'crit'. Matches
+        # ping_collector.py's rank-comparison, which already handled this
+        # correctly: fire add_incident() on ANY upward severity move, not
+        # just the first one -- add_incident()'s own dedup/escalation logic
+        # (storage.py) takes it from there.
+        rank = {'good': 0, 'warn': 1, 'crit': 2}
+        if rank.get(status, 0) > rank.get(prev_status, 0):
             storage.add_incident(status, device_row['name'], storage.category_label(category),
                                   f"{device_row['name']} SNMP 응답 없음 (커뮤니티/버전을 확인하세요, 연속 {failures}회)",
                                   device_id=device_row['id'], event_type='REACHABILITY', maintenance=storage.in_maintenance(device_row))

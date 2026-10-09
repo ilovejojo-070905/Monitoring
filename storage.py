@@ -900,6 +900,7 @@ def add_incident(severity, source, category, message, device_id=None, event_type
     """
     now = int(time.time() * 1000)
     is_new_or_escalated = False
+    recovered_something = False
     conn = get_db()
     try:
         if device_id and event_type and severity != 'info':
@@ -926,9 +927,14 @@ def add_incident(severity, source, category, message, device_id=None, event_type
                 (now, severity, source, category, message, status, device_id, event_type,
                  now, now, now if status == 'resolved' else None, 1 if maintenance else 0))
             if device_id and event_type and severity == 'info':
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE incidents SET status='resolved', resolved_at=? WHERE device_id=? AND event_type=? AND status='open'",
                     (now, device_id, event_type))
+                # Only a *real* recovery -- this device/event actually had an
+                # open incident that just got closed -- should notify, not
+                # every 'info' call (device registration also goes through
+                # this branch with no open incident to close).
+                recovered_something = cur.rowcount > 0
         conn.commit()
     finally:
         conn.close()
@@ -939,6 +945,8 @@ def add_incident(severity, source, category, message, device_id=None, event_type
     # back here.
     if is_new_or_escalated and not _no_alert and not maintenance:
         _dispatch_alert(severity, source, message)
+    elif recovered_something and not _no_alert and not maintenance:
+        _dispatch_alert(severity, source, message, force=True)
 
 
 def ack_incident(incident_id, acknowledged_by=None):
@@ -2801,7 +2809,7 @@ def _dispatch_one_channel(name, channel, destination, severity, source, message)
             add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)
 
 
-def _dispatch_alert(severity, source, message):
+def _dispatch_alert(severity, source, message, force=False):
     # Channels used to go out one at a time, in sequence -- email first (up
     # to 3 attempts, each a real SMTP connect+TLS+auth round trip over the
     # network), then Slack/Teams only once email's attempt(s) finished. A
@@ -2811,8 +2819,19 @@ def _dispatch_alert(severity, source, message):
     # Firing each channel from its own thread means they all start at once,
     # so Slack/Teams land as soon as their own webhook POST completes
     # instead of waiting on email's.
+    #
+    # force=True is what add_incident() passes for a recovery ('info')
+    # message that actually closed an open incident -- recovery is always
+    # rank 0 (_SEVERITY_RANK), so without this it would never clear any
+    # channel's min_severity floor (confirmed live: a device that had
+    # alerted at crit went back to 'good' and nothing fired). The intent a
+    # user asked for -- "tell me when it's back to normal too" -- isn't
+    # "recovery is itself a crit-worthy event", so this bypasses the
+    # severity floor specifically for recoveries rather than reclassifying
+    # 'info' as something higher ranked (which would also start firing for
+    # unrelated info-only calls like device registration).
     for name, channel, destination, min_severity in _get_alert_channels():
-        if _SEVERITY_RANK.get(severity, 0) < _SEVERITY_RANK.get(min_severity, 2):
+        if not force and _SEVERITY_RANK.get(severity, 0) < _SEVERITY_RANK.get(min_severity, 2):
             continue
         threading.Thread(target=_dispatch_one_channel, args=(name, channel, destination, severity, source, message),
                           daemon=True).start()
