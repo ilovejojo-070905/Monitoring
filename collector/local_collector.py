@@ -18,6 +18,7 @@ IS_WINDOWS = storage.IS_WINDOWS
 _last_net = None
 _last_net_t = 0.0
 _last_nics = {}
+_last_disk_io = {}
 
 
 def prime_psutil():
@@ -73,6 +74,71 @@ def sample_nics(dt):
     out.sort(key=lambda x: x['inMbps'] + x['outMbps'], reverse=True)
     _last_nics = current
     return out[:10]
+
+
+def sample_disk_io(dt):
+    """Same cumulative-counter-to-rate shape as sample_nics() above, just
+    read_bytes/write_bytes (-> MB/s) and read_count/write_count (-> IOPS)
+    instead of bytes_recv/bytes_sent. perdisk=True keys are physical-device
+    names (e.g. 'PhysicalDrive0' on Windows), not mountpoints -- this is
+    deliberately a separate list from sample_disks()'s per-partition
+    capacity breakdown rather than merged into it, since one physical disk
+    can back multiple partitions (or vice versa with striping)."""
+    global _last_disk_io
+    out = []
+    try:
+        current = psutil.disk_io_counters(perdisk=True) or {}
+    except Exception:
+        current = {}
+    for name, c in current.items():
+        prev = _last_disk_io.get(name)
+        if prev is None:
+            read_mbps = write_mbps = read_iops = write_iops = 0.0
+        else:
+            read_mbps = max((c.read_bytes - prev.read_bytes) / dt / 1_048_576, 0)
+            write_mbps = max((c.write_bytes - prev.write_bytes) / dt / 1_048_576, 0)
+            read_iops = max((c.read_count - prev.read_count) / dt, 0)
+            write_iops = max((c.write_count - prev.write_count) / dt, 0)
+        out.append({
+            'name': name, 'readMBps': round(read_mbps, 2), 'writeMBps': round(write_mbps, 2),
+            'readIOPS': round(read_iops, 1), 'writeIOPS': round(write_iops, 1),
+        })
+    out.sort(key=lambda x: x['readMBps'] + x['writeMBps'], reverse=True)
+    _last_disk_io = current
+    return out[:12]
+
+
+def sample_users():
+    out = []
+    try:
+        for u in psutil.users():
+            out.append({'name': u.name, 'terminal': u.terminal or '-', 'host': u.host or '',
+                        'startedAt': int(u.started * 1000)})
+    except Exception:
+        pass
+    return out[:20]
+
+
+def sample_mem_detail():
+    """virtual_memory()'s cached/buffers fields are Linux-only (0/absent on
+    Windows) -- reported as None there rather than a misleading 0, so the UI
+    can tell "no cache to report" apart from "this platform doesn't expose
+    it". available and swap are cross-platform and the actually-useful
+    numbers on Windows."""
+    try:
+        vm = psutil.virtual_memory()
+        sw = psutil.swap_memory()
+    except Exception:
+        return None
+    return {
+        'totalGB': round(vm.total / 1_073_741_824, 2),
+        'availableGB': round(vm.available / 1_073_741_824, 2),
+        'cachedGB': round(vm.cached / 1_073_741_824, 2) if hasattr(vm, 'cached') and not IS_WINDOWS else None,
+        'buffersGB': round(vm.buffers / 1_073_741_824, 2) if hasattr(vm, 'buffers') and not IS_WINDOWS else None,
+        'swapUsedGB': round(sw.used / 1_073_741_824, 2),
+        'swapTotalGB': round(sw.total / 1_073_741_824, 2),
+        'swapPct': round(sw.percent, 1),
+    }
 
 
 def sample_services():
@@ -133,6 +199,9 @@ def sample_local(entity, device_row):
             pass
     procs.sort(key=lambda x: x['pct'], reverse=True)
     disks = sample_disks()
+    disk_io = sample_disk_io(dt)
+    users = sample_users()
+    mem_detail = sample_mem_detail()
     services = sample_services()
     device_thresholds = thresholds.resolve_thresholds(device_row)
     status, incident_event = thresholds.evaluate_resource(device_row['id'], cpu, mem, disk, device_thresholds)
@@ -146,7 +215,8 @@ def sample_local(entity, device_row):
                       cpu=round(cpu, 1), mem=round(mem, 1), disk=round(disk, 1),
                       netIn=round(net_in, 2), netOut=round(net_out, 2), load=round(load, 2),
                       uptime=uptime_days, status=status, procs=procs[:12],
-                      disks=disks, nics=nics, services=services)
+                      disks=disks, nics=nics, services=services,
+                      diskIO=disk_io, users=users, memDetail=mem_detail)
         push_cap(entity['hist']['cpu'], entity['cpu'])
         push_cap(entity['hist']['mem'], entity['mem'])
         push_cap(entity['hist']['net'], round(net_in + net_out, 2))

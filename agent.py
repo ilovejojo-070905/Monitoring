@@ -405,6 +405,68 @@ def sample_nics(last_nics, dt):
     return out[:10], current
 
 
+def sample_disk_io(last_disk_io, dt):
+    """Same cumulative-counter-to-rate shape as sample_nics() above, just
+    read_bytes/write_bytes (-> MB/s) and read_count/write_count (-> IOPS)
+    instead of bytes_recv/bytes_sent. perdisk=True keys are physical-device
+    names (e.g. 'PhysicalDrive0' on Windows), not mountpoints -- kept as a
+    separate list from sample_disks()'s per-partition capacity breakdown
+    rather than merged into it, since one physical disk can back multiple
+    partitions (or vice versa with striping)."""
+    out = []
+    try:
+        current = psutil.disk_io_counters(perdisk=True) or {}
+    except Exception:
+        current = {}
+    for name, c in current.items():
+        prev = last_disk_io.get(name)
+        if prev is None:
+            read_mbps = write_mbps = read_iops = write_iops = 0.0
+        else:
+            read_mbps = max((c.read_bytes - prev.read_bytes) / dt / 1_048_576, 0)
+            write_mbps = max((c.write_bytes - prev.write_bytes) / dt / 1_048_576, 0)
+            read_iops = max((c.read_count - prev.read_count) / dt, 0)
+            write_iops = max((c.write_count - prev.write_count) / dt, 0)
+        out.append({
+            'name': name, 'readMBps': round(read_mbps, 2), 'writeMBps': round(write_mbps, 2),
+            'readIOPS': round(read_iops, 1), 'writeIOPS': round(write_iops, 1),
+        })
+    out.sort(key=lambda x: x['readMBps'] + x['writeMBps'], reverse=True)
+    return out[:12], current
+
+
+def sample_users():
+    out = []
+    try:
+        for u in psutil.users():
+            out.append({'name': u.name, 'terminal': u.terminal or '-', 'host': u.host or '',
+                        'startedAt': int(u.started * 1000)})
+    except Exception:
+        pass
+    return out[:20]
+
+
+def sample_mem_detail():
+    """virtual_memory()'s cached/buffers fields are Linux-only (0/absent on
+    Windows) -- reported as None there rather than a misleading 0. available
+    and swap are cross-platform and the actually-useful numbers on Windows,
+    which is every agent-mode machine in this deployment today."""
+    try:
+        vm = psutil.virtual_memory()
+        sw = psutil.swap_memory()
+    except Exception:
+        return None
+    return {
+        'totalGB': round(vm.total / 1_073_741_824, 2),
+        'availableGB': round(vm.available / 1_073_741_824, 2),
+        'cachedGB': round(vm.cached / 1_073_741_824, 2) if hasattr(vm, 'cached') and not IS_WINDOWS else None,
+        'buffersGB': round(vm.buffers / 1_073_741_824, 2) if hasattr(vm, 'buffers') and not IS_WINDOWS else None,
+        'swapUsedGB': round(sw.used / 1_073_741_824, 2),
+        'swapTotalGB': round(sw.total / 1_073_741_824, 2),
+        'swapPct': round(sw.percent, 1),
+    }
+
+
 def sample_services():
     """Windows auto-start services that aren't running (service/daemon-status
     pass): reporting all ~200 services every cycle would be noise -- a
@@ -433,7 +495,7 @@ def sample_services():
     return {'running': running, 'total': total, 'stoppedAutoStart': anomalies[:30]}
 
 
-def sample(last_net, last_net_t, last_nics):
+def sample(last_net, last_net_t, last_nics, last_disk_io):
     cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory().percent
     try:
@@ -446,6 +508,7 @@ def sample(last_net, last_net_t, last_nics):
     net_in = max((net.bytes_recv - last_net.bytes_recv) * 8 / dt / 1_000_000, 0)
     net_out = max((net.bytes_sent - last_net.bytes_sent) * 8 / dt / 1_000_000, 0)
     nics, current_nics = sample_nics(last_nics, dt)
+    disk_io, current_disk_io = sample_disk_io(last_disk_io, dt)
     try:
         load = os.getloadavg()[0]
     except Exception:
@@ -469,6 +532,7 @@ def sample(last_net, last_net_t, last_nics):
         'netIn': round(net_in, 2), 'netOut': round(net_out, 2),
         'load': round(load, 2), 'uptime': uptime_days, 'procs': procs[:12],
         'disks': sample_disks(), 'nics': nics, 'services': sample_services(),
+        'diskIO': disk_io, 'users': sample_users(), 'memDetail': sample_mem_detail(),
         # Agent management pass: version/OS/start time are static per-process
         # (constant every report -- the server only needs the latest one),
         # lastError carries forward whatever the most recent local exception
@@ -477,7 +541,7 @@ def sample(last_net, last_net_t, last_nics):
         'version': AGENT_VERSION, 'os': platform.platform(), 'startedAt': int(_START_TIME * 1000),
         'lastError': _LAST_ERROR,
     }
-    return payload, net, now, current_nics
+    return payload, net, now, current_nics, current_disk_io
 
 
 def run(server, token, interval):
@@ -496,12 +560,16 @@ def run(server, token, interval):
         last_nics = psutil.net_io_counters(pernic=True)
     except Exception:
         last_nics = {}
+    try:
+        last_disk_io = psutil.disk_io_counters(perdisk=True) or {}
+    except Exception:
+        last_disk_io = {}
     time.sleep(1)
 
     global _LAST_ERROR
     while True:
         try:
-            payload, last_net, last_net_t, last_nics = sample(last_net, last_net_t, last_nics)
+            payload, last_net, last_net_t, last_nics, last_disk_io = sample(last_net, last_net_t, last_nics, last_disk_io)
             payload['token'] = token
             req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'),
                                           headers={'Content-Type': 'application/json'}, method='POST')

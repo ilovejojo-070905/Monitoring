@@ -5580,7 +5580,11 @@ function drawServer(s){
       <div class="card-head"><h3>리소스 사용률</h3></div>
       <div style="display:flex;flex-direction:column;gap:12px">
         <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>CPU</span><span class="mono">${fmt1(s.cpu)}%</span></div><div class="bar ${devLevelOf(s,'cpu',s.cpu)}"><i style="width:${s.cpu}%"></i></div></div>
-        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>메모리</span><span class="mono">${fmt1(s.mem)}%</span></div><div class="bar ${devLevelOf(s,'mem',s.mem)}"><i style="width:${s.mem}%"></i></div></div>
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>메모리</span><span class="mono">${fmt1(s.mem)}%</span></div>
+          <div class="bar ${devLevelOf(s,'mem',s.mem)}"><i style="width:${s.mem}%"></i></div>
+          ${s.memDetail ? `<div style="font-size:10.5px;color:var(--text-faint);margin-top:4px">가용 ${fmt1(s.memDetail.availableGB)}GB${s.memDetail.cachedGB!=null ? ` · 캐시 ${fmt1(s.memDetail.cachedGB)}GB` : ''}${s.memDetail.buffersGB!=null ? ` · 버퍼 ${fmt1(s.memDetail.buffersGB)}GB` : ''} · 스왑 ${s.memDetail.swapTotalGB>0 ? `${fmt1(s.memDetail.swapUsedGB)}/${fmt1(s.memDetail.swapTotalGB)}GB (${fmt1(s.memDetail.swapPct)}%)` : '없음'}</div>` : ''}
+        </div>
         <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>디스크</span><span class="mono">${fmt1(s.disk)}%</span></div><div class="bar ${devLevelOf(s,'disk',s.disk)}"><i style="width:${s.disk}%"></i></div></div>
       </div>
     </div>
@@ -5602,6 +5606,23 @@ function drawServer(s){
     <div class="card"><div class="card-head"><h3>네트워크 인터페이스</h3><span class="sub">인터페이스별 실측 · Mbps</span></div>
       <div style="display:flex;flex-direction:column;gap:8px">
         ${(s.nics||[]).map(n=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(n.name)}</span><span style="display:flex;gap:12px;flex:none"><span class="mono" style="color:var(--info)">↓${fmtMbps(n.inMbps)}</span><span class="mono" style="color:#ff3ec9">↑${fmtMbps(n.outMbps)}</span></span></div>`).join('') || '<span style="font-size:12px;color:var(--text-faint)">데이터 없음</span>'}
+      </div>
+    </div>
+    <div class="card"><div class="card-head"><h3>디스크 I/O</h3><span class="sub">물리 디스크별 실측 · MB/s · IOPS</span></div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${(s.diskIO||[]).map(d=>`
+          <div>
+            <div class="mono" style="font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:3px">${escapeHtml(d.name)}</div>
+            <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px">
+              <span class="mono" style="color:var(--info)">읽기 ${fmtMbps(d.readMBps)} MB/s · ${fmt0(d.readIOPS)} IOPS</span>
+              <span class="mono" style="color:#ff3ec9">쓰기 ${fmtMbps(d.writeMBps)} MB/s · ${fmt0(d.writeIOPS)} IOPS</span>
+            </div>
+          </div>`).join('') || '<span style="font-size:12px;color:var(--text-faint)">데이터 없음</span>'}
+      </div>
+    </div>
+    <div class="card"><div class="card-head"><h3>로그인한 사용자</h3><span class="sub">${(s.users||[]).length}명</span></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${(s.users||[]).map(u=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(u.name)}${u.host ? ` @${escapeHtml(u.host)}` : ''}</span><span style="display:flex;gap:10px;flex:none;color:var(--text-dim)"><span class="mono">${escapeHtml(u.terminal)}</span><span class="mono">${fmtWhen(u.startedAt)}</span></span></div>`).join('') || '<span style="font-size:12px;color:var(--text-faint)">로그인한 사용자 없음</span>'}
       </div>
     </div>
     <div class="card"><div class="card-head"><h3>서비스 상태</h3><span class="sub">${s.services ? `실행중 ${s.services.running} / 전체 ${s.services.total}` : '-'}</span></div>
