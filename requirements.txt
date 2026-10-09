@@ -31,3 +31,17 @@ qrcode==8.0
 # are hard to catch without opening the file in real Acrobat/Excel).
 reportlab==5.0.1
 openpyxl==3.1.5
+# Windows 이벤트 로그 에러 조회: psutil has no Event Log support at all (it's a
+# Windows-specific API, same reason win_service_iter() for the services card
+# needed no extra dependency -- psutil calls the Service Control Manager
+# directly via ctypes, but the Event Log API has no such built-in path).
+# pywin32's win32evtlog wraps the legacy (pre-Vista, still fully supported)
+# OpenEventLog/ReadEventLog API -- simpler and more robust for "give me the
+# last N error/warning records" than the newer XML-query EvtQuery API would
+# be. Windows-only: local_collector.py/agent.py both already guard every
+# Windows-only sampler behind IS_WINDOWS (see sample_services()), same
+# pattern here. Existing deployments (this PC, the remote center PC) need
+# `pip install -r requirements.txt` re-run to pick this up; agent-mode
+# machines get it for free in the next InfraSightAgent.exe rebuild (PyInstaller
+# bundles it into the exe, nothing to install on the target PC itself).
+pywin32==311

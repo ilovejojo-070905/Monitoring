@@ -80,7 +80,9 @@ def record_report(entity, device_row, body, remote_addr=None):
                       disks=(body.get('disks') or [])[:12], nics=(body.get('nics') or [])[:10],
                       services=body.get('services') or {'running': 0, 'total': 0, 'stoppedAutoStart': []},
                       diskIO=(body.get('diskIO') or [])[:12], users=(body.get('users') or [])[:20],
-                      memDetail=body.get('memDetail'))
+                      memDetail=body.get('memDetail'),
+                      installedPrograms=(body.get('installedPrograms') or [])[:200],
+                      eventErrors=(body.get('eventErrors') or [])[:20])
         push_cap(entity['hist']['cpu'], entity['cpu'])
         push_cap(entity['hist']['mem'], entity['mem'])
         push_cap(entity['hist']['net'], round(entity['netIn'] + entity['netOut'], 2))

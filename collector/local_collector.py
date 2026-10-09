@@ -15,6 +15,16 @@ import storage
 
 IS_WINDOWS = storage.IS_WINDOWS
 
+if IS_WINDOWS:
+    import winreg
+    try:
+        import win32evtlog
+        WIN32EVTLOG_AVAILABLE = True
+    except Exception:
+        WIN32EVTLOG_AVAILABLE = False
+else:
+    WIN32EVTLOG_AVAILABLE = False
+
 _last_net = None
 _last_net_t = 0.0
 _last_nics = {}
@@ -141,6 +151,168 @@ def sample_mem_detail():
     }
 
 
+_UNINSTALL_KEYS = [
+    (r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', False),
+    (r'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', False),
+    (r'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', True),
+] if IS_WINDOWS else []
+
+
+_last_programs_scan_t = 0.0
+_cached_programs = []
+PROGRAMS_SCAN_INTERVAL_SEC = 300  # installed-programs list barely changes tick to tick
+
+
+def sample_installed_programs():
+    """Cached wrapper around _scan_installed_programs() -- a ~100-300 key
+    registry walk every 2s poll tick for a list that changes maybe a few
+    times a month is pure waste, so this only actually rescans every
+    PROGRAMS_SCAN_INTERVAL_SEC and returns the cached list otherwise (same
+    throttle-cache shape as snmp_collector.py's extended_due pattern)."""
+    global _last_programs_scan_t, _cached_programs
+    now = time.time()
+    if now - _last_programs_scan_t >= PROGRAMS_SCAN_INTERVAL_SEC:
+        _cached_programs = _scan_installed_programs()
+        _last_programs_scan_t = now
+    return _cached_programs
+
+
+def _scan_installed_programs():
+    """Registry-based (stdlib winreg, no extra dependency): every installed-
+    program's uninstall entry lives under one of these three keys --
+    HKLM\\...\\Uninstall for 64-bit apps, the WOW6432Node mirror for 32-bit
+    apps on a 64-bit OS (a separate physical key, not something registry
+    redirection merges for a direct winreg.OpenKey call the way it would for
+    a 32-bit *process*), and HKCU\\...\\Uninstall for per-user installs.
+    SystemComponent=1 entries are hidden from Add/Remove Programs on
+    purpose (runtime redistributables, update packages, etc.) and skipped
+    here for the same reason. Sorted by InstallDate (registry's own
+    YYYYMMDD string -- already chronologically sortable as plain text) so
+    the most recently installed/updated things surface first."""
+    if not IS_WINDOWS:
+        return []
+    out = []
+    seen = set()
+    for path, is_hkcu in _UNINSTALL_KEYS:
+        hive = winreg.HKEY_CURRENT_USER if is_hkcu else winreg.HKEY_LOCAL_MACHINE
+        try:
+            key = winreg.OpenKey(hive, path)
+        except Exception:
+            continue
+        try:
+            i = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(key, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    sub = winreg.OpenKey(key, subkey_name)
+                except Exception:
+                    continue
+                try:
+                    try:
+                        name = winreg.QueryValueEx(sub, 'DisplayName')[0]
+                    except Exception:
+                        continue
+                    if not name or name in seen:
+                        continue
+                    try:
+                        if winreg.QueryValueEx(sub, 'SystemComponent')[0]:
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        version = winreg.QueryValueEx(sub, 'DisplayVersion')[0]
+                    except Exception:
+                        version = ''
+                    try:
+                        publisher = winreg.QueryValueEx(sub, 'Publisher')[0]
+                    except Exception:
+                        publisher = ''
+                    try:
+                        install_date = winreg.QueryValueEx(sub, 'InstallDate')[0]
+                    except Exception:
+                        install_date = ''
+                    seen.add(name)
+                    out.append({'name': name, 'version': version, 'publisher': publisher, 'installDate': install_date})
+                finally:
+                    sub.Close()
+        finally:
+            key.Close()
+    out.sort(key=lambda x: x['installDate'] or '', reverse=True)
+    return out[:200]
+
+
+# Windows-only (same guard every other Windows-specific sampler here uses --
+# see IS_WINDOWS checks above). The legacy OpenEventLog/ReadEventLog API
+# (still fully supported, not deprecated) is simpler and more robust for
+# "give me the last N error/warning records" than the newer XML-query
+# EvtQuery API -- no formatted message lookup (FormatMessage DLL resolution
+# is the slow, failure-prone part of event log reading) is attempted here on
+# purpose; source+eventId+level+time is enough to tell someone "go look at
+# this in Event Viewer" without the overhead.
+_EVENT_LOGS = ('System', 'Application')
+_MAX_RECORDS_SCANNED_PER_LOG = 300
+_MAX_EVENT_ERRORS_RETURNED = 20
+_last_eventlog_scan_t = 0.0
+_cached_event_errors = []
+EVENTLOG_SCAN_INTERVAL_SEC = 30
+
+
+def sample_event_errors():
+    """Cached wrapper around _scan_event_errors() -- same throttle shape as
+    sample_installed_programs() above, just a shorter interval since event
+    log errors are more time-sensitive than an installed-programs list."""
+    global _last_eventlog_scan_t, _cached_event_errors
+    now = time.time()
+    if now - _last_eventlog_scan_t >= EVENTLOG_SCAN_INTERVAL_SEC:
+        _cached_event_errors = _scan_event_errors()
+        _last_eventlog_scan_t = now
+    return _cached_event_errors
+
+
+def _scan_event_errors():
+    if not IS_WINDOWS or not WIN32EVTLOG_AVAILABLE:
+        return []
+    out = []
+    flags = win32evtlog.EVENTLOG_BACKWARDS_READ | win32evtlog.EVENTLOG_SEQUENTIAL_READ
+    for log_name in _EVENT_LOGS:
+        try:
+            h = win32evtlog.OpenEventLog(None, log_name)
+        except Exception:
+            continue
+        scanned = 0
+        try:
+            while scanned < _MAX_RECORDS_SCANNED_PER_LOG:
+                events = win32evtlog.ReadEventLog(h, flags, 0)
+                if not events:
+                    break
+                for ev in events:
+                    scanned += 1
+                    if ev.EventType not in (win32evtlog.EVENTLOG_ERROR_TYPE, win32evtlog.EVENTLOG_WARNING_TYPE):
+                        continue
+                    out.append({
+                        'log': log_name,
+                        'level': 'error' if ev.EventType == win32evtlog.EVENTLOG_ERROR_TYPE else 'warning',
+                        'source': ev.SourceName,
+                        'eventId': ev.EventID & 0xFFFF,
+                        'time': int(ev.TimeGenerated.timestamp() * 1000),
+                    })
+                if scanned >= _MAX_RECORDS_SCANNED_PER_LOG:
+                    break
+        except Exception:
+            pass
+        finally:
+            try:
+                win32evtlog.CloseEventLog(h)
+            except Exception:
+                pass
+    out.sort(key=lambda x: x['time'], reverse=True)
+    return out[:_MAX_EVENT_ERRORS_RETURNED]
+
+
 def sample_services():
     if not IS_WINDOWS:
         return {'running': 0, 'total': 0, 'stoppedAutoStart': []}
@@ -203,6 +375,8 @@ def sample_local(entity, device_row):
     users = sample_users()
     mem_detail = sample_mem_detail()
     services = sample_services()
+    installed_programs = sample_installed_programs()
+    event_errors = sample_event_errors()
     device_thresholds = thresholds.resolve_thresholds(device_row)
     status, incident_event = thresholds.evaluate_resource(device_row['id'], cpu, mem, disk, device_thresholds)
     # Code review pass, finding #5: psutil gathering above stays unlocked
@@ -216,7 +390,8 @@ def sample_local(entity, device_row):
                       netIn=round(net_in, 2), netOut=round(net_out, 2), load=round(load, 2),
                       uptime=uptime_days, status=status, procs=procs[:12],
                       disks=disks, nics=nics, services=services,
-                      diskIO=disk_io, users=users, memDetail=mem_detail)
+                      diskIO=disk_io, users=users, memDetail=mem_detail,
+                      installedPrograms=installed_programs, eventErrors=event_errors)
         push_cap(entity['hist']['cpu'], entity['cpu'])
         push_cap(entity['hist']['mem'], entity['mem'])
         push_cap(entity['hist']['net'], round(net_in + net_out, 2))

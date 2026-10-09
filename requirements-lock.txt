@@ -27,6 +27,7 @@ pyasn1==0.6.4
 pycparser==3.0
 pycryptodomex==3.23.0
 pysnmp==7.1.29
+pywin32==311
 qrcode==8.0
 reportlab==5.0.1
 tzdata==2026.2
