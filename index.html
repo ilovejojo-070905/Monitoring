@@ -5518,6 +5518,11 @@ function wireMaintenanceLogPanel(){
 
 /* ================= DRAWER ================= */
 let openDrawerId = null;
+// 네트워크 장비 드로어의 "원격 접속" 카드에서 입력한 사용자명 -- 2.2초 폴링마다
+// drawPingDevice()가 #drawerBody를 통째로 새로 그리므로, input 값 자체(DOM)가
+// 아니라 이 모듈 변수에 따로 들고 있어야 타이핑 중간에 폴링이 와도 지워지지
+// 않는다 (collectionStateBlock에서 이미 겪은 것과 같은 함정).
+let remoteAccessUsername = '';
 function collectionStateLabel(cs){ return {good:'정상', warn:'주의', crit:'장애', nodata:'미수집', unknown:'알 수 없음'}[cs] || '알 수 없음'; }
 function collectionStatePillClass(cs){ return {good:'good', warn:'warn', crit:'crit', nodata:'neutral', unknown:'info'}[cs] || 'neutral'; }
 function fmtWhen(ms){ return ms ? new Date(ms).toLocaleString('ko-KR') : '-'; }
@@ -5861,6 +5866,31 @@ function drawPingDevice(e, catLabel){
       </div>
     </div>` : '';
 
+  // SSH/Telnet은 브라우저가 직접 열 수 없으므로(원시 소켓 불가) 이 PC에 설치된
+  // 외부 클라이언트(OpenSSH, PuTTY 등)를 ssh://telnet:// URI 핸들러로 넘겨
+  // 실행만 시킨다 -- 로그인 자격증명은 InfraSight에 전혀 저장하지 않고,
+  // 사용자명도 입력 즉시 그 PC 브라우저 안에서만 쓰인다. 핸들러가 없는
+  // PC에서는 버튼이 동작하지 않을 수 있어 복사용 명령어를 함께 제공한다.
+  const remoteAccessCard = (catLabel==='네트워크 (NMS)' && e.ip) ? `
+    <div class="card" style="min-width:0">
+      <div class="card-head"><h3>원격 접속</h3><span class="sub">이 PC에 설치된 SSH/Telnet 클라이언트를 엽니다</span></div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="field" style="margin:0">
+          <label style="font-size:11px;color:var(--text-faint)">사용자명 (선택)</label>
+          <input type="text" id="remote-username" placeholder="예: admin" value="${escapeHtml(remoteAccessUsername)}" style="width:100%">
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <a id="remote-ssh-link" class="btn primary" href="ssh://${remoteAccessUsername ? encodeURIComponent(remoteAccessUsername)+'@' : ''}${escapeHtml(e.ip)}" style="text-decoration:none;text-align:center">SSH 접속</a>
+          <a id="remote-telnet-link" class="btn" href="telnet://${remoteAccessUsername ? encodeURIComponent(remoteAccessUsername)+'@' : ''}${escapeHtml(e.ip)}" style="text-decoration:none;text-align:center">Telnet 접속</a>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;background:var(--surface-2);border-radius:var(--radius-sm);padding:7px 10px">
+          <code id="remote-ssh-cmd" class="mono" style="flex:1;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">ssh ${escapeHtml(remoteAccessUsername ? remoteAccessUsername+'@'+e.ip : e.ip)}</code>
+          <button type="button" class="btn" id="remote-copy-cmd" style="font-size:11px;padding:3px 8px;flex:none">복사</button>
+        </div>
+        <p style="font-size:11px;color:var(--text-faint);line-height:1.5;margin:0">버튼이 동작하지 않으면 이 PC에 SSH/Telnet 앱이 연결되어 있지 않은 것입니다 -- 위 명령어를 복사해 터미널에서 직접 실행하세요.</p>
+      </div>
+    </div>` : '';
+
   const pingGrid2 = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px';
   const hasRow2 = cpuKv || memKv || ifaceKv || battKv;
   $('#drawerBody').innerHTML = `
@@ -5871,6 +5901,7 @@ function drawPingDevice(e, catLabel){
     </div>
     ${hasRow2 ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:10px">${cpuKv}${memKv}${ifaceKv}${battKv}</div>` : ''}
     ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
+    ${remoteAccessCard}
     <div style="${pingGrid2}">
       ${trafficCard}
       ${ifaceCard}
@@ -5901,6 +5932,19 @@ function drawPingDevice(e, catLabel){
         `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${reEnvCardHtml}${collectionStateBlock(e)}${agentInfoBlock(e)}</div>`);
     });
   });
+  const remoteUserEl = $('#remote-username');
+  if(remoteUserEl){
+    remoteUserEl.addEventListener('input', ()=>{
+      remoteAccessUsername = remoteUserEl.value.trim();
+      const userPart = remoteAccessUsername ? encodeURIComponent(remoteAccessUsername)+'@' : '';
+      $('#remote-ssh-link').href = `ssh://${userPart}${e.ip}`;
+      $('#remote-telnet-link').href = `telnet://${userPart}${e.ip}`;
+      $('#remote-ssh-cmd').textContent = `ssh ${remoteAccessUsername ? remoteAccessUsername+'@'+e.ip : e.ip}`;
+    });
+    $('#remote-copy-cmd').addEventListener('click', async ()=>{
+      try{ await navigator.clipboard.writeText($('#remote-ssh-cmd').textContent); }catch(err){}
+    });
+  }
   if(drawerBodyEl) drawerBodyEl.scrollTop = prevBodyScroll;
   const newIfaceEl = document.getElementById('iface-list');
   if(newIfaceEl) newIfaceEl.scrollTop = prevIfaceScroll;
