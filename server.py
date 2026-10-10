@@ -2510,6 +2510,99 @@ def api_set_sms_settings():
     return jsonify({'ok': True})
 
 
+@app.get('/api/settings/kakaobiz')
+@require_role('OPERATOR')
+def api_get_kakaobiz_settings():
+    return jsonify(storage.get_kakaobiz_config_public())
+
+
+@app.put('/api/settings/kakaobiz')
+@require_role('OPERATOR')
+def api_set_kakaobiz_settings():
+    body = request.get_json(force=True)
+    api_key = (body.get('apiKey') or '').strip() or None
+    api_secret = (body.get('apiSecret') or '').strip() or None
+    pf_id = (body.get('pfId') or '').strip() or None
+    template_id = (body.get('templateId') or '').strip() or None
+    sender_number = (body.get('senderNumber') or '').strip() or None
+    for label, val in (('API 키', api_key), ('API Secret', api_secret), ('발신 프로필 키(pfId)', pf_id),
+                        ('템플릿 ID', template_id)):
+        if val and len(val) > 100:
+            return jsonify({'error': f'{label}는 100자 이하여야 합니다'}), 400
+    if sender_number and len(sender_number) > 20:
+        return jsonify({'error': '발신번호는 20자 이하여야 합니다'}), 400
+    existing = storage.get_kakaobiz_config_public()
+    if not api_key and not existing['apiKeySet']:
+        return jsonify({'error': 'API 키를 입력해주세요'}), 400
+    if not pf_id and not existing['pfId']:
+        return jsonify({'error': '발신 프로필 키(pfId)를 입력해주세요'}), 400
+    if not template_id and not existing['templateId']:
+        return jsonify({'error': '템플릿 ID를 입력해주세요'}), 400
+    if not sender_number and not existing['senderNumber']:
+        return jsonify({'error': '발신번호를 입력해주세요'}), 400
+    if body.get('minSeverity') not in (None, 'warn', 'crit'):
+        return jsonify({'error': 'minSeverity는 warn 또는 crit이어야 합니다'}), 400
+    storage.set_kakaobiz_config(bool(body.get('enabled', False)), api_key, api_secret, pf_id, template_id,
+                                 sender_number, bool(body.get('smsFallback', False)), body.get('minSeverity') or 'crit')
+    audit('SET_KAKAOBIZ_SETTINGS')
+    return jsonify({'ok': True})
+
+
+@app.post('/api/settings/kakaobiz/test')
+@require_role('OPERATOR')
+def api_test_kakaobiz():
+    cfg = storage.get_kakaobiz_config()
+    if not cfg:
+        return jsonify({'error': '카카오 비즈니스 설정이 완료되지 않았거나 비활성화 상태이거나, 등록된 수신자가 없습니다'}), 400
+    from alerts.kakao_biz_channel import KakaoBizChannel
+    ok, err = KakaoBizChannel().send(cfg, '[InfraSight] 테스트 알림', 'InfraSight 알림 설정이 정상적으로 동작합니다.')
+    audit('TEST_KAKAOBIZ', details='ok' if ok else f'failed: {err}')
+    if not ok:
+        return jsonify({'error': '알림톡 발송에 실패했습니다. 감사 로그에서 자세한 내용을 확인하세요.'}), 502
+    return jsonify({'ok': True})
+
+
+@app.get('/api/kakaobiz/recipients')
+@require_role('VIEWER')
+def api_list_kakaobiz_recipients():
+    return jsonify({'recipients': storage.load_kakaobiz_recipients()})
+
+
+@app.post('/api/kakaobiz/recipients')
+@require_role('OPERATOR')
+def api_create_kakaobiz_recipient():
+    body = request.get_json(force=True)
+    try:
+        name, phone = validation.validate_kakaobiz_recipient(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    recipient_id = storage.create_kakaobiz_recipient(name, phone)
+    audit('CREATE_KAKAOBIZ_RECIPIENT', target=str(recipient_id), details=f"{name} <{phone}>")
+    return jsonify({'ok': True, 'id': recipient_id})
+
+
+@app.put('/api/kakaobiz/recipients/<int:recipient_id>')
+@require_role('OPERATOR')
+def api_update_kakaobiz_recipient(recipient_id):
+    body = request.get_json(force=True)
+    try:
+        name, phone = validation.validate_kakaobiz_recipient(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if not storage.update_kakaobiz_recipient(recipient_id, name, phone, bool(body.get('enabled', True))):
+        return jsonify({'error': 'not found'}), 404
+    audit('UPDATE_KAKAOBIZ_RECIPIENT', target=str(recipient_id), details=f"{name} <{phone}>")
+    return jsonify({'ok': True})
+
+
+@app.delete('/api/kakaobiz/recipients/<int:recipient_id>')
+@require_role('OPERATOR')
+def api_delete_kakaobiz_recipient(recipient_id):
+    storage.delete_kakaobiz_recipient(recipient_id)
+    audit('DELETE_KAKAOBIZ_RECIPIENT', target=str(recipient_id))
+    return jsonify({'ok': True})
+
+
 @app.post('/api/system/backup')
 @require_role('ADMIN')
 def api_trigger_backup():

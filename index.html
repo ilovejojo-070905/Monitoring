@@ -4255,6 +4255,43 @@ function renderChannelsSkeleton(){
         </div>
       </div>
     `, true)}
+    ${channelCardHtml('kakaobiz', '카카오톡 (비즈니스 알림톡)', '여러 담당자에게 동시에 발송합니다 -- 건당 비용이 발생하며, 카카오톡 채널/비즈니스 인증/템플릿 심사가 모두 끝나야 동작합니다', `
+      <p style="font-size:11.5px;color:var(--text-dim);line-height:1.6;margin:0 0 4px;grid-column:1/-1">
+        business.kakao.com에서 카카오톡 채널을 만들고 비즈니스 인증을 받은 뒤, Solapi(solapi.com) 같은 발송 대행사에 가입해
+        그 채널과 연동하세요. 대행사 콘솔에서 발급받은 API 키/Secret과, 발신 프로필 키(pfId)·승인된 템플릿 ID·사전 등록한
+        발신번호를 아래에 입력합니다.
+      </p>
+      <div class="field"><label>API 키</label><input type="text" id="ch-kakaobiz-apikey" placeholder="대행사 콘솔의 API 키" maxlength="100"></div>
+      <div class="field"><label>API Secret</label><input type="password" id="ch-kakaobiz-apisecret" placeholder="대행사 콘솔의 API Secret" maxlength="100"></div>
+      <div class="field"><label>발신 프로필 키 (pfId)</label><input type="text" id="ch-kakaobiz-pfid" placeholder="카카오톡 채널 연동 시 발급된 pfId" maxlength="100"></div>
+      <div class="field"><label>템플릿 ID</label><input type="text" id="ch-kakaobiz-templateid" placeholder="승인된 알림톡 템플릿 ID" maxlength="100"></div>
+      <div class="field"><label>발신번호</label><input type="text" id="ch-kakaobiz-sendernumber" placeholder="예: 0212345678 (사전 등록 필요)" maxlength="20"></div>
+      ${minSeveritySelectHtml('kakaobiz')}
+      <div class="field" style="grid-column:1/-1">
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+          <input type="checkbox" id="ch-kakaobiz-smsfallback"> 알림톡 실패 시 SMS로 대체 발송 (대행사 SMS 단가 별도 과금)
+        </label>
+      </div>
+      <div class="field" style="grid-column:1/-1">
+        <label>카카오 승인용 템플릿 문구 (아래 그대로 등록 후 심사 요청)</label>
+        <pre style="font-size:11px;font-family:var(--font-mono);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;margin:0;white-space:pre-wrap;line-height:1.6">[InfraSight 알림]
+#{제목}
+
+#{내용}
+
+#{시각}</pre>
+      </div>
+      <div class="field" style="grid-column:1/-1">
+        <label>수신자</label>
+        <div id="ch-kakaobiz-recipients" style="margin-bottom:8px"></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <input type="text" id="ch-kakaobiz-newname" placeholder="이름" style="flex:1;min-width:100px" maxlength="60">
+          <input type="text" id="ch-kakaobiz-newphone" placeholder="010-1234-5678" style="flex:1;min-width:140px" maxlength="20">
+          <button type="button" class="btn" id="ch-kakaobiz-addrecipient">추가</button>
+        </div>
+        <span id="ch-kakaobiz-recipient-error" style="font-size:11.5px;color:var(--crit)"></span>
+      </div>
+    `, true)}
     <div class="card">
       <div class="card-head collapsible collapsed" data-collapse="ch-sms-body" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>SMS</h3><span class="sub">연동 구조만 제공 -- 설정값은 저장되지만 실제 발송은 아직 지원되지 않습니다</span></div>
@@ -4472,6 +4509,40 @@ function wireChannelHandlers(){
     try{ await navigator.clipboard.writeText(val); setStatus('kakao', 'Redirect URI가 복사되었습니다', true); }
     catch(e){ setStatus('kakao', '복사 실패 -- 직접 선택해 복사해주세요', false); }
   });
+  $('#ch-kakaobiz-save').addEventListener('click', async ()=>{
+    const body = {
+      enabled: $('#ch-kakaobiz-enabled').checked,
+      apiKey: $('#ch-kakaobiz-apikey').value.trim() || null,
+      apiSecret: $('#ch-kakaobiz-apisecret').value.trim() || null,
+      pfId: $('#ch-kakaobiz-pfid').value.trim() || null,
+      templateId: $('#ch-kakaobiz-templateid').value.trim() || null,
+      senderNumber: $('#ch-kakaobiz-sendernumber').value.trim() || null,
+      smsFallback: $('#ch-kakaobiz-smsfallback').checked,
+      minSeverity: $('#ch-kakaobiz-minseverity').value,
+    };
+    const r = await apiFetch('/api/settings/kakaobiz', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ setStatus('kakaobiz', j.error||'저장 실패', false); return; }
+    setStatus('kakaobiz', '저장되었습니다', true);
+    $('#ch-kakaobiz-apikey').value = ''; $('#ch-kakaobiz-apisecret').value = '';
+    loadChannelSettings();
+  });
+  $('#ch-kakaobiz-test').addEventListener('click', async ()=>{
+    setStatus('kakaobiz', '발송 중...', true);
+    const r = await apiFetch('/api/settings/kakaobiz/test', {method:'POST'});
+    const j = await r.json();
+    setStatus('kakaobiz', r.ok ? '테스트 발송 성공' : (j.error||'발송 실패'), r.ok);
+  });
+  $('#ch-kakaobiz-addrecipient').addEventListener('click', async ()=>{
+    const errEl = $('#ch-kakaobiz-recipient-error');
+    errEl.textContent = '';
+    const body = {name: $('#ch-kakaobiz-newname').value.trim(), phone: $('#ch-kakaobiz-newphone').value.trim()};
+    const r = await apiFetch('/api/kakaobiz/recipients', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error||'추가 실패'; return; }
+    $('#ch-kakaobiz-newname').value = ''; $('#ch-kakaobiz-newphone').value = '';
+    renderKakaobizRecipients();
+  });
   $('#ch-sms-save').addEventListener('click', async ()=>{
     const body = {
       enabled: $('#ch-sms-enabled').checked, provider: $('#ch-sms-provider').value.trim(),
@@ -4528,6 +4599,39 @@ function wireEscalationHandlers(){
     </table></div>`;
   });
 }
+async function renderKakaobizRecipients(){
+  const listEl = $('#ch-kakaobiz-recipients');
+  if(!listEl) return;
+  const r = await apiFetch('/api/kakaobiz/recipients');
+  const j = await r.json();
+  if(!r.ok || !j.recipients.length){
+    listEl.innerHTML = '<div class="empty-note" style="font-size:11.5px">등록된 수신자가 없습니다.</div>';
+    return;
+  }
+  listEl.innerHTML = `<div style="display:flex;flex-direction:column;gap:5px">
+    ${j.recipients.map(rcp=>`
+      <div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radius-sm)">
+        <span class="name" style="flex:none">${escapeHtml(rcp.name)}</span>
+        <span class="mono" style="color:var(--text-dim)">${escapeHtml(rcp.phone)}</span>
+        <span style="flex:1"></span>
+        <button type="button" class="btn" data-kb-toggle="${rcp.id}" data-enabled="${rcp.enabled?1:0}" data-name="${escapeHtml(rcp.name)}" data-phone="${escapeHtml(rcp.phone)}" style="font-size:11px;padding:3px 8px">${rcp.enabled?'사용중':'중지됨'}</button>
+        <button type="button" class="btn" data-kb-del="${rcp.id}" style="font-size:11px;padding:3px 8px">삭제</button>
+      </div>`).join('')}
+  </div>`;
+  $$('[data-kb-toggle]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+    await apiFetch('/api/kakaobiz/recipients/'+b.dataset.kbToggle, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name:b.dataset.name, phone:b.dataset.phone, enabled: b.dataset.enabled!=='1'}),
+    });
+    renderKakaobizRecipients();
+  }));
+  $$('[data-kb-del]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+    const ok = await showConfirm('이 수신자를 삭제할까요?', {title:'수신자 삭제', okText:'삭제'});
+    if(!ok) return;
+    await apiFetch('/api/kakaobiz/recipients/'+b.dataset.kbDel, {method:'DELETE'});
+    renderKakaobizRecipients();
+  }));
+}
 async function renderEscalationTiers(){
   const listEl = $('#esc-tier-list');
   if(!listEl) return;
@@ -4576,11 +4680,12 @@ async function renderEscalationTiers(){
   }
 }
 async function loadChannelSettings(){
-  const [smtpR, slackR, teamsR, kakaoR, kakaoUriR, smsR] = await Promise.all([
+  const [smtpR, slackR, teamsR, kakaoR, kakaoUriR, kakaobizR, smsR] = await Promise.all([
     apiFetch('/api/settings/smtp'), apiFetch('/api/settings/slack'), apiFetch('/api/settings/teams'),
-    apiFetch('/api/settings/kakao'), apiFetch('/api/settings/kakao/redirect-uri'), apiFetch('/api/settings/sms'),
+    apiFetch('/api/settings/kakao'), apiFetch('/api/settings/kakao/redirect-uri'),
+    apiFetch('/api/settings/kakaobiz'), apiFetch('/api/settings/sms'),
   ]);
-  const [smtp, slack, teams, kakao, kakaoUri, sms] = await Promise.all([smtpR.json(), slackR.json(), teamsR.json(), kakaoR.json(), kakaoUriR.json(), smsR.json()]);
+  const [smtp, slack, teams, kakao, kakaoUri, kakaobiz, sms] = await Promise.all([smtpR.json(), slackR.json(), teamsR.json(), kakaoR.json(), kakaoUriR.json(), kakaobizR.json(), smsR.json()]);
   $('#ch-smtp-enabled').checked = smtp.enabled;
   $('#ch-smtp-host').value = smtp.host || '';
   $('#ch-smtp-port').value = smtp.port || '';
@@ -4609,6 +4714,15 @@ async function loadChannelSettings(){
     $('#ch-kakao-disconnect').style.display = 'none';
     $('#ch-kakao-connect').textContent = '카카오 계정 연결하기';
   }
+  $('#ch-kakaobiz-enabled').checked = kakaobiz.enabled;
+  $('#ch-kakaobiz-apikey').placeholder = kakaobiz.apiKeySet ? '설정됨 -- 변경하려면 새 값 입력' : '대행사 콘솔의 API 키';
+  $('#ch-kakaobiz-apisecret').placeholder = kakaobiz.apiSecretSet ? '설정됨 -- 변경하려면 새 값 입력' : '대행사 콘솔의 API Secret';
+  $('#ch-kakaobiz-pfid').value = kakaobiz.pfId || '';
+  $('#ch-kakaobiz-templateid').value = kakaobiz.templateId || '';
+  $('#ch-kakaobiz-sendernumber').value = kakaobiz.senderNumber || '';
+  $('#ch-kakaobiz-smsfallback').checked = kakaobiz.smsFallback;
+  $('#ch-kakaobiz-minseverity').value = kakaobiz.minSeverity || 'crit';
+  renderKakaobizRecipients();
   $('#ch-sms-enabled').checked = sms.enabled;
   $('#ch-sms-provider').value = sms.provider || '';
   $('#ch-sms-sendernumber').value = sms.senderNumber || '';

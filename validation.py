@@ -22,6 +22,10 @@ _IPV4_RE = re.compile(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$')
 # &|<>^%"'`$;\ or control/newline characters.
 _SAFE_NAME_RE = re.compile(r'^[\w .()\-]{1,80}$', re.UNICODE)
 _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+# Korean mobile number, hyphens optional: 010/011/016/017/018/019 + 3-4
+# digit middle + 4 digit end. Normalized (hyphens stripped) before storage
+# and before being sent to Solapi, which expects digits-only.
+_KR_MOBILE_RE = re.compile(r'^01[016789]-?\d{3,4}-?\d{4}$')
 
 
 def is_valid_ipv4(s):
@@ -265,6 +269,20 @@ def validate_escalation_tier(data):
     if not (1 <= timeout_minutes <= MAX_ESCALATION_TIMEOUT_MIN):
         raise ValueError(f'시간은 1~{MAX_ESCALATION_TIMEOUT_MIN}분 사이여야 합니다')
     return name, email, timeout_minutes
+
+
+def validate_kakaobiz_recipient(data):
+    """data: a Kakao Business(알림톡) recipient create/update body --
+    {name, phone}. Returns (name, normalized_phone) or raises ValueError."""
+    if not isinstance(data, dict):
+        raise ValueError('수신자 설정 형식이 올바르지 않습니다')
+    name = (data.get('name') or '').strip()
+    if not name or len(name) > 60:
+        raise ValueError('수신자 이름을 입력해주세요 (60자 이하)')
+    phone = (data.get('phone') or '').strip()
+    if not _KR_MOBILE_RE.match(phone):
+        raise ValueError('휴대폰 번호 형식이 올바르지 않습니다 (예: 010-1234-5678)')
+    return name, phone.replace('-', '')
 
 
 def clamp_int(v, lo, hi, default=None):

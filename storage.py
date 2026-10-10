@@ -466,6 +466,18 @@ def init_db():
         error TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_escalation_log_incident ON escalation_log(incident_id, notified_at)')
+    # Kakao Method B (비즈니스 알림톡) -- unlike Method A's "나에게 보내기"
+    # (one OAuth-connected account, no recipient concept), AlimTalk sends to
+    # other people, so it needs its own recipient list -- same shape as
+    # escalation_tiers (name + contact + enabled) but keyed on a phone
+    # number instead of an email, and with no ordering/timeout concept.
+    conn.execute('''CREATE TABLE IF NOT EXISTS kakao_biz_recipients(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        created_at INTEGER NOT NULL
+    )''')
     # 5-1: recovery codes, one-way hashed exactly like hash_token() below --
     # see generate_recovery_codes()'s docstring.
     conn.execute('''CREATE TABLE IF NOT EXISTS totp_recovery_codes(
@@ -2735,6 +2747,108 @@ def set_sms_config(enabled, provider, sender_number, api_key=None):
         set_credential(SMTP_SYSTEM_ID, 'sms_api_key', api_key)
 
 
+# Kakao Method B (비즈니스 알림톡) via Solapi's AlimTalk API -- see
+# alerts/kakao_biz_channel.py for the actual HTTP/HMAC call and for exactly
+# what template text needs to be submitted to Kakao for approval (the
+# #{제목}/#{내용}/#{시각} variable names are hardcoded on both sides: the
+# approved template and this channel's send() call have to agree on them).
+# Unlike Method A, this sends to a list of other people (kakao_biz_recipients
+# below), which is the whole reason it costs money per message.
+def get_kakaobiz_config():
+    """Returns the config dict (including the API secret) if enabled, fully
+    configured, and at least one recipient is enabled, else None. Same
+    "fully configured or not used" contract as get_smtp_config()."""
+    if get_setting('kakaobiz_enabled') != '1':
+        return None
+    api_key = get_setting('kakaobiz_api_key')
+    api_secret = get_credential(SMTP_SYSTEM_ID, 'kakaobiz_api_secret')
+    pf_id = get_setting('kakaobiz_pf_id')
+    template_id = get_setting('kakaobiz_template_id')
+    sender_number = get_setting('kakaobiz_sender_number')
+    if not (api_key and api_secret and pf_id and template_id and sender_number):
+        return None
+    recipients = [r['phone'] for r in load_kakaobiz_recipients() if r['enabled']]
+    if not recipients:
+        return None
+    return {
+        'api_key': api_key, 'api_secret': api_secret, 'pf_id': pf_id, 'template_id': template_id,
+        'sender_number': sender_number, 'sms_fallback': get_setting('kakaobiz_sms_fallback') == '1',
+        'recipients': recipients, 'min_severity': get_setting('kakaobiz_min_severity', 'crit'),
+    }
+
+
+def get_kakaobiz_config_public():
+    return {
+        'enabled': get_setting('kakaobiz_enabled') == '1',
+        'minSeverity': get_setting('kakaobiz_min_severity', 'crit'),
+        'apiKeySet': bool(get_setting('kakaobiz_api_key')),
+        'apiSecretSet': bool(get_credential(SMTP_SYSTEM_ID, 'kakaobiz_api_secret')),
+        'pfId': get_setting('kakaobiz_pf_id') or '',
+        'templateId': get_setting('kakaobiz_template_id') or '',
+        'senderNumber': get_setting('kakaobiz_sender_number') or '',
+        'smsFallback': get_setting('kakaobiz_sms_fallback') == '1',
+    }
+
+
+def set_kakaobiz_config(enabled, api_key=None, api_secret=None, pf_id=None, template_id=None,
+                         sender_number=None, sms_fallback=False, min_severity='crit'):
+    set_setting('kakaobiz_enabled', '1' if enabled else '0')
+    set_setting('kakaobiz_min_severity', min_severity)
+    set_setting('kakaobiz_sms_fallback', '1' if sms_fallback else '0')
+    if api_key:  # blank on an update means "keep the existing one", same as the SMTP password
+        set_setting('kakaobiz_api_key', api_key)
+    if api_secret:
+        set_credential(SMTP_SYSTEM_ID, 'kakaobiz_api_secret', api_secret)
+    if pf_id:
+        set_setting('kakaobiz_pf_id', pf_id)
+    if template_id:
+        set_setting('kakaobiz_template_id', template_id)
+    if sender_number:
+        set_setting('kakaobiz_sender_number', sender_number)
+
+
+def create_kakaobiz_recipient(name, phone):
+    conn = get_db()
+    now = int(time.time() * 1000)
+    cur = conn.execute(
+        'INSERT INTO kakao_biz_recipients(name,phone,enabled,created_at) VALUES (?,?,1,?)',
+        (name, phone, now))
+    recipient_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return recipient_id
+
+
+def load_kakaobiz_recipients():
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM kakao_biz_recipients ORDER BY created_at').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_kakaobiz_recipient(recipient_id, name=None, phone=None, enabled=None):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM kakao_biz_recipients WHERE id=?', (recipient_id,)).fetchone()
+    if not row:
+        conn.close()
+        return False
+    d = dict(row)
+    conn.execute(
+        'UPDATE kakao_biz_recipients SET name=?, phone=?, enabled=? WHERE id=?',
+        (name if name is not None else d['name'], phone if phone is not None else d['phone'],
+         1 if enabled else 0 if enabled is not None else d['enabled'], recipient_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_kakaobiz_recipient(recipient_id):
+    conn = get_db()
+    conn.execute('DELETE FROM kakao_biz_recipients WHERE id=?', (recipient_id,))
+    conn.commit()
+    conn.close()
+
+
 def _get_alert_channels():
     """Every currently-configured outbound alert channel. Each entry is
     (name, AlertChannel instance, destination, this channel's own min-severity
@@ -2771,6 +2885,10 @@ def _get_alert_channels():
     if kakao_cfg:
         from alerts.kakao_channel import KakaoChannel
         channels.append(('kakao', KakaoChannel(), kakao_cfg, kakao_cfg['min_severity']))
+    kakaobiz_cfg = get_kakaobiz_config()
+    if kakaobiz_cfg:
+        from alerts.kakao_biz_channel import KakaoBizChannel
+        channels.append(('kakao_biz', KakaoBizChannel(), kakaobiz_cfg, kakaobiz_cfg['min_severity']))
     return channels
 
 
