@@ -5697,20 +5697,20 @@ function drawPingDevice(e, catLabel){
 
   const hasCpuMem = isSnmp && e.hist && e.hist.cpu && typeof e.cpu === 'number';
   const cpuMemCard = hasCpuMem ? `
-    <div class="card"><div class="card-head"><h3>CPU / 메모리 추이</h3><span class="sub">SNMP 실측 · 최근 60초</span></div>
+    <div class="card" style="min-width:0"><div class="card-head"><h3>CPU / 메모리 추이</h3><span class="sub">SNMP 실측 · 최근 60초</span></div>
       <div style="height:140px"><canvas id="drawerChart3"></canvas></div>
     </div>` : '';
 
   const hasTraffic = isSnmp && e.hist && e.hist.traffic && typeof e.trafficIn === 'number';
   const trafficCard = hasTraffic ? `
-    <div class="card"><div class="card-head"><h3>인터페이스 트래픽</h3><span class="sub">SNMP IF-MIB 실측 · Mbps</span></div>
+    <div class="card" style="min-width:0"><div class="card-head"><h3>인터페이스 트래픽</h3><span class="sub">SNMP IF-MIB 실측 · Mbps</span></div>
       <div class="kv-grid" style="margin-bottom:12px"><div class="kv"><span>In</span><b>${fmtMbps(e.trafficIn)} Mbps</b></div><div class="kv"><span>Out</span><b>${fmtMbps(e.trafficOut)} Mbps</b></div></div>
       <div style="height:140px"><canvas id="drawerChart2"></canvas></div>
     </div>` : '';
 
   const ifaces = isSnmp && Array.isArray(e.interfaces) ? e.interfaces : [];
   const ifaceCard = ifaces.length ? `
-    <div class="card"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
+    <div class="card" style="min-width:0"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
       <div id="iface-list" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
         ${ifaces.map(f=>{
           const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
@@ -5741,17 +5741,22 @@ function drawPingDevice(e, catLabel){
       </div>
     </div>` : '';
 
+  const pingGrid2 = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px';
   $('#drawerBody').innerHTML = `
-    <div class="kv-grid">
+    <div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
       <div class="kv"><span>상태</span><b style="color:${levelColor(e.status)}">${statusLabel(e.status)}</b></div>
       <div class="kv"><span>응답시간</span><b>${e.reachable? fmt0(e.latencyMs||0)+'ms' : '응답없음'}</b></div>
       ${extraKv}
     </div>
-    <div class="card"><div class="card-head"><h3>응답시간 추이</h3><span class="sub">${isSnmp?'SNMP':'Ping / 포트 확인'} · 최근 60초</span></div>
-      <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>
-    ${cpuMemCard}
-    ${trafficCard}
-    ${ifaceCard}
+    <div style="${pingGrid2}">
+      <div class="card" style="min-width:0"><div class="card-head"><h3>응답시간 추이</h3><span class="sub">${isSnmp?'SNMP':'Ping / 포트 확인'} · 최근 60초</span></div>
+        <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>
+      ${cpuMemCard}
+    </div>
+    <div style="${pingGrid2}">
+      ${trafficCard}
+      ${ifaceCard}
+    </div>
     ${envCard}
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
