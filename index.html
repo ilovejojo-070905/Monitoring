@@ -5687,17 +5687,17 @@ function drawPingDevice(e, catLabel){
   $('#drawerTitle').textContent = e.name;
   $('#drawerRole').textContent = `${catLabel} · ${e.ip||'-'}`;
   const isSnmp = e.mode==='snmp';
-  // 숫자/짧은 값 위주의 항목은 상단 "상태" 줄에 그대로 끼워 넣어 한 줄에
-  // 더 많이 보이게 하고, 글자 수가 긴 항목(모델/시리얼, sysDescr)은 줄바꿈
-  // 폭을 많이 잡아먹어 "인터페이스" 같은 짧은 항목까지 다음 줄로 밀어내므로
-  // 따로 묶어 아래에 별도 줄로 둔다.
-  let extraKv = '';
+  // 상태/응답시간/Uptime을 1번째 줄, CPU/메모리/인터페이스(배터리 포함)를
+  // 2번째 줄로 명시적으로 나눠 고정한다 -- 글자 수가 긴 항목(모델/시리얼,
+  // sysDescr)은 그 두 줄과 섞이면 폭을 많이 잡아먹어 밀려나므로 따로 묶어
+  // 아래에 별도 줄로 둔다.
+  let uptimeKv = '', cpuKv = '', memKv = '', ifaceKv = '', battKv = '';
   let extraKvWide = '';
-  if(typeof e.cpu === 'number') extraKv += `<div class="kv"><span>CPU (SNMP 실측)</span><b style="color:${levelColor(devLevelOf(e,'cpu',e.cpu))}">${fmt1(e.cpu)}%</b></div>`;
-  if(typeof e.mem === 'number') extraKv += `<div class="kv"><span>메모리 (SNMP 실측)</span><b style="color:${levelColor(devLevelOf(e,'mem',e.mem))}">${fmt1(e.mem)}%</b></div>`;
-  if(typeof e.uptime === 'number') extraKv += `<div class="kv"><span>Uptime (SNMP 실측)</span><b>${fmt1(e.uptime)}일</b></div>`;
-  if(typeof e.battPct === 'number') extraKv += `<div class="kv"><span>배터리 (SNMP 실측)</span><b>${fmt0(e.battPct)}%</b></div>`;
-  if(typeof e.portsTotal === 'number') extraKv += `<div class="kv"><span>인터페이스</span><b>${e.portsUp}/${e.portsTotal} Up</b></div>`;
+  if(typeof e.cpu === 'number') cpuKv = `<div class="kv"><span>CPU (SNMP 실측)</span><b style="color:${levelColor(devLevelOf(e,'cpu',e.cpu))}">${fmt1(e.cpu)}%</b></div>`;
+  if(typeof e.mem === 'number') memKv = `<div class="kv"><span>메모리 (SNMP 실측)</span><b style="color:${levelColor(devLevelOf(e,'mem',e.mem))}">${fmt1(e.mem)}%</b></div>`;
+  if(typeof e.uptime === 'number') uptimeKv = `<div class="kv"><span>Uptime (SNMP 실측)</span><b>${fmt1(e.uptime)}일</b></div>`;
+  if(typeof e.battPct === 'number') battKv = `<div class="kv"><span>배터리 (SNMP 실측)</span><b>${fmt0(e.battPct)}%</b></div>`;
+  if(typeof e.portsTotal === 'number') ifaceKv = `<div class="kv"><span>인터페이스</span><b>${e.portsUp}/${e.portsTotal} Up</b></div>`;
   if(isSnmp && (e.hwModel || e.hwSerial)) extraKvWide += `<div class="kv"><span>모델 / 시리얼 (SNMP ENTITY-MIB)</span><b style="font-size:12px">${escapeHtml(e.hwModel||'-')}${e.hwSerial ? ` · ${escapeHtml(e.hwSerial)}` : ''}</b></div>`;
   if(isSnmp && e.sysDescr) extraKvWide += `<div class="kv" style="grid-column:span 2"><span>장치 정보 (SNMP sysDescr)</span><b style="font-size:11px;font-weight:500;white-space:normal;line-height:1.4">${escapeHtml(e.sysDescr)}</b></div>`;
 
@@ -5748,21 +5748,23 @@ function drawPingDevice(e, catLabel){
     </div>` : '';
 
   const pingGrid2 = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px';
+  const hasRow2 = cpuKv || memKv || ifaceKv || battKv;
   $('#drawerBody').innerHTML = `
     <div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
       <div class="kv"><span>상태</span><b style="color:${levelColor(e.status)}">${statusLabel(e.status)}</b></div>
       <div class="kv"><span>응답시간</span><b>${e.reachable? fmt0(e.latencyMs||0)+'ms' : '응답없음'}</b></div>
-      ${extraKv}
+      ${uptimeKv}
     </div>
+    ${hasRow2 ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:10px">${cpuKv}${memKv}${ifaceKv}${battKv}</div>` : ''}
     ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
+    <div style="${pingGrid2}">
+      ${trafficCard}
+      ${ifaceCard}
+    </div>
     <div style="${pingGrid2}">
       <div class="card" style="min-width:0"><div class="card-head"><h3>응답시간 추이</h3><span class="sub">${isSnmp?'SNMP':'Ping / 포트 확인'} · 최근 60초</span></div>
         <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>
       ${cpuMemCard}
-    </div>
-    <div style="${pingGrid2}">
-      ${trafficCard}
-      ${ifaceCard}
     </div>
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
