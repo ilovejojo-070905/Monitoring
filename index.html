@@ -394,7 +394,7 @@
     width:min(820px,94vw);max-height:90vh;overflow-y:auto;box-shadow:0 30px 70px rgba(0,0,0,.35);
   }
   .drawer{
-    position:fixed;top:50%;left:50%;height:min(780px,92vh);width:min(620px,94vw);background:var(--bg-elevated);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--border);
+    position:fixed;top:50%;left:50%;height:min(780px,92vh);width:min(900px,94vw);background:var(--bg-elevated);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--border);
     z-index:51;transform:translate(-50%,-50%) scale(.96);opacity:0;transition:transform .2s ease,opacity .18s ease;display:flex;flex-direction:column;box-shadow:0 30px 70px rgba(0,0,0,.35);
     border-radius:var(--radius);pointer-events:none;overflow:hidden;
   }
@@ -5585,11 +5585,11 @@ function drawServer(s){
   const evtSub = (s.eventErrors&&s.eventErrors.length) ? `오류 ${evtErrCount}건 · 경고 ${evtWarnCount}건` : '최근 오류/경고 없음';
   const grid2 = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px';
   $('#drawerBody').innerHTML = `
-    <div class="kv-grid">
+    <div class="kv-grid" style="grid-template-columns:repeat(4,1fr)">
       <div class="kv"><span>상태</span><b style="color:${levelColor(s.status)}">${statusLabel(s.status)}</b></div>
-      <div class="kv"><span>Load Average</span><b>${fmt1(s.load)}</b></div>
       <div class="kv"><span>Uptime</span><b>${s.uptime}일</b></div>
       <div class="kv"><span>네트워크</span><b>${fmt0(s.netIn)}/${fmt0(s.netOut)} Mbps</b></div>
+      <div class="kv"><span>Load Average</span><b>${fmt1(s.load)}</b></div>
     </div>
     <div class="card"><div class="card-head"><h3>CPU / 메모리 추이</h3><span class="sub">최근 60초 · 실측</span></div>
       <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>
