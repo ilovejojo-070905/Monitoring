@@ -5410,15 +5410,15 @@ function fmtWhen(ms){ return ms ? new Date(ms).toLocaleString('ko-KR') : '-'; }
 function collectionStateBlock(e){
   const cs = e.collectionState || 'nodata';
   return `
-    <div class="card">
+    <div class="card" style="min-width:0">
       <div class="card-head"><h3>수집 상태</h3><span class="sub">등록/수집 관점의 상태 (위 리소스 상태와 별개)</span></div>
-      <div class="kv-grid">
-        <div class="kv"><span>현재 상태</span><span class="pill ${collectionStatePillClass(cs)}" style="width:fit-content"><span class="dot"></span>${collectionStateLabel(cs)}</span></div>
-        <div class="kv"><span>연속 실패 횟수</span><b>${e.consecutiveFailures||0}회</b></div>
-        <div class="kv"><span>마지막 정상 응답</span><b style="font-size:12px">${fmtWhen(e.lastSuccessAt)}</b></div>
-        <div class="kv"><span>마지막 수집 시도</span><b style="font-size:12px">${fmtWhen(e.lastCollectedAt)}</b></div>
-        <div class="kv"><span>마지막 장애 발생</span><b style="font-size:12px">${fmtWhen(e.lastFailureAt)}</b></div>
-        <div class="kv"><span>마지막 오류 내용</span><b style="font-size:11.5px">${e.lastFailureReason ? escapeHtml(e.lastFailureReason) : '-'}</b></div>
+      <div style="display:flex;flex-direction:column;gap:7px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px"><span style="color:var(--text-faint)">현재 상태</span><span class="pill ${collectionStatePillClass(cs)}" style="width:fit-content"><span class="dot"></span>${collectionStateLabel(cs)}</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-faint)">연속 실패 횟수</span><b class="mono">${e.consecutiveFailures||0}회</b></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">마지막 정상 응답</span><b class="mono" style="font-size:11px;text-align:right">${fmtWhen(e.lastSuccessAt)}</b></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">마지막 수집 시도</span><b class="mono" style="font-size:11px;text-align:right">${fmtWhen(e.lastCollectedAt)}</b></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">마지막 장애 발생</span><b class="mono" style="font-size:11px;text-align:right">${fmtWhen(e.lastFailureAt)}</b></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">마지막 오류 내용</span><b style="font-size:11px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.lastFailureReason ? escapeHtml(e.lastFailureReason) : '-'}</b></div>
       </div>
     </div>`;
 }
@@ -5426,17 +5426,14 @@ function agentInfoBlock(e){
   if(e.mode !== 'agent') return '';
   const isOld = e.agentVersion && e.agentLatestVersion && e.agentVersion !== e.agentLatestVersion;
   return `
-    <div class="card">
+    <div class="card" style="min-width:0">
       <div class="card-head"><h3>Agent 정보</h3><span class="sub">에이전트 프로세스 자체 보고 값</span></div>
-      <div class="kv-grid">
-        <div class="kv">
-          <span>Agent 버전</span>
-          <b>${e.agentVersion ? escapeHtml(e.agentVersion) : '-'}${isOld ? ` <span class="pill warn" style="margin-left:4px">구버전 (서버: ${escapeHtml(e.agentLatestVersion)})</span>` : ''}</b>
-        </div>
-        <div class="kv"><span>OS 정보</span><b style="font-size:12px">${e.agentOs ? escapeHtml(e.agentOs) : '-'}</b></div>
-        <div class="kv"><span>보고된 IP</span><b>${e.agentReportedIp ? escapeHtml(e.agentReportedIp) : '-'}</b></div>
-        <div class="kv"><span>Agent 시작 시간</span><b style="font-size:12px">${fmtWhen(e.agentStartedAt)}</b></div>
-        <div class="kv" style="grid-column:span 2"><span>마지막 오류</span><b style="font-size:11.5px">${e.agentLastError ? escapeHtml(e.agentLastError) : '-'}</b></div>
+      <div style="display:flex;flex-direction:column;gap:7px">
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">Agent 버전</span><b class="mono" style="text-align:right">${e.agentVersion ? escapeHtml(e.agentVersion) : '-'}${isOld ? ` <span class="pill warn" style="margin-left:4px">구버전</span>` : ''}</b></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">OS 정보</span><b style="font-size:11px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.agentOs ? escapeHtml(e.agentOs) : '-'}</b></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">보고된 IP</span><b class="mono">${e.agentReportedIp ? escapeHtml(e.agentReportedIp) : '-'}</b></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">Agent 시작 시간</span><b class="mono" style="font-size:11px;text-align:right">${fmtWhen(e.agentStartedAt)}</b></div>
+        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:8px"><span style="color:var(--text-faint);flex:none">마지막 오류</span><b style="font-size:11px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.agentLastError ? escapeHtml(e.agentLastError) : '-'}</b></div>
       </div>
     </div>`;
 }
@@ -5499,7 +5496,8 @@ function openDrawerFor(id){
   else if(entity.mode==='agent' && !entity.online) drawAgentPending(entity, catLabel);
   else if(s) drawServer(s);
   else drawPingDevice(entity, catLabel);
-  $('#drawerBody').insertAdjacentHTML('beforeend', collectionStateBlock(entity) + agentInfoBlock(entity));
+  $('#drawerBody').insertAdjacentHTML('beforeend',
+    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${collectionStateBlock(entity)}${agentInfoBlock(entity)}</div>`);
   $('#overlay').classList.add('show'); $('#drawer').classList.add('show');
 }
 function closeDrawer(){
