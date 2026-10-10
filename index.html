@@ -5866,28 +5866,43 @@ function drawPingDevice(e, catLabel){
       </div>
     </div>` : '';
 
-  // SSH/Telnet은 브라우저가 직접 열 수 없으므로(원시 소켓 불가) 이 PC에 설치된
-  // 외부 클라이언트(OpenSSH, PuTTY 등)를 ssh://telnet:// URI 핸들러로 넘겨
-  // 실행만 시킨다 -- 로그인 자격증명은 InfraSight에 전혀 저장하지 않고,
-  // 사용자명도 입력 즉시 그 PC 브라우저 안에서만 쓰인다. 핸들러가 없는
-  // PC에서는 버튼이 동작하지 않을 수 있어 복사용 명령어를 함께 제공한다.
+  // SSH는 브라우저가 직접 열 수 없으므로(원시 소켓 불가) 이 PC에 설치된 외부
+  // 클라이언트(OpenSSH, PuTTY 등)를 ssh:// URI 핸들러로 넘겨 실행만 시킨다 --
+  // 로그인 자격증명은 InfraSight에 전혀 저장하지 않고, 사용자명도 입력 즉시
+  // 그 PC 브라우저 안에서만 쓰인다.
+  //
+  // Telnet은 버튼으로 제공하지 않는다 -- 실사용 중 확인한 사실: Windows
+  // 레지스트리/launcher 자체는 완벽히 동작하는데(Start-Process로 직접 띄워보면
+  // 매번 성공), Chrome이 "telnet"은 물론 한 번도 쓰인 적 없는 임의의 커스텀
+  // scheme(예: infrasight-telnet://)까지도 "페이지에 있는 링크 클릭"으로
+  // 열도록 요청하면 묻지도 않고 조용히 무시한다 -- 반면 주소창에 직접 입력하면
+  // 정상적으로 확인창이 뜬다. ssh는 Chrome이 페이지発 클릭에도 허용하는 소수의
+  // 알려진 scheme 목록에 있는 것으로 보이고, 그 목록은 레지스트리 등록과
+  // 무관하게 Chrome 쪽에 하드코딩돼 있어 InfraSight 쪽에서 우회할 방법이 없다.
+  // 그래서 Telnet은 클릭형 버튼 대신 복사용 명령어(PuTTY -telnet)만 제공한다.
   const remoteAccessCard = (catLabel==='네트워크 (NMS)' && e.ip) ? `
     <div class="card" style="min-width:0">
       <div class="card-head"><h3>원격 접속</h3><span class="sub">이 PC에 설치된 SSH/Telnet 클라이언트를 엽니다</span></div>
       <div style="display:flex;flex-direction:column;gap:10px">
         <div class="field" style="margin:0">
-          <label style="font-size:11px;color:var(--text-faint)">사용자명 (선택)</label>
+          <label style="font-size:11px;color:var(--text-faint)">사용자명 (선택, SSH만 해당)</label>
           <input type="text" id="remote-username" placeholder="예: admin" value="${escapeHtml(remoteAccessUsername)}" style="width:100%">
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <a id="remote-ssh-link" class="btn primary" href="ssh://${remoteAccessUsername ? encodeURIComponent(remoteAccessUsername)+'@' : ''}${escapeHtml(e.ip)}" style="text-decoration:none;text-align:center">SSH 접속</a>
-          <a id="remote-telnet-link" class="btn" href="telnet://${remoteAccessUsername ? encodeURIComponent(remoteAccessUsername)+'@' : ''}${escapeHtml(e.ip)}" style="text-decoration:none;text-align:center">Telnet 접속</a>
         </div>
         <div style="display:flex;align-items:center;gap:8px;background:var(--surface-2);border-radius:var(--radius-sm);padding:7px 10px">
           <code id="remote-ssh-cmd" class="mono" style="flex:1;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">ssh ${escapeHtml(remoteAccessUsername ? remoteAccessUsername+'@'+e.ip : e.ip)}</code>
           <button type="button" class="btn" id="remote-copy-cmd" style="font-size:11px;padding:3px 8px;flex:none">복사</button>
         </div>
-        <p style="font-size:11px;color:var(--text-faint);line-height:1.5;margin:0">버튼이 동작하지 않으면 이 PC에 SSH/Telnet 앱이 연결되어 있지 않은 것입니다 -- 위 명령어를 복사해 터미널에서 직접 실행하세요.</p>
+        <p style="font-size:11px;color:var(--text-faint);line-height:1.5;margin:0 0 2px">버튼이 동작하지 않으면 이 PC에 SSH 앱이 연결되어 있지 않은 것입니다 -- 위 명령어를 복사해 터미널에서 직접 실행하세요.</p>
+        <div style="border-top:1px solid var(--border);padding-top:10px">
+          <div style="font-size:11px;color:var(--text-faint);margin-bottom:6px">Telnet (Chrome 보안 정책상 버튼으로 바로 열 수 없어 명령어 복사로만 지원합니다)</div>
+          <div style="display:flex;align-items:center;gap:8px;background:var(--surface-2);border-radius:var(--radius-sm);padding:7px 10px">
+            <code id="remote-telnet-cmd" class="mono" style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">putty.exe -telnet ${escapeHtml(e.ip)}</code>
+            <button type="button" class="btn" id="remote-copy-telnet-cmd" style="font-size:11px;padding:3px 8px;flex:none">복사</button>
+          </div>
+        </div>
       </div>
     </div>` : '';
 
@@ -5938,11 +5953,13 @@ function drawPingDevice(e, catLabel){
       remoteAccessUsername = remoteUserEl.value.trim();
       const userPart = remoteAccessUsername ? encodeURIComponent(remoteAccessUsername)+'@' : '';
       $('#remote-ssh-link').href = `ssh://${userPart}${e.ip}`;
-      $('#remote-telnet-link').href = `telnet://${userPart}${e.ip}`;
       $('#remote-ssh-cmd').textContent = `ssh ${remoteAccessUsername ? remoteAccessUsername+'@'+e.ip : e.ip}`;
     });
     $('#remote-copy-cmd').addEventListener('click', async ()=>{
       try{ await navigator.clipboard.writeText($('#remote-ssh-cmd').textContent); }catch(err){}
+    });
+    $('#remote-copy-telnet-cmd').addEventListener('click', async ()=>{
+      try{ await navigator.clipboard.writeText($('#remote-telnet-cmd').textContent); }catch(err){}
     });
   }
   if(drawerBodyEl) drawerBodyEl.scrollTop = prevBodyScroll;
