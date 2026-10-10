@@ -5492,12 +5492,13 @@ function openDrawerFor(id){
     };
   }
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
-  if(entity.mode==='ping' || entity.mode==='snmp') drawPingDevice(entity, catLabel);
+  let envCardHtml = '';
+  if(entity.mode==='ping' || entity.mode==='snmp') envCardHtml = drawPingDevice(entity, catLabel) || '';
   else if(entity.mode==='agent' && !entity.online) drawAgentPending(entity, catLabel);
   else if(s) drawServer(s);
-  else drawPingDevice(entity, catLabel);
+  else envCardHtml = drawPingDevice(entity, catLabel) || '';
   $('#drawerBody').insertAdjacentHTML('beforeend',
-    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${collectionStateBlock(entity)}${agentInfoBlock(entity)}</div>`);
+    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${envCardHtml}${collectionStateBlock(entity)}${agentInfoBlock(entity)}</div>`);
   $('#overlay').classList.add('show'); $('#drawer').classList.add('show');
 }
 function closeDrawer(){
@@ -5686,14 +5687,19 @@ function drawPingDevice(e, catLabel){
   $('#drawerTitle').textContent = e.name;
   $('#drawerRole').textContent = `${catLabel} · ${e.ip||'-'}`;
   const isSnmp = e.mode==='snmp';
+  // 숫자/짧은 값 위주의 항목은 상단 "상태" 줄에 그대로 끼워 넣어 한 줄에
+  // 더 많이 보이게 하고, 글자 수가 긴 항목(모델/시리얼, sysDescr)은 줄바꿈
+  // 폭을 많이 잡아먹어 "인터페이스" 같은 짧은 항목까지 다음 줄로 밀어내므로
+  // 따로 묶어 아래에 별도 줄로 둔다.
   let extraKv = '';
+  let extraKvWide = '';
   if(typeof e.cpu === 'number') extraKv += `<div class="kv"><span>CPU (SNMP 실측)</span><b style="color:${levelColor(devLevelOf(e,'cpu',e.cpu))}">${fmt1(e.cpu)}%</b></div>`;
   if(typeof e.mem === 'number') extraKv += `<div class="kv"><span>메모리 (SNMP 실측)</span><b style="color:${levelColor(devLevelOf(e,'mem',e.mem))}">${fmt1(e.mem)}%</b></div>`;
   if(typeof e.uptime === 'number') extraKv += `<div class="kv"><span>Uptime (SNMP 실측)</span><b>${fmt1(e.uptime)}일</b></div>`;
   if(typeof e.battPct === 'number') extraKv += `<div class="kv"><span>배터리 (SNMP 실측)</span><b>${fmt0(e.battPct)}%</b></div>`;
   if(typeof e.portsTotal === 'number') extraKv += `<div class="kv"><span>인터페이스</span><b>${e.portsUp}/${e.portsTotal} Up</b></div>`;
-  if(isSnmp && (e.hwModel || e.hwSerial)) extraKv += `<div class="kv"><span>모델 / 시리얼 (SNMP ENTITY-MIB)</span><b style="font-size:12px">${escapeHtml(e.hwModel||'-')}${e.hwSerial ? ` · ${escapeHtml(e.hwSerial)}` : ''}</b></div>`;
-  if(isSnmp && e.sysDescr) extraKv += `<div class="kv" style="grid-column:span 2"><span>장치 정보 (SNMP sysDescr)</span><b style="font-size:11px;font-weight:500;white-space:normal;line-height:1.4">${escapeHtml(e.sysDescr)}</b></div>`;
+  if(isSnmp && (e.hwModel || e.hwSerial)) extraKvWide += `<div class="kv"><span>모델 / 시리얼 (SNMP ENTITY-MIB)</span><b style="font-size:12px">${escapeHtml(e.hwModel||'-')}${e.hwSerial ? ` · ${escapeHtml(e.hwSerial)}` : ''}</b></div>`;
+  if(isSnmp && e.sysDescr) extraKvWide += `<div class="kv" style="grid-column:span 2"><span>장치 정보 (SNMP sysDescr)</span><b style="font-size:11px;font-weight:500;white-space:normal;line-height:1.4">${escapeHtml(e.sysDescr)}</b></div>`;
 
   const hasCpuMem = isSnmp && e.hist && e.hist.cpu && typeof e.cpu === 'number';
   const cpuMemCard = hasCpuMem ? `
@@ -5733,7 +5739,7 @@ function drawPingDevice(e, catLabel){
   const envStateColor = s => s==='normal' ? 'var(--good)' : (s==='warning' ? 'var(--warn)' : (s==='critical'||s==='shutdown' ? 'var(--crit)' : 'var(--text-faint)'));
   const envStateLabel = s => ({normal:'정상', warning:'주의', critical:'위험', shutdown:'차단', notPresent:'미설치', unknown:'알수없음'})[s] || s;
   const envCard = hasEnv ? `
-    <div class="card"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
+    <div class="card" style="min-width:0"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
       <div style="display:flex;flex-direction:column;gap:8px">
         ${(e.envTemps||[]).filter(t=>t.state!=='notPresent').map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(t.description||'온도 센서')}${t.valueC!=null ? ` · ${fmt0(t.valueC)}°C` : ''}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(t.state)};color:${envStateColor(t.state)}"><span class="dot" style="background:${envStateColor(t.state)}"></span>${envStateLabel(t.state)}</span></div>`).join('')}
         ${(e.envFans||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>팬 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
@@ -5748,6 +5754,7 @@ function drawPingDevice(e, catLabel){
       <div class="kv"><span>응답시간</span><b>${e.reachable? fmt0(e.latencyMs||0)+'ms' : '응답없음'}</b></div>
       ${extraKv}
     </div>
+    ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
     <div style="${pingGrid2}">
       <div class="card" style="min-width:0"><div class="card-head"><h3>응답시간 추이</h3><span class="sub">${isSnmp?'SNMP':'Ping / 포트 확인'} · 최근 60초</span></div>
         <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>
@@ -5757,7 +5764,6 @@ function drawPingDevice(e, catLabel){
       ${trafficCard}
       ${ifaceCard}
     </div>
-    ${envCard}
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
         ? 'SNMP로 장치 정보와 응답시간을 실측합니다. 인터페이스·CPU·메모리·배터리 등은 장비가 해당 MIB를 지원할 때만 표시됩니다.'
@@ -5771,7 +5777,12 @@ function drawPingDevice(e, catLabel){
       } else {
         openIfaceModal(e.id, row.dataset.idx);
       }
-      drawPingDevice(e, catLabel);
+      // drawPingDevice()는 #drawerBody 전체를 새로 쓰기 때문에, openDrawerFor()가
+      // 바깥에서 덧붙인 환경센서/수집상태 줄도 같이 지워진다 -- 여기서 똑같이
+      // 다시 덧붙여줘야 인터페이스 클릭할 때마다 그 줄이 순간적으로 사라지지 않는다.
+      const reEnvCardHtml = drawPingDevice(e, catLabel) || '';
+      $('#drawerBody').insertAdjacentHTML('beforeend',
+        `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${reEnvCardHtml}${collectionStateBlock(e)}${agentInfoBlock(e)}</div>`);
     });
   });
   if(drawerBodyEl) drawerBodyEl.scrollTop = prevBodyScroll;
@@ -5786,6 +5797,7 @@ function drawPingDevice(e, catLabel){
   if(hasTraffic){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
   }
+  return envCard;
 }
 // 재발급 결과는 메모리에 캐시해둔다 -- 드로어가 열려있는 동안에도 2.2초
 // 폴링마다 refreshOpenDrawer()가 openDrawerFor()를 다시 불러 #drawerBody를
