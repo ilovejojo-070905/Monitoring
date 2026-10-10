@@ -5589,18 +5589,20 @@ function drawServer(s){
       <div class="kv"><span>네트워크</span><b>${fmt0(s.netIn)}/${fmt0(s.netOut)} Mbps</b></div>
       <div class="kv"><span>Load Average</span><b>${fmt1(s.load)}</b></div>
     </div>
-    <div class="card"><div class="card-head"><h3>CPU / 메모리 추이</h3><span class="sub">최근 60초 · 실측</span></div>
-      <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>
-    <div class="card">
-      <div class="card-head"><h3>리소스 사용률</h3></div>
-      <div style="display:flex;flex-direction:column;gap:12px">
-        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>CPU</span><span class="mono">${fmt1(s.cpu)}%</span></div><div class="bar ${devLevelOf(s,'cpu',s.cpu)}"><i style="width:${s.cpu}%"></i></div></div>
-        <div>
-          <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>메모리</span><span class="mono">${fmt1(s.mem)}%</span></div>
-          <div class="bar ${devLevelOf(s,'mem',s.mem)}"><i style="width:${s.mem}%"></i></div>
-          ${s.memDetail ? `<div style="font-size:10.5px;color:var(--text-faint);margin-top:4px">가용 ${fmt1(s.memDetail.availableGB)}GB${s.memDetail.cachedGB!=null ? ` · 캐시 ${fmt1(s.memDetail.cachedGB)}GB` : ''}${s.memDetail.buffersGB!=null ? ` · 버퍼 ${fmt1(s.memDetail.buffersGB)}GB` : ''} · 스왑 ${s.memDetail.swapTotalGB>0 ? `${fmt1(s.memDetail.swapUsedGB)}/${fmt1(s.memDetail.swapTotalGB)}GB (${fmt1(s.memDetail.swapPct)}%)` : '없음'}</div>` : ''}
+    <div style="${grid2}">
+      <div class="card" style="min-width:0"><div class="card-head"><h3>CPU / 메모리 추이</h3><span class="sub">최근 60초 · 실측</span></div>
+        <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>
+      <div class="card" style="min-width:0">
+        <div class="card-head"><h3>리소스 사용률</h3></div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>CPU</span><span class="mono">${fmt1(s.cpu)}%</span></div><div class="bar ${devLevelOf(s,'cpu',s.cpu)}"><i style="width:${s.cpu}%"></i></div></div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>메모리</span><span class="mono">${fmt1(s.mem)}%</span></div>
+            <div class="bar ${devLevelOf(s,'mem',s.mem)}"><i style="width:${s.mem}%"></i></div>
+            ${s.memDetail ? `<div style="font-size:10.5px;color:var(--text-faint);margin-top:4px">가용 ${fmt1(s.memDetail.availableGB)}GB${s.memDetail.cachedGB!=null ? ` · 캐시 ${fmt1(s.memDetail.cachedGB)}GB` : ''}${s.memDetail.buffersGB!=null ? ` · 버퍼 ${fmt1(s.memDetail.buffersGB)}GB` : ''} · 스왑 ${s.memDetail.swapTotalGB>0 ? `${fmt1(s.memDetail.swapUsedGB)}/${fmt1(s.memDetail.swapTotalGB)}GB (${fmt1(s.memDetail.swapPct)}%)` : '없음'}</div>` : ''}
+          </div>
+          <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>디스크</span><span class="mono">${fmt1(s.disk)}%</span></div><div class="bar ${devLevelOf(s,'disk',s.disk)}"><i style="width:${s.disk}%"></i></div></div>
         </div>
-        <div><div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span>디스크</span><span class="mono">${fmt1(s.disk)}%</span></div><div class="bar ${devLevelOf(s,'disk',s.disk)}"><i style="width:${s.disk}%"></i></div></div>
       </div>
     </div>
     <div style="${grid2}">
