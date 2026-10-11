@@ -68,8 +68,21 @@ Section "InfraSight" SecInstall
     SetOutPath "$1"
     File "..\install.ps1"
 
+    ; $INSTDIR 끝에 백슬래시가 붙어 있으면(드라이브 루트 바로 아래를 고르면
+    ; 흔히 이렇게 됨 -- 실측: "D:\InfraSight" 선택 시 재현됨) 아래처럼 따옴표로
+    ;감싼 커맨드라인에 그대로 넣었을 때 그 trailing \"가 "이스케이프된 따옴표"로
+    ; 해석되어 인자 전체가 깨진다(윈도우 커맨드라인 파싱의 전형적인 함정) --
+    ; install.ps1이 PowerShell의 $InstallDir 매개변수로 받는 값 자체가
+    ; 뒤섞여버려서 "경로의 형식이 잘못되었습니다" 같은 전혀 다른 에러로 나타났다.
+    ; 넘기기 전에 끝의 백슬래시 하나를 미리 떼어낸다.
+    StrCpy $2 "$INSTDIR"
+    StrCpy $3 $2 1 -1
+    ${If} $3 == "\"
+        StrCpy $2 $2 -1
+    ${EndIf}
+
     DetailPrint "InfraSight를 설치하는 중입니다 -- 네트워크 상황에 따라 몇 분 정도 걸릴 수 있습니다..."
-    nsExec::ExecToLog '"powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$1\install.ps1" -InstallDir "$INSTDIR"'
+    nsExec::ExecToLog '"powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$1\install.ps1" -InstallDir "$2"'
     Pop $0
 
     RMDir /r "$1"
