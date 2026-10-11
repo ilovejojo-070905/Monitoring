@@ -73,7 +73,15 @@ $hostJsonObj = [ordered]@{
     type = 'stdio'
     allowed_origins = @("chrome-extension://$extensionId/")
 }
-($hostJsonObj | ConvertTo-Json) | Set-Content -Path (Join-Path $hostDir 'host.json') -Encoding utf8
+# 실제 원인 발견: Windows PowerShell 5.1의 -Encoding utf8은 Set-Content/Out-File
+# 어느 쪽으로 써도 항상 파일 맨 앞에 UTF-8 BOM(EF BB BF)을 붙인다 -- Chrome의
+# Native Messaging 매니페스트 파서는 이 BOM을 허용하지 않아서, 레지스트리/
+# host.bat 경로가 전부 올바른데도 "Specified native messaging host not found"로
+# 실패한다 (host-debug.log에 아예 실행 시도 흔적조차 없는 것으로 실측 확인 --
+# Chrome이 매니페스트 파싱 단계에서부터 이 호스트를 "없는 것"으로 취급했다는
+# 뜻). BOM 없이 쓰려면 .NET의 UTF8Encoding(false)를 직접 써야 한다.
+$hostJsonText = $hostJsonObj | ConvertTo-Json
+[System.IO.File]::WriteAllText((Join-Path $hostDir 'host.json'), $hostJsonText, (New-Object System.Text.UTF8Encoding $false))
 Write-Diag 'host.json 생성 완료'
 
 # manifest.json의 externally_connectable.matches도 머신마다 다른 LAN IP가
@@ -87,7 +95,11 @@ Write-Diag "LAN IP 조회 완료: [$lanIp]"
 # "name"/"description" 필드가 "InfraSight ?먭꺽 ?묒냽" 처럼 깨져서 생성됐음
 # (JSON 형식 자체는 유효해서 Chrome이 로드는 하지만 표시 이름이 깨짐).
 $manifestTemplate = Get-Content (Join-Path $repoRemoteDir 'extension\manifest.json.template') -Raw -Encoding UTF8
-$manifestTemplate.Replace('__LAN_IP__', $lanIp) | Set-Content -Path (Join-Path $extDir 'manifest.json') -Encoding utf8 -NoNewline
+# host.json과 같은 이유로 -Encoding utf8(BOM 붙음) 대신 BOM 없는 .NET
+# UTF8Encoding을 직접 쓴다 -- Chrome의 확장 프로그램 매니페스트 파서도 BOM이
+# 있으면 "압축해제된 확장 프로그램을 로드"할 때 파싱에 실패할 수 있다.
+$manifestText = $manifestTemplate.Replace('__LAN_IP__', $lanIp)
+[System.IO.File]::WriteAllText((Join-Path $extDir 'manifest.json'), $manifestText, (New-Object System.Text.UTF8Encoding $false))
 Write-Diag 'manifest.json 생성 완료'
 
 # Chrome Native Messaging Host 등록 (HKCU -- 관리자 권한 불필요, 이 로그인
