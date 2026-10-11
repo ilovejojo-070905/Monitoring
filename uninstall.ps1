@@ -102,21 +102,40 @@ foreach ($sub in @('native-host', 'extension')) {
 Write-Warn2  'Chrome에 직접 로드해둔 확장 프로그램은 chrome://extensions에서 따로 제거해주세요 (이 스크립트가 어디 있는지 알 수 없음).'
 
 # --------------------------------------------------------- [6] 백업 --
-Write-Step '[6/7] 삭제 전 데이터베이스 백업'
-$dbPath = Join-Path $InstallDir 'infrasight.db'
-if (-not $NoBackup -and (Test-Path $dbPath)) {
-    $backupName = "infrasight-db-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').db"
-    $backupPath = Join-Path ([Environment]::GetFolderPath('Desktop')) $backupName
-    Copy-Item $dbPath $backupPath -ErrorAction SilentlyContinue
-    if (Test-Path $backupPath) {
-        Write-Ok "바탕화면에 백업됨: $backupName"
-    } else {
-        Write-Warn2 '백업에 실패했습니다 (그래도 계속 진행합니다).'
+Write-Step '[6/7] 삭제 전 데이터베이스 + 암호화 키 백업'
+# infrasight.db 백업만으로는 부족하다 -- 장비 SSH/SNMP 접속 정보 같은
+# credentials 테이블 값은 DB 안에 평문이 아니라, DB와는 별도 파일인
+# .infrasight_credentials_key(Fernet 키)로 암호화되어 있다
+# (secrets_crypto.py 자신의 주석: "DB 백업만 있고 이 키가 없으면 무용지물").
+# 이 키 없이 DB만 복원하면 그 장비 자격증명들은 영구히 복호화할 수 없게
+# 된다 -- 새로 설치하면서 새 키가 생성되기 전에 반드시 같이 챙겨야 한다.
+# .infrasight_secret_key(Flask 세션 서명 키)는 잃어도 전체 재로그인 정도로
+# 끝나는 문제라 치명적이진 않지만, 같이 백업해두면 재설치 후 세션 끊김 없이
+# 넘어갈 수 있어 같이 챙긴다.
+$backupTargets = @(
+    (Join-Path $InstallDir 'infrasight.db'),
+    (Join-Path $InstallDir '.infrasight_credentials_key'),
+    (Join-Path $InstallDir '.infrasight_secret_key')
+)
+if (-not $NoBackup) {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $backupDir = Join-Path ([Environment]::GetFolderPath('Desktop')) "infrasight-backup-$stamp"
+    $anyBackedUp = $false
+    foreach ($f in $backupTargets) {
+        if (Test-Path $f) {
+            if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null }
+            Copy-Item $f (Join-Path $backupDir (Split-Path $f -Leaf)) -ErrorAction SilentlyContinue
+            $anyBackedUp = $true
+        }
     }
-} elseif ($NoBackup) {
-    Write-Warn2 '-NoBackup 지정됨 -- 백업을 건너뜁니다.'
+    if ($anyBackedUp) {
+        Write-Ok "바탕화면에 백업됨: infrasight-backup-$stamp\ (DB + 암호화 키)"
+        Write-Warn2 '재설치 후 기존 데이터를 그대로 쓰려면, 새로 설치된 폴더에 이 백업 폴더 안의 파일들을 전부 덮어써주세요 (첫 로그인 전에).'
+    } else {
+        Write-Warn2 '백업할 파일을 찾지 못했습니다 (그래도 계속 진행합니다).'
+    }
 } else {
-    Write-Warn2 '데이터베이스 파일을 찾을 수 없어 백업을 건너뜁니다.'
+    Write-Warn2 '-NoBackup 지정됨 -- 백업을 건너뜁니다.'
 }
 
 # ----------------------------------------------- [7] 설치 폴더 삭제 --
