@@ -49,7 +49,17 @@
 		# uses), blocks <object>/<embed>, blocks the page from ever being
 		# framed by anyone, and stops any injected content from opening a
 		# network connection to somewhere else (connect-src 'self').
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+		#
+		# connect-src also allow-lists exactly one chrome-extension:// origin --
+		# the "InfraSight 원격 접속" companion extension (Native Messaging
+		# bridge for the device-drawer SSH/Telnet buttons). Confirmed live that
+		# without this, Chrome silently drops chrome.runtime.sendMessage() to
+		# that extension id (CSP connect-src applies to extension messaging,
+		# not just fetch/XHR) -- the call never even reaches the extension's
+		# background script, let alone the native host. Scoped to this one
+		# specific, already-known extension id rather than opening connect-src
+		# to chrome-extension: generally.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' chrome-extension://ogpngpbjjcgifjaodhhnejonanmhhdhd; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 		-Server
 	}
 

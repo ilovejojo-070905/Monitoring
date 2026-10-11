@@ -5813,15 +5813,17 @@ function remoteConnect(protocol, host, user){
   if(user) msg.user = user;
   try{
     chrome.runtime.sendMessage(INFRASIGHT_REMOTE_EXTENSION_ID, msg, (response)=>{
-      if(chrome.runtime.lastError || !response || !response.ok){
+      const lastErr = chrome.runtime.lastError;
+      if(lastErr || !response || !response.ok){
         if(statusEl){
-          statusEl.textContent = '확장 프로그램이 설치되어 있지 않거나 응답이 없습니다 -- 아래 명령어를 복사해주세요.';
+          statusEl.textContent = '확장 프로그램이 설치되어 있지 않거나 응답이 없습니다 -- 아래 명령어를 복사해주세요. '
+            + '(' + (lastErr ? lastErr.message : (response && response.error) || '응답 없음') + ')';
           statusEl.style.color = 'var(--warn)';
         }
       }
     });
   }catch(err){
-    if(statusEl){ statusEl.textContent = '확장 프로그램 호출 실패 -- 아래 명령어를 복사해주세요.'; statusEl.style.color = 'var(--warn)'; }
+    if(statusEl){ statusEl.textContent = '확장 프로그램 호출 실패 -- 아래 명령어를 복사해주세요. (' + err.message + ')'; statusEl.style.color = 'var(--warn)'; }
   }
 }
 function drawPingDevice(e, catLabel){
