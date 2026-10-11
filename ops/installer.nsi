@@ -93,7 +93,11 @@ Section "InfraSight" SecInstall
     ${EndIf}
 
     DetailPrint "InfraSight를 설치하는 중입니다 -- 네트워크 상황에 따라 몇 분 정도 걸릴 수 있습니다..."
-    nsExec::ExecToLog '"powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$1\install.ps1" -InstallDir "$2"'
+    ; -SkipBrowserLaunch: install.ps1 자신의 끝단 브라우저 자동 열기를 꺼서,
+    ; "마침" 버튼을 누르기도 전에(아직 InstFiles 진행 화면 단계에서) 사이트가
+    ; 먼저 열려버리지 않게 한다 -- 여는 역할은 아래 마침 페이지의 "지금 바로
+    ; 열기" 체크박스(LaunchInfraSight)가 대신 맡는다.
+    nsExec::ExecToLog '"powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$1\install.ps1" -InstallDir "$2" -SkipBrowserLaunch'
     Pop $0
 
     RMDir /r "$1"

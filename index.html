@@ -5870,12 +5870,6 @@ function drawPingDevice(e, catLabel){
   if(isSnmp && (e.hwModel || e.hwSerial)) extraKvWide += `<div class="kv"><span>모델 / 시리얼 (SNMP ENTITY-MIB)</span><b style="font-size:12px">${escapeHtml(e.hwModel||'-')}${e.hwSerial ? ` · ${escapeHtml(e.hwSerial)}` : ''}</b></div>`;
   if(isSnmp && e.sysDescr) extraKvWide += `<div class="kv" style="grid-column:span 2"><span>장치 정보 (SNMP sysDescr)</span><b style="font-size:11px;font-weight:500;white-space:normal;line-height:1.4">${escapeHtml(e.sysDescr)}</b></div>`;
 
-  const hasCpuMem = isSnmp && e.hist && e.hist.cpu && typeof e.cpu === 'number';
-  const cpuMemCard = hasCpuMem ? `
-    <div class="card" style="min-width:0"><div class="card-head"><h3>CPU / 메모리 추이</h3><span class="sub">SNMP 실측 · 최근 60초</span></div>
-      <div style="height:140px"><canvas id="drawerChart3"></canvas></div>
-    </div>` : '';
-
   const hasTraffic = isSnmp && e.hist && e.hist.traffic && typeof e.trafficIn === 'number';
   const trafficCard = hasTraffic ? `
     <div class="card" style="min-width:0"><div class="card-head"><h3>인터페이스 트래픽</h3><span class="sub">SNMP IF-MIB 실측 · Mbps</span></div>
@@ -5886,7 +5880,7 @@ function drawPingDevice(e, catLabel){
   const ifaces = isSnmp && Array.isArray(e.interfaces) ? e.interfaces : [];
   const ifaceCard = ifaces.length ? `
     <div class="card" style="min-width:0"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
-      <div id="iface-list" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
+      <div id="iface-list" style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
         ${ifaces.map(f=>{
           const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
           const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
@@ -5928,12 +5922,10 @@ function drawPingDevice(e, catLabel){
     ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
     <div style="${pingGrid2}">
       ${trafficCard}
-      ${ifaceCard}
     </div>
     <div style="${pingGrid2}">
-      <div class="card" style="min-width:0"><div class="card-head"><h3>응답시간 추이</h3><span class="sub">${isSnmp?'SNMP':'Ping / 포트 확인'} · 최근 60초</span></div>
-        <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>
-      ${cpuMemCard}
+      ${envCard}
+      ${ifaceCard}
     </div>
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
@@ -5959,16 +5951,10 @@ function drawPingDevice(e, catLabel){
   if(drawerBodyEl) drawerBodyEl.scrollTop = prevBodyScroll;
   const newIfaceEl = document.getElementById('iface-list');
   if(newIfaceEl) newIfaceEl.scrollTop = prevIfaceScroll;
-  charts.drawer1 = lineChart($('#drawerChart1'), Array(24).fill(''), [{label:'지연시간(ms)', data:(e.hist&&e.hist.latency)||[], color:'#3ecbff', fill:true}], {showX:false});
-  if(hasCpuMem){
-    const series = [{label:'CPU', data:e.hist.cpu.map(fmt1), color:'#7c5cff'}];
-    if(e.hist.mem) series.push({label:'MEM', data:e.hist.mem.map(fmt1), color:'#00e6a8'});
-    charts.drawer3 = lineChart($('#drawerChart3'), Array(24).fill(''), series, {showX:false, max:100});
-  }
   if(hasTraffic){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
   }
-  return envCard;
+  return '';
 }
 // 재발급 결과는 메모리에 캐시해둔다 -- 드로어가 열려있는 동안에도 2.2초
 // 폴링마다 refreshOpenDrawer()가 openDrawerFor()를 다시 불러 #drawerBody를

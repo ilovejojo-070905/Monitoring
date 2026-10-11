@@ -19,7 +19,15 @@ just redone.
 
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'InfraSight'),
-    [string]$RepoUrl = 'https://github.com/ilovejojo-070905/Monitoring.git'
+    [string]$RepoUrl = 'https://github.com/ilovejojo-070905/Monitoring.git',
+    # ops\installer.nsi(GUI 마법사)가 이 스크립트를 감싸 돌릴 때 켠다 -- 이
+    # 스크립트 혼자 돌 때는(콘솔용 Setup.exe) 끝에서 바로 브라우저를 여는 게
+    # 자연스럽지만, GUI 마법사 안에서는 그게 "설치 중" 진행 화면 단계에서
+    # 실행되어 사용자가 "마침" 버튼을 누르기도 전에 사이트가 먼저 열려버리는
+    # 문제가 실측으로 확인됐다 -- GUI 쪽은 마침 화면 자체의 "지금 바로 열기"
+    # 체크박스가 이미 같은 일을 하므로, 이 스위치가 켜져 있으면 여기서는
+    # 열지 않는다.
+    [switch]$SkipBrowserLaunch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,6 +70,7 @@ if (-not (Test-Admin)) {
     Write-Host "관리자 권한이 필요합니다 (인증서 신뢰 등록 · 방화벽 설정). UAC 승인 창을 확인해주세요..." -ForegroundColor Yellow
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
                  '-InstallDir', $InstallDir, '-RepoUrl', $RepoUrl)
+    if ($SkipBrowserLaunch) { $argList += '-SkipBrowserLaunch' }
     try {
         Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
     } catch {
@@ -357,7 +366,7 @@ Write-Host "`n참고: 접속하는 다른 기기의 브라우저에는 인증서
 Write-Host "(이 PC에서 발급한 '로컬 CA' 방식 인증서라서 그렇습니다 -- 무시하고 진행하거나,"
 Write-Host "%LOCALAPPDATA%\mkcert\rootCA.pem 을 그 기기에 설치하면 경고 없이 접속할 수 있습니다)."
 
-Start-Process "https://localhost:8443"
+if (-not $SkipBrowserLaunch) { Start-Process "https://localhost:8443" }
 
 } catch {
     # This window is the elevated one (Start-Process -Verb RunAs) where every
