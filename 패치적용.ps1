@@ -1,12 +1,15 @@
 ﻿<#
 InfraSight 패치 적용 스크립트
 =============================
-이 스크립트와 같은 폴더에 있는 .patch 파일을, 이 PC에 설치된 InfraSight
-저장소에 적용합니다. (오프라인 PC용 - git pull이 안 되는 환경에서
-USB 등으로 패치 파일을 옮겨와 적용할 때 사용)
+패치 내용을 이 PC에 설치된 InfraSight 저장소에 적용합니다. (오프라인 PC용 -
+git pull이 안 되는 환경에서 패치를 옮겨와 적용할 때 사용)
 
-사용법: 이 스크립트와 .patch 파일을 같은 폴더에 두고 패치적용.bat을
-더블클릭하거나, 직접 실행:
+빌드(ps2exe 컴파일) 시 아래 $EMBEDDED_PATCH_B64에 실제 패치 내용이 base64로
+치환되어 들어가므로, 컴파일된 exe 하나만 있으면 되고 옆에 별도 .patch 파일을
+같이 둘 필요가 없다. (치환 전 플레이스홀더 상태로 .ps1을 직접 돌리는 경우에는
+같은 폴더의 .patch 파일을 대신 찾는 예전 방식으로 동작한다 -- 개발 중 테스트용.)
+
+사용법: 패치적용.bat을 더블클릭하거나, 직접 실행:
     powershell -ExecutionPolicy Bypass -File 패치적용.ps1
     powershell -ExecutionPolicy Bypass -File 패치적용.ps1 -InstallDir "D:\InfraSight"
 #>
@@ -14,6 +17,8 @@ USB 등으로 패치 파일을 옮겨와 적용할 때 사용)
 param(
     [string]$InstallDir
 )
+
+$EMBEDDED_PATCH_B64 = '__EMBEDDED_PATCH_B64__'
 
 # 'Stop'으로 두면 ps2exe로 컴파일된 실행 파일 안에서는 git(네이티브 exe)이
 # stderr에 한 줄만 써도(리다이렉션 여부와 무관하게) 스크립트 전체가 죽어버린다
@@ -50,19 +55,34 @@ while (-not (Test-Path (Join-Path $InstallDir '.git'))) {
 Write-Ok "설치 폴더: $InstallDir"
 
 # ------------------------------------------------------ [3] 패치 파일 --
-# ps2exe로 컴파일된 실행 파일은 $PSScriptRoot가 exe 자신의 실제 폴더를
-# 가리키지 못할 수 있다(비어있거나 작업 디렉터리에 따라 달라짐) -- 실측 확인:
-# 바탕화면에서 더블클릭하면 우연히 맞았지만, 다른 폴더(예: PowerShell 창의
-# 현재 위치가 System32)에서 전체 경로로 실행하면 $PSScriptRoot가 빈 값이 되어
-# Get-ChildItem이 그 현재 위치에서 찾다가 못 찾는 걸로 실측됨. 컴파일된 실행
-# 파일 자신의 실제 경로(어디서 실행하든 변하지 않음)를 대신 사용한다.
-$scriptDir = $PSScriptRoot
-if (-not $scriptDir) {
-    try { $scriptDir = Split-Path -Parent ([System.Reflection.Assembly]::GetEntryAssembly().Location) } catch {}
+$tempPatchPath = $null
+if ($EMBEDDED_PATCH_B64 -and $EMBEDDED_PATCH_B64 -ne '__EMBEDDED_PATCH_B64__') {
+    # base64로 담아두는 이유: 여기-문자열(@'...'@)로 diff 텍스트를 그대로
+    # 박아넣으면, diff 내용 중 우연히 줄 맨 앞에 '@가 오는 경우(있을 가능성은
+    # 낮지만 git diff 포맷을 전부 통제할 수 없다) 거기서 문자열이 조기
+    # 종료되어 버린다 -- base64는 그런 걱정이 전혀 없다.
+    $tempPatchPath = Join-Path $env:TEMP "infrasight-embedded-$([guid]::NewGuid().ToString('N')).patch"
+    [System.IO.File]::WriteAllBytes($tempPatchPath, [Convert]::FromBase64String($EMBEDDED_PATCH_B64))
+    $patchFile = Get-Item $tempPatchPath
+    Write-Ok '내장된 패치 내용을 사용합니다 (별도 .patch 파일 불필요)'
+} else {
+    # 플레이스홀더가 안 바뀐 채로 돌아간 경우(치환 전 .ps1을 직접 실행하는
+    # 개발/테스트 상황) -- 예전처럼 같은 폴더의 .patch 파일을 찾는다.
+    # ps2exe로 컴파일된 실행 파일은 $PSScriptRoot가 exe 자신의 실제 폴더를
+    # 가리키지 못할 수 있다(비어있거나 작업 디렉터리에 따라 달라짐) -- 실측
+    # 확인: 바탕화면에서 더블클릭하면 우연히 맞았지만, 다른 폴더(예:
+    # PowerShell 창의 현재 위치가 System32)에서 전체 경로로 실행하면
+    # $PSScriptRoot가 빈 값이 되어 Get-ChildItem이 그 현재 위치에서 찾다가
+    # 못 찾는 걸로 실측됨. 컴파일된 실행 파일 자신의 실제 경로(어디서
+    # 실행하든 변하지 않음)를 대신 사용한다.
+    $scriptDir = $PSScriptRoot
+    if (-not $scriptDir) {
+        try { $scriptDir = Split-Path -Parent ([System.Reflection.Assembly]::GetEntryAssembly().Location) } catch {}
+    }
+    if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
+    $patchFile = Get-ChildItem $scriptDir -Filter '*.patch' | Select-Object -First 1
+    if (-not $patchFile) { throw "$scriptDir 폴더에 .patch 파일이 없습니다." }
 }
-if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
-$patchFile = Get-ChildItem $scriptDir -Filter '*.patch' | Select-Object -First 1
-if (-not $patchFile) { throw "$scriptDir 폴더에 .patch 파일이 없습니다." }
 Write-Ok "패치 파일: $($patchFile.Name)"
 
 # ------------------------------------------------------ [4] 패치 적용 --
@@ -91,6 +111,7 @@ try {
     }
 } finally {
     Pop-Location
+    if ($tempPatchPath) { Remove-Item $tempPatchPath -Force -ErrorAction SilentlyContinue }
 }
 
 # --------------------------------------------------- [5] 원격 접속 구성 --
