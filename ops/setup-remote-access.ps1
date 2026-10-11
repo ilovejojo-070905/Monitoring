@@ -70,7 +70,18 @@ New-Item -Path $regKeyPath -Force | Out-Null
 Set-ItemProperty -Path $regKeyPath -Name '(default)' -Value (Join-Path $hostDir 'host.json')
 Write-Ok "원격 접속 Native Messaging Host 등록 완료 (LAN IP: $lanIp)"
 
-if (-not (Test-Path 'C:\Program Files\PuTTY\putty.exe')) {
+# host.ps1의 Resolve-Putty와 같은 위치들을 확인한다 (install.ps1 쪽에서
+# winget으로 이미 설치했으면 보통 바로 찾아지지만, 그 전에 수동으로 PuTTY를
+# 이미 깔아둔 PC는 다른 위치일 수 있다).
+$puttyFound = $false
+foreach ($p in @((Join-Path $env:ProgramFiles 'PuTTY\putty.exe'), (Join-Path ${env:ProgramFiles(x86)} 'PuTTY\putty.exe'))) {
+    if ($p -and (Test-Path $p)) { $puttyFound = $true; break }
+}
+if (-not $puttyFound) {
+    if (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\PuTTY.PuTTY_*\putty.exe" -ErrorAction SilentlyContinue -File | Select-Object -First 1) { $puttyFound = $true }
+}
+if (-not $puttyFound -and (Get-Command putty -ErrorAction SilentlyContinue)) { $puttyFound = $true }
+if (-not $puttyFound) {
     Write-Warn2 'PuTTY가 설치되어 있지 않습니다 -- SSH/Telnet 버튼을 쓰려면 PuTTY를 설치해주세요 (winget install PuTTY.PuTTY).'
 }
 

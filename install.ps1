@@ -116,6 +116,11 @@ Install-IfMissing 'git' 'Git.Git' 'Git'
 Install-IfMissing 'python' 'Python.Python.3.12' 'Python'
 Install-IfMissing 'caddy' 'CaddyServer.Caddy' 'Caddy'
 Install-IfMissing 'mkcert' 'FiloSottile.mkcert' 'mkcert'
+# 네트워크 장비 목록의 SSH/Telnet 버튼(ops\setup-remote-access.ps1이 뒤에서
+# 설정하는 Native Messaging Host)이 실제로 띄우는 프로그램 -- 이 PC에선
+# 미리 수동 설치돼 있었지만, 새 PC는 이 installer가 직접 깔아줘야 "버튼
+# 눌렀는데 PuTTY를 찾을 수 없다"는 일이 안 생긴다.
+Install-IfMissing 'putty' 'PuTTY.PuTTY' 'PuTTY'
 
 # Freshly-installed tools update the registry PATH, but THIS already-running
 # process doesn't pick that up automatically -- resolve each exe's actual

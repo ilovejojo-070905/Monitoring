@@ -48,9 +48,26 @@ try {
     Write-Log "IN=[$json]"
     $msg = $json | ConvertFrom-Json
 
-    $PuttyExe = 'C:\Program Files\PuTTY\putty.exe'
-    if (-not (Test-Path $PuttyExe)) {
-        Send-Response @{ ok = $false; error = 'PuTTY를 찾을 수 없습니다' }
+    # 이 PC(개발 겸 운영 PC)에서는 winget 기본 설치 위치에 있었지만, 다른
+    # PC는 32비트 Program Files(x86)이거나, winget이 PATH에만 걸어두고
+    # Program Files에 안 둔 경우(Caddy/mkcert와 같은 패턴 -- install.ps1의
+    # Resolve-ExeAndAddToPath 주석 참고)이거나, PATH에만 있는 수동/choco
+    # 설치일 수 있다 -- 하나로 단정하지 않고 알려진 위치를 순서대로 찾는다.
+    function Resolve-Putty {
+        $candidates = @(
+            (Join-Path $env:ProgramFiles 'PuTTY\putty.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'PuTTY\putty.exe')
+        )
+        foreach ($p in $candidates) { if ($p -and (Test-Path $p)) { return $p } }
+        $glob = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\PuTTY.PuTTY_*\putty.exe" -ErrorAction SilentlyContinue -File | Select-Object -First 1
+        if ($glob) { return $glob.FullName }
+        $cmd = Get-Command putty -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+        return $null
+    }
+    $PuttyExe = Resolve-Putty
+    if (-not $PuttyExe) {
+        Send-Response @{ ok = $false; error = 'PuTTY를 찾을 수 없습니다 (winget install PuTTY.PuTTY로 설치해주세요)' }
         exit 0
     }
 
