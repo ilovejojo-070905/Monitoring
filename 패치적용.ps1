@@ -50,8 +50,19 @@ while (-not (Test-Path (Join-Path $InstallDir '.git'))) {
 Write-Ok "설치 폴더: $InstallDir"
 
 # ------------------------------------------------------ [3] 패치 파일 --
-$patchFile = Get-ChildItem $PSScriptRoot -Filter '*.patch' | Select-Object -First 1
-if (-not $patchFile) { throw '이 스크립트와 같은 폴더에 .patch 파일이 없습니다.' }
+# ps2exe로 컴파일된 실행 파일은 $PSScriptRoot가 exe 자신의 실제 폴더를
+# 가리키지 못할 수 있다(비어있거나 작업 디렉터리에 따라 달라짐) -- 실측 확인:
+# 바탕화면에서 더블클릭하면 우연히 맞았지만, 다른 폴더(예: PowerShell 창의
+# 현재 위치가 System32)에서 전체 경로로 실행하면 $PSScriptRoot가 빈 값이 되어
+# Get-ChildItem이 그 현재 위치에서 찾다가 못 찾는 걸로 실측됨. 컴파일된 실행
+# 파일 자신의 실제 경로(어디서 실행하든 변하지 않음)를 대신 사용한다.
+$scriptDir = $PSScriptRoot
+if (-not $scriptDir) {
+    try { $scriptDir = Split-Path -Parent ([System.Reflection.Assembly]::GetEntryAssembly().Location) } catch {}
+}
+if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
+$patchFile = Get-ChildItem $scriptDir -Filter '*.patch' | Select-Object -First 1
+if (-not $patchFile) { throw "$scriptDir 폴더에 .patch 파일이 없습니다." }
 Write-Ok "패치 파일: $($patchFile.Name)"
 
 # ------------------------------------------------------ [4] 패치 적용 --
