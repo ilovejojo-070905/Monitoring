@@ -25,9 +25,26 @@ param(
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow }
 
+# 자동 설치(GUI installer -> nsExec::ExecToLog) 경로에서 이 스크립트가 일부만
+# 실행되고 조용히 멈추는 현상이 실측으로 반복 확인됐는데(수동으로 같은 환경을
+# 똑같이 재현해 돌리면 매번 성공함), 그 설치 창은 끝나면 로그가 같이 사라져서
+# 사후에 원인을 짚을 방법이 없었다 -- host.ps1의 host-debug.log와 같은 이유로,
+# 매 실행마다 어디까지 도달했는지 파일에 남긴다.
+$diagLog = Join-Path $env:LOCALAPPDATA 'InfraSight\setup-remote-access.log'
+function Write-Diag($msg) {
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $diagLog -Parent) -ErrorAction SilentlyContinue | Out-Null
+        Add-Content -Path $diagLog -Value "$(Get-Date -Format o)  $msg" -Encoding utf8
+    } catch {}
+}
+Write-Diag "시작 (InstallDir=$InstallDir, PythonExe=$PythonExe)"
+
+try {
+
 $repoRemoteDir = Join-Path $InstallDir 'remote-access'
 if (-not (Test-Path $repoRemoteDir)) {
     Write-Warn2 '원격 접속 구성 파일(remote-access\)이 이 설치 버전에 없어 건너뜁니다.'
+    Write-Diag 'remote-access 폴더 없음 -- 건너뜀'
     return
 }
 
@@ -37,10 +54,12 @@ $extDir  = Join-Path $baseDir 'extension'
 $extDirExisted = Test-Path $extDir
 New-Item -ItemType Directory -Force -Path $hostDir | Out-Null
 New-Item -ItemType Directory -Force -Path $extDir  | Out-Null
+Write-Diag '디렉터리 준비 완료'
 
 Copy-Item (Join-Path $repoRemoteDir 'native-host\host.ps1') (Join-Path $hostDir 'host.ps1') -Force
 Copy-Item (Join-Path $repoRemoteDir 'native-host\host.bat') (Join-Path $hostDir 'host.bat') -Force
 Copy-Item (Join-Path $repoRemoteDir 'extension\background.js') (Join-Path $extDir 'background.js') -Force
+Write-Diag 'host.ps1/host.bat/background.js 복사 완료'
 
 # host.json의 "path"는 이 PC에서 host.bat가 실제로 있는 절대 경로라 머신마다
 # 달라진다(계정명이 다르면 %LOCALAPPDATA% 전체 경로가 달라짐) -- 그래서
@@ -55,17 +74,21 @@ $hostJsonObj = [ordered]@{
     allowed_origins = @("chrome-extension://$extensionId/")
 }
 ($hostJsonObj | ConvertTo-Json) | Set-Content -Path (Join-Path $hostDir 'host.json') -Encoding utf8
+Write-Diag 'host.json 생성 완료'
 
 # manifest.json의 externally_connectable.matches도 머신마다 다른 LAN IP가
 # 필요하다 (install.ps1의 인증서 발급과 같은 이유 -- storage.get_lan_ip()를
 # 그대로 재사용해 두 곳의 "이 PC의 LAN IP" 판단이 항상 일치하게 한다).
+Write-Diag 'LAN IP 조회 시작'
 $lanIp = (& $PythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
+Write-Diag "LAN IP 조회 완료: [$lanIp]"
 # -Encoding를 안 주면 BOM 없는 UTF-8 파일을 PowerShell 5.1이 시스템 ANSI
 # 코드페이지(CP949)로 잘못 읽어서 한글이 깨진다 -- 실측 확인: manifest.json의
 # "name"/"description" 필드가 "InfraSight ?먭꺽 ?묒냽" 처럼 깨져서 생성됐음
 # (JSON 형식 자체는 유효해서 Chrome이 로드는 하지만 표시 이름이 깨짐).
 $manifestTemplate = Get-Content (Join-Path $repoRemoteDir 'extension\manifest.json.template') -Raw -Encoding UTF8
 $manifestTemplate.Replace('__LAN_IP__', $lanIp) | Set-Content -Path (Join-Path $extDir 'manifest.json') -Encoding utf8 -NoNewline
+Write-Diag 'manifest.json 생성 완료'
 
 # Chrome Native Messaging Host 등록 (HKCU -- 관리자 권한 불필요, 이 로그인
 # 계정에서 Chrome이 조회하는 바로 그 위치).
@@ -73,6 +96,7 @@ $regKeyPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.infrasight.
 New-Item -Path $regKeyPath -Force | Out-Null
 Set-ItemProperty -Path $regKeyPath -Name '(default)' -Value (Join-Path $hostDir 'host.json')
 Write-Ok "원격 접속 Native Messaging Host 등록 완료 (LAN IP: $lanIp)"
+Write-Diag '레지스트리 등록 완료 -- 정상 종료'
 
 # host.ps1의 Resolve-Putty와 같은 위치들을 확인한다 (install.ps1 쪽에서
 # winget으로 이미 설치했으면 보통 바로 찾아지지만, 그 전에 수동으로 PuTTY를
@@ -102,4 +126,13 @@ if (-not $extDirExisted) {
     try { Start-Process 'explorer.exe' $extDir } catch {}
 } else {
     Write-Ok '확장 프로그램 파일 갱신 완료 (이미 등록되어 있다면 다시 로드할 필요 없음)'
+}
+
+} catch {
+    # 마지막으로 성공한 Write-Diag 체크포인트 다음 줄 어딘가에서 터졌다는
+    # 뜻이다 -- 여기서 실제 예외 내용까지 로그에 남긴 뒤 그대로 다시 던져서,
+    # install.ps1 쪽의 기존 try/catch(원격 접속 구성 실패를 무시하고 계속
+    # 진행하는 처리)는 지금과 똑같이 동작한다.
+    Write-Diag "예외 발생: $_ -- 위치: $($_.InvocationInfo.PositionMessage)"
+    throw
 }
