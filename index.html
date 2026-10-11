@@ -428,6 +428,8 @@
   .btn.primary{background:var(--accent-gradient);border-color:transparent;color:#fff;box-shadow:0 4px 18px rgba(124,92,255,.35)}
   .btn.primary:hover{filter:brightness(1.12);box-shadow:0 6px 26px rgba(124,92,255,.5);transform:translateY(-1px)}
   .btn:disabled{opacity:.4;cursor:default}
+  .remote-list-btn{background:#1e3a66;border-color:#1e3a66;color:#fff}
+  .remote-list-btn:hover{background:#2a4d85;border-color:#2a4d85}
 
   canvas{max-width:100%}
 
@@ -2450,7 +2452,7 @@ function renderNetwork(){
       <td class="mono" style="color:${n.reachable?'var(--text-dim)':'var(--crit)'}">${n.reachable? fmt0(n.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
       ${CURRENT_ROLE==='ADMIN' ? `<td>${n.ip ? `
-        <div style="display:flex;gap:4px" onclick="event.stopPropagation()">
+        <div style="display:flex;gap:4px;justify-content:center" onclick="event.stopPropagation()">
           <button type="button" class="btn remote-list-btn" data-remote-proto="ssh" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:12px;padding:6px 14px">SSH</button>
           <button type="button" class="btn remote-list-btn" data-remote-proto="telnet" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:12px;padding:6px 14px">Telnet</button>
         </div>` : '<span style="color:var(--text-faint)">—</span>'}</td>` : ''}
