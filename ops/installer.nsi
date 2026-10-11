@@ -47,12 +47,23 @@ ShowInstDetails show
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "지금 바로 InfraSight 열기 (https://localhost:8443)"
 !define MUI_FINISHPAGE_RUN_FUNCTION "LaunchInfraSight"
+; 설치 진행 중(InstFiles 페이지)에 탐색기 창이 끼어들지 않도록, 원격 접속
+; 확장 프로그램 폴더 열기는 설치가 전부 끝나고 "마침" 버튼을 누르는 바로 그
+; 순간으로 미뤄둔다 (ops\setup-remote-access.ps1의 같은 자리 주석 참고).
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE "OnFinishLeave"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_LANGUAGE "Korean"
 
 Function LaunchInfraSight
     ExecShell "open" "https://localhost:8443"
+FunctionEnd
+
+Function OnFinishLeave
+    # 매번 열어도 그냥 탐색기 창 하나 뜨는 정도라 해롭지 않다 -- 최초 1회인지
+    # 판단하는 로직은 setup-remote-access.ps1 안에만 있고 그걸 여기로 끌어올
+    # 뾰족한 방법이 없어서, 간단하게 항상 연다.
+    ExecShell "open" "$LOCALAPPDATA\InfraSight\extension"
 FunctionEnd
 
 ; ------------------------------------------------------------------- 설치 --

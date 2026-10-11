@@ -123,7 +123,10 @@ if (-not $extDirExisted) {
     Write-Host "      3. '압축해제된 확장 프로그램을 로드합니다' 클릭 -> 아래 폴더 선택:"
     Write-Host "         $extDir" -ForegroundColor Cyan
     Write-Host ''
-    try { Start-Process 'explorer.exe' $extDir } catch {}
+    # 이 폴더를 탐색기로 자동으로 여는 건 여기(설치 진행 중)가 아니라
+    # ops\installer.nsi의 마침 버튼 콜백(OnFinishLeave)에서 한다 -- 여기서
+    # 열면 GUI 설치 마법사가 "설치 중" 화면일 때 탐색기 창이 불쑥 끼어들어서
+    # 사용자가 아직 마침 버튼도 안 눌렀는데 다른 창이 앞에 뜨는 흐름이 됐었다.
 } else {
     Write-Ok '확장 프로그램 파일 갱신 완료 (이미 등록되어 있다면 다시 로드할 필요 없음)'
 }

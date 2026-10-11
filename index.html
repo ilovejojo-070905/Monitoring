@@ -867,6 +867,7 @@ function reAuth(){
   if(_reauthPromise) return _reauthPromise;
   $('#loginOverlay').style.display = 'flex';
   $('#loginError').textContent = '';
+  $('#loginUsername').focus();
   _reauthPromise = new Promise((resolve)=>{
     $('#loginForm').addEventListener('submit', async function onSubmit(e){
       e.preventDefault();
@@ -894,6 +895,7 @@ function reAuth(){
           CSRF_TOKEN = null;
           $('#loginPassword').value = '';
           $('#loginError').textContent = changed ? '비밀번호가 변경되었습니다. 새 비밀번호로 다시 로그인해주세요.' : '';
+          if(changed) $('#loginPassword').focus();
           return;
         }
         _completeLogin(j);
@@ -925,6 +927,7 @@ function promptForcedPasswordChange(currentPassword){
     $('#forcePwError').textContent = '';
     $('#forcePwNew').value = ''; $('#forcePwNew2').value = '';
     $('#forcePwOverlay').style.display = 'flex';
+    $('#forcePwNew').focus();
     $('#forcePwForm').addEventListener('submit', async function onSubmit(e){
       e.preventDefault();
       $('#forcePwError').textContent = '';
