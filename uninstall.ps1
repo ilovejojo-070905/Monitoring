@@ -34,6 +34,34 @@ function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow }
 
+# ---------------------------------------------------------------- elevation --
+# install.ps1과 동일한 이유로 필요하다 -- 예약 작업 해제(Unregister-ScheduledTask)와
+# 방화벽 규칙 제거는 관리자 권한이 있어야 한다. 실측 확인: 관리자 권한 없이
+# 돌렸더니 Unregister-ScheduledTask가 "액세스가 거부되었습니다"로 조용히
+# 실패했는데, 그 뒤에 무조건 찍히던 "해제했습니다" 메시지 때문에 실제로는
+# 작업이 그대로 남아있는데도 성공한 것처럼 보였다 (이 메시지 자체도 아래에서
+# 같이 고침).
+function Test-Admin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+if (-not (Test-Admin)) {
+    Write-Host "관리자 권한이 필요합니다 (예약 작업 해제 · 방화벽 규칙 제거). UAC 승인 창을 확인해주세요..." -ForegroundColor Yellow
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    if ($InstallDir) { $argList += @('-InstallDir', $InstallDir) }
+    if ($NoBackup)   { $argList += '-NoBackup' }
+    if ($Force)      { $argList += '-Force' }
+    try {
+        Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
+    } catch {
+        Write-Host "`n관리자 권한 승인이 취소되었거나 실패했습니다." -ForegroundColor Red
+        Write-Host "이 파일을 다시 실행한 뒤, UAC 창에서 '예'를 눌러주세요." -ForegroundColor Yellow
+        Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
+        try { [void][System.Console]::ReadKey($true) } catch { Start-Sleep -Seconds 3 }
+    }
+    exit
+}
+
 try {
 
 Write-Host '============================================================' -ForegroundColor Cyan
@@ -77,8 +105,12 @@ $ruleNames = @(
 )
 foreach ($name in $ruleNames) {
     if (Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue) {
-        Remove-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue
-        Write-Ok "제거됨: $name"
+        try {
+            Remove-NetFirewallRule -DisplayName $name -ErrorAction Stop
+            Write-Ok "제거됨: $name"
+        } catch {
+            Write-Warn2 "제거 실패: $name ($_)"
+        }
     }
 }
 
@@ -89,14 +121,22 @@ Write-Step '[5/7] 원격 접속(SSH/Telnet) 구성 해제'
 $regKeyPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.infrasight.remote'
 if (Test-Path $regKeyPath) {
     Remove-Item $regKeyPath -Force -ErrorAction SilentlyContinue
-    Write-Ok 'Native Messaging Host 레지스트리 등록 해제됨'
+    if (-not (Test-Path $regKeyPath)) {
+        Write-Ok 'Native Messaging Host 레지스트리 등록 해제됨'
+    } else {
+        Write-Warn2 '레지스트리 등록 해제에 실패했습니다.'
+    }
 }
 $remoteBase = Join-Path $env:LOCALAPPDATA 'InfraSight'
 foreach ($sub in @('native-host', 'extension')) {
     $p = Join-Path $remoteBase $sub
     if (Test-Path $p) {
         Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Ok "삭제됨: $p"
+        if (-not (Test-Path $p)) {
+            Write-Ok "삭제됨: $p"
+        } else {
+            Write-Warn2 "삭제 실패: $p"
+        }
     }
 }
 Write-Warn2  'Chrome에 직접 로드해둔 확장 프로그램은 chrome://extensions에서 따로 제거해주세요 (이 스크립트가 어디 있는지 알 수 없음).'
