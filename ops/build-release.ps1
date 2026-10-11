@@ -46,6 +46,7 @@ try {
     Import-Module ps2exe
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'install.ps1') -outputFile (Join-Path $outDir "InfraSight-Setup-$date-$sha.exe") -title 'InfraSight Setup' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile $tempPs1 -outputFile (Join-Path $outDir "InfraSight-Patch-$date-$sha.exe") -title 'InfraSight Patch' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
+    Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall.ps1') -outputFile (Join-Path $outDir "InfraSight-Uninstall-$date-$sha.exe") -title 'InfraSight Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
 
     Remove-Item $tempPs1 -Force -ErrorAction SilentlyContinue
     Write-Host "`n빌드 완료: $outDir" -ForegroundColor Green
