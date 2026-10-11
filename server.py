@@ -372,6 +372,14 @@ def api_login():
     session['csrf'] = csrf_token
     session['boot'] = BOOT_TIME
     session.permanent = True
+    # 관리자 계정은 30분 유휴 자동로그아웃 대상에서 제외해달라는 요청 --
+    # Flask는 session.permanent_session_lifetime로 세션별 수명을 전역
+    # PERMANENT_SESSION_LIFETIME(30분) 위에 개별 override할 수 있다. 완전한
+    # "무제한"은 아니고 1년으로 뒀는데, 이 서버 자체가 백엔드 재시작/재부팅마다
+    # BOOT_TIME 불일치로 모든 세션을 강제 재로그인시키므로(위 BOOT_TIME 주석
+    # 참고) 실질적으로는 "재시작 전까지 로그아웃 안 됨"과 같다.
+    if result['role'] == 'ADMIN':
+        session.permanent_session_lifetime = timedelta(days=365)
     storage.write_audit(result['username'], 'LOGIN', source_ip=ip)
     return jsonify({'ok': True, 'username': result['username'], 'role': result['role'], 'csrfToken': csrf_token,
                      'mustChangePassword': result.get('must_change_password', False)})
@@ -422,6 +430,8 @@ def api_totp_verify():
     session['csrf'] = csrf_token
     session['boot'] = BOOT_TIME
     session.permanent = True
+    if user['role'] == 'ADMIN':  # see the matching comment in api_login() above
+        session.permanent_session_lifetime = timedelta(days=365)
     storage.write_audit(user['username'], 'LOGIN (TOTP)' if not used_recovery else 'LOGIN (recovery code)', source_ip=ip)
     resp = {'ok': True, 'username': user['username'], 'role': user['role'], 'csrfToken': csrf_token,
             'mustChangePassword': bool(user['must_change_password'])}

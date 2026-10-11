@@ -82,6 +82,25 @@ try {
     Pop-Location
 }
 
+# --------------------------------------------------- [5] 원격 접속 구성 --
+# install.ps1으로 이미 설치된 PC에는 보통 python도 이미 있다 -- 못 찾으면
+# (설치가 아주 오래돼 PATH가 갱신되기 전이거나 특이 케이스) 이 단계만
+# 건너뛰고 나머지 패치 적용 결과는 그대로 둔다.
+try {
+    $pythonExe = (Get-Command python -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -notmatch '\\WindowsApps\\' } | Select-Object -First 1).Source
+    if (-not $pythonExe) {
+        $pythonExe = (Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" -ErrorAction SilentlyContinue -File | Select-Object -First 1).FullName
+    }
+    if ($pythonExe) {
+        & (Join-Path $InstallDir 'ops\setup-remote-access.ps1') -InstallDir $InstallDir -PythonExe $pythonExe
+    } else {
+        Write-Warn2 'python을 찾을 수 없어 원격 접속(SSH/Telnet) 구성을 건너뜁니다.'
+    }
+} catch {
+    Write-Warn2 "원격 접속 구성 중 문제가 있었습니다 (무시하고 계속합니다): $_"
+}
+
 Write-Host "`n============================================================" -ForegroundColor Green
 Write-Host ' 완료되었습니다!' -ForegroundColor Green
 Write-Host ' 브라우저에서 강력 새로고침(Ctrl+F5) 해주세요.' -ForegroundColor Yellow

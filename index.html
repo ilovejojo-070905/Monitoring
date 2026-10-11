@@ -2400,6 +2400,7 @@ function renderNetworkSkeleton(){
           <th data-sort-col="ip">IP<span class="sort-arrow" id="net-sort-ip"></span></th>
           <th data-sort-col="group">그룹<span class="sort-arrow" id="net-sort-group"></span></th>
           <th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th>
+          ${CURRENT_ROLE==='ADMIN' ? '<th>원격 접속</th>' : ''}
         </tr></thead>
         <tbody id="net-tbody"></tbody>
       </table></div>
@@ -2448,9 +2449,20 @@ function renderNetwork(){
       <td class="mono">${n.reachable && typeof n.trafficIn==='number' ? fmtMbps((n.trafficIn||0)+(n.trafficOut||0))+' Mbps' : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono" style="color:${n.reachable?'var(--text-dim)':'var(--crit)'}">${n.reachable? fmt0(n.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
-    </tr>`).join('') || `<tr><td colspan="11"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
+      ${CURRENT_ROLE==='ADMIN' ? `<td>${n.ip ? `
+        <div style="display:flex;gap:4px" onclick="event.stopPropagation()">
+          <button type="button" class="btn remote-list-btn" data-remote-proto="ssh" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:10px;padding:2px 7px">SSH</button>
+          <button type="button" class="btn remote-list-btn" data-remote-proto="telnet" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:10px;padding:2px 7px">Telnet</button>
+        </div>` : '<span style="color:var(--text-faint)">—</span>'}</td>` : ''}
+    </tr>`).join('') || `<tr><td colspan="${CURRENT_ROLE==='ADMIN'?12:11}"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
   $$('#net-tbody tr[data-id]').forEach(tr=>{
     tr.addEventListener('click', ()=>{ selectedNetId = tr.dataset.id; renderNetwork(); openDrawerFor(tr.dataset.id); });
+  });
+  $$('#net-tbody .remote-list-btn').forEach(btn=>{
+    btn.addEventListener('click', (ev)=>{
+      ev.stopPropagation();
+      remoteConnect(btn.dataset.remoteProto, btn.dataset.ip, null, btn.dataset.name);
+    });
   });
   wireRowCheckboxes('net-tbody', 'net');
   updateSelectBar('net');
@@ -5518,11 +5530,6 @@ function wireMaintenanceLogPanel(){
 
 /* ================= DRAWER ================= */
 let openDrawerId = null;
-// 네트워크 장비 드로어의 "원격 접속" 카드에서 입력한 사용자명 -- 2.2초 폴링마다
-// drawPingDevice()가 #drawerBody를 통째로 새로 그리므로, input 값 자체(DOM)가
-// 아니라 이 모듈 변수에 따로 들고 있어야 타이핑 중간에 폴링이 와도 지워지지
-// 않는다 (collectionStateBlock에서 이미 겪은 것과 같은 함정).
-let remoteAccessUsername = '';
 function collectionStateLabel(cs){ return {good:'정상', warn:'주의', crit:'장애', nodata:'미수집', unknown:'알 수 없음'}[cs] || '알 수 없음'; }
 function collectionStatePillClass(cs){ return {good:'good', warn:'warn', crit:'crit', nodata:'neutral', unknown:'info'}[cs] || 'neutral'; }
 function fmtWhen(ms){ return ms ? new Date(ms).toLocaleString('ko-KR') : '-'; }
@@ -5802,11 +5809,16 @@ function fmtMbps(v){
 // #remote-status에 안내를 띄워 복사용 명령어 쪽으로 유도한다 -- chrome.runtime
 // 자체가 없는 브라우저(Firefox 등)에서도 여기서 조용히 막힌다.
 const INFRASIGHT_REMOTE_EXTENSION_ID = 'ogpngpbjjcgifjaodhhnejonanmhhdhd';
-function remoteConnect(protocol, host, user){
-  const statusEl = $('#remote-status');
-  if(statusEl) statusEl.textContent = '';
+function remoteConnectFailToast(deviceName, protocol, host, detail){
+  const manualCmd = protocol==='ssh' ? `ssh ${host}` : `putty.exe -telnet ${host}`;
+  showToast({
+    category: '원격 접속', source: deviceName, severity: 'warn',
+    message: `${protocol==='ssh'?'SSH':'Telnet'} 접속 실패 (${detail}) -- 수동 명령어: ${manualCmd}`,
+  });
+}
+function remoteConnect(protocol, host, user, deviceName){
   if(typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage){
-    if(statusEl){ statusEl.textContent = '이 브라우저에서는 확장 프로그램을 쓸 수 없습니다 -- 아래 명령어를 복사해주세요.'; statusEl.style.color = 'var(--warn)'; }
+    remoteConnectFailToast(deviceName, protocol, host, '이 브라우저에서는 확장 프로그램을 쓸 수 없습니다');
     return;
   }
   const msg = {protocol, host};
@@ -5815,15 +5827,12 @@ function remoteConnect(protocol, host, user){
     chrome.runtime.sendMessage(INFRASIGHT_REMOTE_EXTENSION_ID, msg, (response)=>{
       const lastErr = chrome.runtime.lastError;
       if(lastErr || !response || !response.ok){
-        if(statusEl){
-          statusEl.textContent = '확장 프로그램이 설치되어 있지 않거나 응답이 없습니다 -- 아래 명령어를 복사해주세요. '
-            + '(' + (lastErr ? lastErr.message : (response && response.error) || '응답 없음') + ')';
-          statusEl.style.color = 'var(--warn)';
-        }
+        remoteConnectFailToast(deviceName, protocol, host,
+          lastErr ? lastErr.message : (response && response.error) || '확장 프로그램 응답 없음');
       }
     });
   }catch(err){
-    if(statusEl){ statusEl.textContent = '확장 프로그램 호출 실패 -- 아래 명령어를 복사해주세요. (' + err.message + ')'; statusEl.style.color = 'var(--warn)'; }
+    remoteConnectFailToast(deviceName, protocol, host, err.message);
   }
 }
 function drawPingDevice(e, catLabel){
@@ -5895,39 +5904,6 @@ function drawPingDevice(e, catLabel){
       </div>
     </div>` : '';
 
-  // SSH/Telnet은 브라우저가 직접 열 수 없으므로(원시 소켓 불가) "InfraSight
-  // 원격 접속" Chrome 확장 프로그램(Native Messaging)에 메시지를 보내 이 PC에
-  // 설치된 PuTTY를 실행만 시킨다 -- 로그인 자격증명은 InfraSight에 전혀
-  // 저장하지 않고, 사용자명도 입력 즉시 그 PC 브라우저 안에서만 쓰인다.
-  //
-  // ssh://, telnet:// 같은 URI 핸들러를 직접 쓰지 않는 이유: 실사용 중 확인한
-  // 사실로, Chrome이 페이지에 있는 링크 클릭으로 외부 앱을 여는 걸 ssh 같은
-  // 소수의 알려진 scheme에서만 허용하고(심지어 그마저도 한 번 해석한 핸들러를
-  // 캐싱해서 레지스트리를 나중에 바꿔도 반영하지 않을 때가 있었다) telnet이나
-  // 새로 만든 임의의 scheme은 조용히 막아버렸다. Native Messaging은 이런
-  // URL 핸들러 캐싱/허용목록과 완전히 무관한 별도 경로라 매번 확실하게
-  // 동작한다. 확장이 설치되어 있지 않은 PC를 위해 복사용 명령어도 함께 둔다.
-  const remoteAccessCard = (catLabel==='네트워크 (NMS)' && e.ip) ? `
-    <div class="card" style="min-width:0">
-      <div class="card-head"><h3>원격 접속</h3><span class="sub">이 PC에 설치된 SSH/Telnet 클라이언트를 엽니다</span></div>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div class="field" style="margin:0">
-          <label style="font-size:11px;color:var(--text-faint)">사용자명 (선택, SSH만 해당)</label>
-          <input type="text" id="remote-username" placeholder="예: admin" value="${escapeHtml(remoteAccessUsername)}" style="width:100%">
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button type="button" class="btn primary" id="remote-ssh-btn" data-ip="${escapeHtml(e.ip)}">SSH 접속</button>
-          <button type="button" class="btn" id="remote-telnet-btn" data-ip="${escapeHtml(e.ip)}">Telnet 접속</button>
-        </div>
-        <div id="remote-status" style="font-size:11.5px;min-height:14px"></div>
-        <div style="display:flex;align-items:center;gap:8px;background:var(--surface-2);border-radius:var(--radius-sm);padding:7px 10px">
-          <code id="remote-ssh-cmd" class="mono" style="flex:1;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">ssh ${escapeHtml(remoteAccessUsername ? remoteAccessUsername+'@'+e.ip : e.ip)}</code>
-          <button type="button" class="btn" id="remote-copy-cmd" style="font-size:11px;padding:3px 8px;flex:none">복사</button>
-        </div>
-        <p style="font-size:11px;color:var(--text-faint);line-height:1.5;margin:0">버튼이 동작하지 않으면 "InfraSight 원격 접속" 확장 프로그램이 이 브라우저에 설치되어 있지 않은 것입니다 -- 위 명령어를 복사해 터미널에서 직접 실행하세요.</p>
-      </div>
-    </div>` : '';
-
   const pingGrid2 = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px';
   const hasRow2 = cpuKv || memKv || ifaceKv || battKv;
   $('#drawerBody').innerHTML = `
@@ -5938,7 +5914,6 @@ function drawPingDevice(e, catLabel){
     </div>
     ${hasRow2 ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:10px">${cpuKv}${memKv}${ifaceKv}${battKv}</div>` : ''}
     ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
-    ${remoteAccessCard}
     <div style="${pingGrid2}">
       ${trafficCard}
       ${ifaceCard}
@@ -5969,18 +5944,6 @@ function drawPingDevice(e, catLabel){
         `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${reEnvCardHtml}${collectionStateBlock(e)}${agentInfoBlock(e)}</div>`);
     });
   });
-  const remoteUserEl = $('#remote-username');
-  if(remoteUserEl){
-    remoteUserEl.addEventListener('input', ()=>{
-      remoteAccessUsername = remoteUserEl.value.trim();
-      $('#remote-ssh-cmd').textContent = `ssh ${remoteAccessUsername ? remoteAccessUsername+'@'+e.ip : e.ip}`;
-    });
-    $('#remote-copy-cmd').addEventListener('click', async ()=>{
-      try{ await navigator.clipboard.writeText($('#remote-ssh-cmd').textContent); }catch(err){}
-    });
-    $('#remote-ssh-btn').addEventListener('click', ()=> remoteConnect('ssh', e.ip, remoteAccessUsername));
-    $('#remote-telnet-btn').addEventListener('click', ()=> remoteConnect('telnet', e.ip, null));
-  }
   if(drawerBodyEl) drawerBodyEl.scrollTop = prevBodyScroll;
   const newIfaceEl = document.getElementById('iface-list');
   if(newIfaceEl) newIfaceEl.scrollTop = prevIfaceScroll;

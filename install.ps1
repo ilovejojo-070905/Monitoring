@@ -92,7 +92,7 @@ Write-Host " 설치 위치: $InstallDir"
 Write-Host '============================================================' -ForegroundColor Cyan
 
 # --------------------------------------------------------- [1] 필수 도구 --
-Write-Step '[1/8] 필수 도구 확인 (Git / Python / Caddy / mkcert)'
+Write-Step '[1/9] 필수 도구 확인 (Git / Python / Caddy / mkcert)'
 
 function Install-IfMissing([string]$cmd, [string]$wingetId, [string]$label) {
     # Same WindowsApps-stub trap Resolve-ExeAndAddToPath guards against below
@@ -161,7 +161,7 @@ Write-Ok "caddy:  $caddyExe"
 Write-Ok "mkcert: $mkcertExe"
 
 # --------------------------------------------------------- [2] 프로젝트 받기 --
-Write-Step "[2/8] 프로젝트 받기 ($InstallDir)"
+Write-Step "[2/9] 프로젝트 받기 ($InstallDir)"
 if (Test-Path (Join-Path $InstallDir '.git')) {
     Write-Ok '이미 받아져 있어 최신 상태로 갱신합니다 (git fetch + reset --hard)'
     Push-Location $InstallDir
@@ -193,12 +193,12 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
 }
 
 # ------------------------------------------------------- [3] 파이썬 패키지 --
-Write-Step '[3/8] 파이썬 패키지 설치 (requirements.txt)'
+Write-Step '[3/9] 파이썬 패키지 설치 (requirements.txt)'
 Invoke-Native { & $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt') }
 Write-Ok '설치 완료'
 
 # ------------------------------------------------------------- [4] 인증서 --
-Write-Step '[4/8] HTTPS 인증서 발급 (이 PC의 LAN IP 기준)'
+Write-Step '[4/9] HTTPS 인증서 발급 (이 PC의 LAN IP 기준)'
 Push-Location $InstallDir
 Invoke-Native { & $mkcertExe -install }
 $lanIp = (& $pythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
@@ -208,14 +208,14 @@ Write-Ok "인증서 발급 완료 (LAN IP: $lanIp)"
 Pop-Location
 
 # --------------------------------------------------------- [5] DB 초기화 --
-Write-Step '[5/8] 데이터베이스 초기화'
+Write-Step '[5/9] 데이터베이스 초기화'
 Push-Location $InstallDir
 & $pythonExe -c "import storage; storage.init_db()"
 Pop-Location
 Write-Ok '완료'
 
 # ------------------------------------------------------- [6] 관리자 계정 --
-Write-Step '[6/8] 관리자 계정'
+Write-Step '[6/9] 관리자 계정'
 Push-Location $InstallDir
 $hasAdmin = (& $pythonExe -c "import storage; c=storage.get_db(); r=c.execute('SELECT 1 FROM users LIMIT 1').fetchone(); c.close(); print(1 if r else 0)").Trim()
 if ($hasAdmin -eq '1') {
@@ -232,11 +232,11 @@ if ($hasAdmin -eq '1') {
 Pop-Location
 
 # --------------------------------------------------------- [7] 자동 시작 --
-Write-Step '[7/8] 로그온 시 자동 시작 등록'
+Write-Step '[7/9] 로그온 시 자동 시작 등록'
 & (Join-Path $InstallDir 'ops\register-task.ps1')
 
 # ----------------------------------------------------------- [8] 방화벽 --
-Write-Step '[8/8] 방화벽 인바운드 규칙'
+Write-Step '[8/9] 방화벽 인바운드 규칙'
 $rules = @(
     @{ Name = 'InfraSight HTTPS (Caddy)'; Port = 8443; Protocol = 'TCP' },
     @{ Name = 'InfraSight HTTP (agents)';  Port = 5057; Protocol = 'TCP' },
@@ -257,6 +257,14 @@ foreach ($r in $rules) {
     } catch {
         Write-Warn2 "방화벽 규칙 추가 실패 ($($r.Name)): $_"
     }
+}
+
+# ----------------------------------------------------- [9] 원격 접속 구성 --
+Write-Step '[9/9] 네트워크 장비 원격 접속(SSH/Telnet) 구성'
+try {
+    & (Join-Path $InstallDir 'ops\setup-remote-access.ps1') -InstallDir $InstallDir -PythonExe $pythonExe
+} catch {
+    Write-Warn2 "원격 접속 구성 중 문제가 있었습니다 (무시하고 계속합니다): $_"
 }
 
 # ------------------------------------------------------------ 지금 시작 --

@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "InfraSight 원격 접속",
+  "version": "1.0",
+  "description": "InfraSight에서 SSH/Telnet 버튼 클릭으로 PuTTY를 실행합니다.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyZqL5kFgidW/91outui65zu/W755NhXJTfsrhHayhOVvt/WMT2CbTPahNVTsiWT7D1/hTWmlP8MXWaBbtuvt2ef3YRKSopGRN2oEdPZZo8e9K4CuaW5KQWMCSlQKDDdg6Bg40e5KJA0ex6Bfaha6HCIAbLP6hu3YgtEuO5uBUtQcsRM/aRWVI01eUZEoOJW5gBt3If1Q83LV+F9sITM7R/r3YfWbJBA9lHuC7z1lqfqTe5diPz2Alwd3KPF1KRbUT5f1WR/DWa63bPKlVi8zGoVq1jFUtdpQIfa5hwtn9Spmq1oG2LGgnjyZD5RwW4m+OLxJjzGiwj035HLyDI90AwIDAQAB",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "externally_connectable": {
+    "matches": [
+      "https://localhost:8443/*",
+      "https://__LAN_IP__:8443/*"
+    ]
+  },
+  "permissions": ["nativeMessaging"]
+}
