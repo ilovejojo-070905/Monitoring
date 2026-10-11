@@ -188,8 +188,33 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
     if ($LASTEXITCODE -ne 0) { throw "git reset --hard 실패 (종료 코드 $LASTEXITCODE)." }
     Pop-Location
 } else {
-    if ((Test-Path $InstallDir) -and (Get-ChildItem $InstallDir -Force -ErrorAction SilentlyContinue)) {
-        throw "설치 위치($InstallDir)가 이미 있고 비어있지 않은데 git 저장소도 아닙니다. 다른 -InstallDir 경로를 지정해주세요."
+    if (Test-Path $InstallDir) {
+        $existingItems = Get-ChildItem $InstallDir -Force -ErrorAction SilentlyContinue
+        if ($existingItems) {
+            # 실패했거나 제거된 이전 설치 시도가 남긴 찌꺼기(빈 DB, logs\ 등)만
+            # 있다면 "git 저장소가 아니다"라는 이유로 막을 필요가 없다 --
+            # 실측: 드라이브 루트 버그 때문에 실패한 GUI Setup 시도가
+            # infrasight.db(0바이트)/logs\를 남겼고, 그걸 고친 뒤 같은 경로로
+            # 재시도할 때마다 이 에러로 다시 막히는 상황이 실제로 발생했다.
+            # 알려진 InfraSight 산출물 이름만 있으면 자동으로 치우고,
+            # 그 외의(사람이 직접 만든 다른 파일 등) 뭔가가 하나라도 섞여
+            # 있으면 여전히 안전하게 막고 다른 경로를 요청한다.
+            $knownArtifacts = @(
+                'infrasight.db', 'infrasight.db-journal', 'infrasight.db-wal', 'infrasight.db-shm',
+                'logs', 'run', 'certs',
+                '.infrasight_secret_key', '.infrasight_secret_key_backup_*', '.infrasight_credentials_key',
+                'server.log', 'caddy.log'
+            )
+            $unknownItems = $existingItems | Where-Object {
+                $itemName = $_.Name
+                -not ($knownArtifacts | Where-Object { $itemName -like $_ })
+            }
+            if ($unknownItems) {
+                throw "설치 위치($InstallDir)가 이미 있고 비어있지 않은데 git 저장소도 아닙니다. 다른 -InstallDir 경로를 지정해주세요."
+            }
+            Write-Warn2 "이전 설치 시도의 찌꺼기($($existingItems.Count)개 항목)를 정리하고 새로 시작합니다."
+            $existingItems | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     # 설치 위치가 드라이브 바로 아래(예: D:\InfraSight)면 Split-Path -Parent가
     # "D:\" 하나만 돌려주는데, New-Item -ItemType Directory에 드라이브 루트를
