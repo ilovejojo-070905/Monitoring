@@ -107,11 +107,13 @@ try {
     Pop-Location
 }
 Write-Diag "LAN IP 조회 완료: [$lanIp]"
-# -Encoding를 안 주면 BOM 없는 UTF-8 파일을 PowerShell 5.1이 시스템 ANSI
-# 코드페이지(CP949)로 잘못 읽어서 한글이 깨진다 -- 실측 확인: manifest.json의
-# "name"/"description" 필드가 "InfraSight ?먭꺽 ?묒냽" 처럼 깨져서 생성됐음
-# (JSON 형식 자체는 유효해서 Chrome이 로드는 하지만 표시 이름이 깨짐).
-$manifestTemplate = Get-Content (Join-Path $repoRemoteDir 'extension\manifest.json.template') -Raw -Encoding UTF8
+# Get-Content -Encoding UTF8는 대부분 맞게 읽지만, 실측으로 같은 PC·같은
+# 스크립트에서 간헐적으로(원인을 명확히 못 짚었음 -- 재현 조건이 일정하지
+# 않았다) 시스템 ANSI 코드페이지(CP949)로 깨져 읽혀서 manifest.json의
+# "name"/"description"이 깨진 채로 생성되는 걸 여러 번 확인했다. Get-Content의
+# -Encoding 매개변수 경로를 아예 피하고, 콘솔 상태에 영향받지 않는 .NET 파일
+# API로 직접 읽도록 바꾼다 -- 이 방식은 지금까지 깨진 적이 없었다.
+$manifestTemplate = [System.IO.File]::ReadAllText((Join-Path $repoRemoteDir 'extension\manifest.json.template'), (New-Object System.Text.UTF8Encoding $false))
 # host.json과 같은 이유로 -Encoding utf8(BOM 붙음) 대신 BOM 없는 .NET
 # UTF8Encoding을 직접 쓴다 -- Chrome의 확장 프로그램 매니페스트 파서도 BOM이
 # 있으면 "압축해제된 확장 프로그램을 로드"할 때 파싱에 실패할 수 있다.
