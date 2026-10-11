@@ -60,7 +60,11 @@ $hostJsonObj = [ordered]@{
 # 필요하다 (install.ps1의 인증서 발급과 같은 이유 -- storage.get_lan_ip()를
 # 그대로 재사용해 두 곳의 "이 PC의 LAN IP" 판단이 항상 일치하게 한다).
 $lanIp = (& $PythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
-$manifestTemplate = Get-Content (Join-Path $repoRemoteDir 'extension\manifest.json.template') -Raw
+# -Encoding를 안 주면 BOM 없는 UTF-8 파일을 PowerShell 5.1이 시스템 ANSI
+# 코드페이지(CP949)로 잘못 읽어서 한글이 깨진다 -- 실측 확인: manifest.json의
+# "name"/"description" 필드가 "InfraSight ?먭꺽 ?묒냽" 처럼 깨져서 생성됐음
+# (JSON 형식 자체는 유효해서 Chrome이 로드는 하지만 표시 이름이 깨짐).
+$manifestTemplate = Get-Content (Join-Path $repoRemoteDir 'extension\manifest.json.template') -Raw -Encoding UTF8
 $manifestTemplate.Replace('__LAN_IP__', $lanIp) | Set-Content -Path (Join-Path $extDir 'manifest.json') -Encoding utf8 -NoNewline
 
 # Chrome Native Messaging Host 등록 (HKCU -- 관리자 권한 불필요, 이 로그인
