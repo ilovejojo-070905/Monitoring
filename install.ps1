@@ -191,7 +191,17 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
     if ((Test-Path $InstallDir) -and (Get-ChildItem $InstallDir -Force -ErrorAction SilentlyContinue)) {
         throw "설치 위치($InstallDir)가 이미 있고 비어있지 않은데 git 저장소도 아닙니다. 다른 -InstallDir 경로를 지정해주세요."
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir -Parent) | Out-Null
+    # 설치 위치가 드라이브 바로 아래(예: D:\InfraSight)면 Split-Path -Parent가
+    # "D:\" 하나만 돌려주는데, New-Item -ItemType Directory에 드라이브 루트를
+    # 그대로 넘기면 "만들 디렉터리 이름이 없다"는 이유로 .NET이 거부한다
+    # (System.ArgumentException: 경로의 형식이 잘못되었습니다 -- 실측 확인:
+    # New-Item -ItemType Directory -Force -Path "D:\" 단독 실행만으로도 재현됨).
+    # 그 부모가 이미 존재하면(드라이브 루트는 항상 존재) 애초에 만들 필요도
+    # 없으므로, 없을 때만 만든다.
+    $parentDir = Split-Path $InstallDir -Parent
+    if ($parentDir -and -not (Test-Path $parentDir)) {
+        New-Item -ItemType Directory -Force -Path $parentDir | Out-Null
+    }
     Invoke-Native { & $gitExe clone $RepoUrl $InstallDir }
     if ($LASTEXITCODE -ne 0) { throw "git clone 실패 (종료 코드 $LASTEXITCODE). 네트워크 연결을 확인해주세요." }
     Write-Ok '클론 완료'
@@ -334,6 +344,10 @@ Start-Process "https://localhost:8443"
     Write-Host "`n============================================================" -ForegroundColor Red
     Write-Host ' 설치 중 오류가 발생했습니다' -ForegroundColor Red
     Write-Host " $_" -ForegroundColor Red
+    # "$_"만으로는 메시지 텍스트만 보이고 정확히 어느 줄에서 터졌는지 안 보여서,
+    # 애매한 .NET 예외 메시지(예: "경로의 형식이 잘못되었습니다")만으론 원인을
+    # 못 짚는 경우가 실제로 있었다 -- 줄 번호/코드까지 같이 찍는다.
+    if ($_.InvocationInfo) { Write-Host " 위치: $($_.InvocationInfo.PositionMessage)" -ForegroundColor Red }
     Write-Host '============================================================' -ForegroundColor Red
     Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
     # ReadKey는 실제 콘솔에서 더블클릭으로 직접 실행했을 때나 통하는 방식이다
