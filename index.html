@@ -2914,7 +2914,7 @@ function renderRegisterSkeleton(){
           </div>
 
           <div class="form-grid" data-mode-group="snmp" style="margin-top:14px;display:none">
-            <div class="field" id="f-snmp-community-wrap"><label>Community</label><input type="text" id="f-snmp-community" value="public" placeholder="public"></div>
+            <div class="field" id="f-snmp-community-wrap"><label>Community</label><input type="text" id="f-snmp-community" placeholder="public"></div>
             <div class="field"><label>SNMP 버전</label><select id="f-snmp-version"><option value="v2c">v2c</option><option value="v1">v1</option><option value="v3">v3</option></select></div>
             <div class="field"><label>포트</label><input type="number" id="f-snmp-port" value="161" min="1" max="65535"></div>
           </div>
@@ -5910,6 +5910,10 @@ function drawPingDevice(e, catLabel){
       </div>
     </div>` : '';
 
+  const responseTimeCard = `
+    <div class="card" style="min-width:0"><div class="card-head"><h3>응답시간 추이</h3><span class="sub">${isSnmp?'SNMP':'Ping / 포트 확인'} · 최근 60초</span></div>
+      <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>`;
+
   const pingGrid2 = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px';
   const hasRow2 = cpuKv || memKv || ifaceKv || battKv;
   $('#drawerBody').innerHTML = `
@@ -5926,6 +5930,7 @@ function drawPingDevice(e, catLabel){
     <div style="${pingGrid2}">
       ${envCard}
       ${ifaceCard}
+      ${responseTimeCard}
     </div>
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
@@ -5954,6 +5959,7 @@ function drawPingDevice(e, catLabel){
   if(hasTraffic){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
   }
+  charts.drawer1 = lineChart($('#drawerChart1'), Array(24).fill(''), [{label:'지연시간(ms)', data:(e.hist&&e.hist.latency)||[], color:'#3ecbff', fill:true}], {showX:false});
   return '';
 }
 // 재발급 결과는 메모리에 캐시해둔다 -- 드로어가 열려있는 동안에도 2.2초
