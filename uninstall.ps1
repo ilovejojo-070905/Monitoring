@@ -77,22 +77,28 @@ while (-not (Test-Path (Join-Path $InstallDir 'server.py'))) {
 }
 Write-Ok "설치 폴더: $InstallDir"
 
-# --------------------------------------------------- [2] 프로세스 종료 --
-Write-Step '[2/7] 실행 중인 프로세스 종료'
-$stopScript = Join-Path $InstallDir 'ops\stop.ps1'
-if (Test-Path $stopScript) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $stopScript
-} else {
-    Write-Warn2 'ops\stop.ps1을 찾을 수 없어 건너뜁니다 (이미 실행 중이 아니라면 문제 없음).'
-}
-
-# ------------------------------------------------- [3] 자동 시작 해제 --
-Write-Step '[3/7] 로그온 자동 시작 해제'
+# ------------------------------------------------- [2] 자동 시작 해제 --
+# 프로세스를 먼저 죽이고 예약 작업을 나중에 해제하면, 그 사이의 짧은 틈에
+# 1분마다 살아있는지 재확인하는 감시(watchdog) 트리거가 끼어들어 방금 죽인
+# 프로세스를 다시 띄워버릴 수 있다 -- 실측으로 겪은 문제: 이 순서 그대로
+# 돌렸는데도 설치 폴더가 끝까지 안 지워졌고, 원인을 보니 삭제 직전에 새
+# Caddy/백엔드 프로세스가 떠서 파일을 다시 잠그고 있었다. 예약 작업부터
+# 먼저 없애서 그 창(window) 자체를 없앤다.
+Write-Step '[2/7] 로그온 자동 시작 해제'
 $unregScript = Join-Path $InstallDir 'ops\unregister-task.ps1'
 if (Test-Path $unregScript) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $unregScript
 } else {
     Write-Warn2 'ops\unregister-task.ps1을 찾을 수 없어 건너뜁니다.'
+}
+
+# --------------------------------------------------- [3] 프로세스 종료 --
+Write-Step '[3/7] 실행 중인 프로세스 종료'
+$stopScript = Join-Path $InstallDir 'ops\stop.ps1'
+if (Test-Path $stopScript) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $stopScript
+} else {
+    Write-Warn2 'ops\stop.ps1을 찾을 수 없어 건너뜁니다 (이미 실행 중이 아니라면 문제 없음).'
 }
 
 # ----------------------------------------------------- [4] 방화벽 규칙 --
