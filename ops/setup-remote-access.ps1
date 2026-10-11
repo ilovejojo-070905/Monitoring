@@ -88,7 +88,24 @@ Write-Diag 'host.json 생성 완료'
 # 필요하다 (install.ps1의 인증서 발급과 같은 이유 -- storage.get_lan_ip()를
 # 그대로 재사용해 두 곳의 "이 PC의 LAN IP" 판단이 항상 일치하게 한다).
 Write-Diag 'LAN IP 조회 시작'
-$lanIp = (& $PythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
+# 실제 원인 발견: `python -c "..."`는 스크립트 파일이 아니라 코드 문자열이라
+# sys.path에 아무 폴더도 자동으로 안 끼워준다 -- import storage가 되려면
+# "현재 작업 디렉터리"가 storage.py가 있는 $InstallDir이어야 하는데, 이
+# 스크립트는(install.ps1의 앞선 단계들과 달리) 그 디렉터리로 미리 옮겨두지
+# 않았다. 사람이 손으로 테스트할 때는 항상 먼저 cd D:\InfraSight 하고
+# 돌렸으니 매번 우연히 성공했고, GUI 설치 자동 실행(ops\installer.nsi ->
+# install.ps1 -> 이 스크립트) 중에는 그 디렉터리가 아닌 전혀 다른 곳(NSIS가
+# 이 프로세스를 띄운 그 위치)이라 import storage가 실패해 $lanIp가 $null이
+# 되고, 그 뒤 .Trim() 호출에서 "null 값 식에서 메서드를 호출할 수 없습니다"로
+# 터졌다 -- host-debug.log에 오늘 날짜 기록이 전혀 없던 이유(= host.json/
+# manifest.json이 끝까지 안 만들어져 레지스트리는 예전 값 그대로였던 것)가
+# 바로 이거였다.
+Push-Location $InstallDir
+try {
+    $lanIp = (& $PythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
+} finally {
+    Pop-Location
+}
 Write-Diag "LAN IP 조회 완료: [$lanIp]"
 # -Encoding를 안 주면 BOM 없는 UTF-8 파일을 PowerShell 5.1이 시스템 ANSI
 # 코드페이지(CP949)로 잘못 읽어서 한글이 깨진다 -- 실측 확인: manifest.json의
