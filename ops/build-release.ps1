@@ -1,10 +1,20 @@
 ﻿<#
-InfraSight 릴리스 빌드 (Setup.exe + 자체 내장형 Patch.exe)
-===========================================================
-현재 HEAD 기준으로 InfraSight-Setup-*.exe / InfraSight-Patch-*.exe를
-이 저장소의 setup\ 폴더에 새로 만든다. Patch.exe는 -BaseCommit부터 HEAD까지의
-git diff를 exe 안에 통째로 내장하므로(패치적용.ps1의 $EMBEDDED_PATCH_B64
-참고), 별도 .patch 파일을 같이 보낼 필요가 없다 -- exe 하나만 전달하면 된다.
+InfraSight 릴리스 빌드 (Setup.exe + Setup-GUI.exe + 자체 내장형 Patch.exe + Uninstall.exe)
+=============================================================================
+현재 HEAD 기준으로 이 저장소의 setup\ 폴더에 새로 만든다:
+  - InfraSight-Setup-*.exe       : install.ps1을 그대로 ps2exe로 감싼 콘솔
+                                    설치 프로그램 (자동화/무인 설치에 적합)
+  - InfraSight-Setup-GUI-*.exe   : 같은 install.ps1을 NSIS 마법사(환영 ->
+                                    설치 위치 선택 -> 설치 진행 -> 완료)로
+                                    감싼 그래픽 설치 프로그램 -- 설치 로직
+                                    자체는 install.ps1 하나뿐이고(둘로
+                                    나뉘어 있지 않음), ops\installer.nsi가
+                                    그 바깥 UI만 제공한다.
+  - InfraSight-Patch-*.exe       : -BaseCommit부터 HEAD까지의 git diff를
+                                    exe 안에 통째로 내장한 패치 (패치적용.ps1의
+                                    $EMBEDDED_PATCH_B64 참고) -- 별도 .patch
+                                    파일 없이 exe 하나만 전달하면 된다.
+  - InfraSight-Uninstall-*.exe   : uninstall.ps1을 ps2exe로 감싼 제거 프로그램
 
 사용법 (저장소 루트에서):
     powershell -ExecutionPolicy Bypass -File ops\build-release.ps1
@@ -47,6 +57,20 @@ try {
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'install.ps1') -outputFile (Join-Path $outDir "InfraSight-Setup-$date-$sha.exe") -title 'InfraSight Setup' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile $tempPs1 -outputFile (Join-Path $outDir "InfraSight-Patch-$date-$sha.exe") -title 'InfraSight Patch' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall.ps1') -outputFile (Join-Path $outDir "InfraSight-Uninstall-$date-$sha.exe") -title 'InfraSight Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
+
+    $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+    if (-not (Test-Path $makensis)) { $makensis = "$env:ProgramFiles\NSIS\makensis.exe" }
+    if (Test-Path $makensis) {
+        Push-Location (Join-Path $repoRoot 'ops')
+        try {
+            & $makensis "/DVERSION=$date-$sha" installer.nsi
+            if ($LASTEXITCODE -ne 0) { Write-Warning "GUI 설치 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다." }
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Write-Warning 'NSIS(makensis.exe)를 찾을 수 없어 GUI 설치 프로그램 빌드를 건너뜁니다 (winget install NSIS.NSIS로 설치해주세요).'
+    }
 
     Remove-Item $tempPs1 -Force -ErrorAction SilentlyContinue
     Write-Host "`n빌드 완료: $outDir" -ForegroundColor Green
