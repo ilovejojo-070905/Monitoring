@@ -73,7 +73,7 @@ if (-not (Test-Admin)) {
         Write-Host "`n관리자 권한 승인이 취소되었거나 실패했습니다." -ForegroundColor Red
         Write-Host "이 파일을 다시 실행한 뒤, UAC 창에서 '예'를 눌러주세요." -ForegroundColor Yellow
         Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
-        [void][System.Console]::ReadKey($true)
+        try { [void][System.Console]::ReadKey($true) } catch { Start-Sleep -Seconds 3 }
     }
     exit
 }
@@ -336,5 +336,13 @@ Start-Process "https://localhost:8443"
     Write-Host " $_" -ForegroundColor Red
     Write-Host '============================================================' -ForegroundColor Red
     Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
-    [void][System.Console]::ReadKey($true)
+    # ReadKey는 실제 콘솔에서 더블클릭으로 직접 실행했을 때나 통하는 방식이다
+    # -- GUI 설치 프로그램(ops\installer.nsi)이 nsExec::ExecToLog로 이 스크립트를
+    # 돌릴 때는 표준 입출력이 로그 캡처용으로 리디렉션되어 있어서 ReadKey 자체가
+    # 예외를 던진다. 그 예외가 catch 블록 안에서 또 잡히지 않은 채로 전파되면
+    # 정작 위에서 막 출력한 진짜 에러 메시지($_)가 뒤따라오는 이 2차 예외에
+    # 가려져 버린다 (실측: GUI 설치 중 실패했을 때 로그에 ReadKey 예외만 보이고
+    # 진짜 원인은 스크롤해야 보이는 위쪽에 있었음). 패치적용.ps1의 같은 자리와
+    # 동일하게 try/catch로 감싼다.
+    try { [void][System.Console]::ReadKey($true) } catch { Start-Sleep -Seconds 3 }
 }
