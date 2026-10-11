@@ -159,7 +159,12 @@ $backupTargets = @(
 )
 if (-not $NoBackup) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $backupDir = Join-Path ([Environment]::GetFolderPath('Desktop')) "infrasight-backup-$stamp"
+    # 바탕화면에 곧바로 "infrasight-backup-<시각>" 폴더를 만들면, 제거를
+    # 여러 번 반복할 때마다(테스트 등) 바탕화면에 폴더가 계속 쌓인다 --
+    # 실측으로 지적받음. 한 단계 아래 "InfraSight-Backups" 폴더 하나만
+    # 바탕화면에 두고, 그 안에 시각별 하위 폴더를 모아서 바탕화면 자체는
+    # 항상 폴더 1개로 유지한다.
+    $backupDir = Join-Path ([Environment]::GetFolderPath('Desktop')) "InfraSight-Backups\$stamp"
     $anyBackedUp = $false
     foreach ($f in $backupTargets) {
         if (Test-Path $f) {
@@ -169,7 +174,7 @@ if (-not $NoBackup) {
         }
     }
     if ($anyBackedUp) {
-        Write-Ok "바탕화면에 백업됨: infrasight-backup-$stamp\ (DB + 암호화 키)"
+        Write-Ok "바탕화면\InfraSight-Backups\$stamp\ 에 백업됨 (DB + 암호화 키)"
         Write-Warn2 '재설치 후 기존 데이터를 그대로 쓰려면, 새로 설치된 폴더에 이 백업 폴더 안의 파일들을 전부 덮어써주세요 (첫 로그인 전에).'
     } else {
         Write-Warn2 '백업할 파일을 찾지 못했습니다 (그래도 계속 진행합니다).'
