@@ -32,6 +32,11 @@ dist_installer/
 build_installer/
 *.spec
 
+# Compiled Setup/Patch .exe + the offline .patch bundle (ps2exe output from
+# install.ps1 / 패치적용.ps1) -- rebuildable from those two scripts any time,
+# and binaries that change on every build don't belong in version control.
+setup/
+
 # OS cruft
 Thumbs.db
 .DS_Store
