@@ -2400,7 +2400,7 @@ function renderNetworkSkeleton(){
           <th data-sort-col="ip">IP<span class="sort-arrow" id="net-sort-ip"></span></th>
           <th data-sort-col="group">그룹<span class="sort-arrow" id="net-sort-group"></span></th>
           <th>CPU</th><th>MEM</th><th>트래픽</th><th>응답시간</th><th>Uptime</th>
-          ${CURRENT_ROLE==='ADMIN' ? '<th>원격</th>' : ''}
+          <th id="net-remote-th" style="display:none">원격</th>
         </tr></thead>
         <tbody id="net-tbody"></tbody>
       </table></div>
@@ -2451,8 +2451,8 @@ function renderNetwork(){
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
       ${CURRENT_ROLE==='ADMIN' ? `<td>${n.ip ? `
         <div style="display:flex;gap:4px" onclick="event.stopPropagation()">
-          <button type="button" class="btn remote-list-btn" data-remote-proto="ssh" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:13px;padding:6px 14px">SSH</button>
-          <button type="button" class="btn remote-list-btn" data-remote-proto="telnet" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:13px;padding:6px 14px">Telnet</button>
+          <button type="button" class="btn remote-list-btn" data-remote-proto="ssh" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:12px;padding:6px 14px">SSH</button>
+          <button type="button" class="btn remote-list-btn" data-remote-proto="telnet" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:12px;padding:6px 14px">Telnet</button>
         </div>` : '<span style="color:var(--text-faint)">—</span>'}</td>` : ''}
     </tr>`).join('') || `<tr><td colspan="${CURRENT_ROLE==='ADMIN'?12:11}"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
   $$('#net-tbody tr[data-id]').forEach(tr=>{
@@ -2467,6 +2467,13 @@ function renderNetwork(){
   wireRowCheckboxes('net-tbody', 'net');
   updateSelectBar('net');
   updateSelectAll('net', 'net-tbody');
+  // renderNetworkSkeleton()의 <thead>는 로그인 전(initSkeletons() 시점)에 한
+  // 번만 그려지기 때문에 그 안에서 CURRENT_ROLE을 직접 조건문으로 쓰면 항상
+  // null이어서 절대 안 나온다 -- 체크박스 헤더(selectAllHeaderHtml)와 같은
+  // 패턴으로, 항상 그려두고 role을 아는 이 함수(매 poll마다 재실행)에서
+  // 보이기/숨기기만 전환한다.
+  const remoteTh = $('#net-remote-th');
+  if(remoteTh) remoteTh.style.display = CURRENT_ROLE==='ADMIN' ? '' : 'none';
   updateSortArrows('net', netSort, ['status','name','type','ip','group']);
   if(!selectedNetId && NETS.length) selectedNetId = NETS[0].id;
   const n = NETS.find(x=>x.id===selectedNetId);
