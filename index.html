@@ -5920,13 +5920,13 @@ function drawPingDevice(e, catLabel){
     </div>
     ${hasRow2 ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:10px">${cpuKv}${memKv}${ifaceKv}${battKv}</div>` : ''}
     ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
-    <div style="${pingGrid2}">
-      ${trafficCard}
-    </div>
+    ${trafficCard ? `<div style="${pingGrid2}">${trafficCard}</div>` : ''}
+    ${ifaceCard ? `
     <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:10px">
       <div style="display:flex;flex-direction:column;gap:10px;min-width:0">${envCard}${responseTimeCard}</div>
       ${ifaceCard}
-    </div>
+    </div>` : `
+    <div style="display:flex;flex-direction:column;gap:10px">${envCard}${responseTimeCard}</div>`}
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
         ? 'SNMP로 장치 정보와 응답시간을 실측합니다. 인터페이스·CPU·메모리·배터리 등은 장비가 해당 MIB를 지원할 때만 표시됩니다.'
