@@ -26,6 +26,12 @@ InfraSight 릴리스 빌드 (Setup.exe + Setup-GUI.exe + 자체 내장형 Patch.
                                     (기준 커밋을 매 빌드마다 갱신해줘야
                                     하는데 깜빡하기 쉬운 구조였음) 폐기함.
   - InfraSight-Uninstall-*.exe   : uninstall.ps1을 ps2exe로 감싼 제거 프로그램
+  - InfraSight-Patch-GUI-*.exe   : 같은 패치적용.ps1을 NSIS 마법사(환영 ->
+                                    설치 폴더 확인 -> 진행 -> 완료)로 감싼
+                                    그래픽 패치 프로그램. ops\patch-gui.nsi 참고.
+  - InfraSight-Uninstall-GUI-*.exe : 같은 uninstall.ps1을 NSIS 마법사로 감싼
+                                    그래픽 제거 프로그램. ops\uninstall-gui.nsi
+                                    참고.
 
 Setup/Patch 둘 다 dist\InfraSightAgent.exe(장비 등록 시 다운로드하는 에이전트
 실행 파일)도 base64로 함께 내장한다 -- 이 파일은 용량 때문에 .gitignore
@@ -115,11 +121,17 @@ try {
         try {
             & $makensis "/DVERSION=$date-$sha" "/DINSTALL_PS1_PATH=$tempInstallPs1" installer.nsi
             if ($LASTEXITCODE -ne 0) { Write-Warning "GUI 설치 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다." }
+
+            & $makensis "/DVERSION=$date-$sha" "/DPATCH_PS1_PATH=$tempPatchPs1" patch-gui.nsi
+            if ($LASTEXITCODE -ne 0) { Write-Warning "GUI 패치 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다." }
+
+            & $makensis "/DVERSION=$date-$sha" uninstall-gui.nsi
+            if ($LASTEXITCODE -ne 0) { Write-Warning "GUI 제거 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다." }
         } finally {
             Pop-Location
         }
     } else {
-        Write-Warning 'NSIS(makensis.exe)를 찾을 수 없어 GUI 설치 프로그램 빌드를 건너뜁니다 (winget install NSIS.NSIS로 설치해주세요).'
+        Write-Warning 'NSIS(makensis.exe)를 찾을 수 없어 GUI 설치/패치/제거 프로그램 빌드를 건너뜁니다 (winget install NSIS.NSIS로 설치해주세요).'
     }
 
     Remove-Item $tempPatchPs1, $tempInstallPs1 -Force -ErrorAction SilentlyContinue
