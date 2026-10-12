@@ -1020,6 +1020,22 @@ def _register_device_core(category, name, mode, ip, fields):
             return 400, {'error': str(e)}
         if not fields['thresholds']:
             del fields['thresholds']
+    # 이미 등록된 장비(같은 IP, 또는 IP가 없으면 같은 이름)면 여기서 바로
+    # 막는다 -- 전에는 그런 검사가 전혀 없어서, 같은 장비를 실수로 또
+    # 등록하거나(특히 일괄등록 엑셀을 두 번 올리는 경우) 똑같은 대상이
+    # 중복 등록되는 문제가 있었음. find_device_by_name_or_ip는 원래 LLDP
+    # 이웃 상관관계용으로 만든 함수지만 매칭 로직(IP 우선, 없으면 이름)이
+    # 정확히 여기 필요한 것과 같아 그대로 재사용한다. 연결 테스트(핑/SNMP
+    # 실측, 아래)보다 먼저 두어 중복인 경우 그 몇 초짜리 실측을 건너뛴다.
+    # 단일 등록/일괄등록(bulk-import) 둘 다 이 함수를 그대로 거치므로 이
+    # 검사 하나로 양쪽 다 적용된다.
+    dup_id = storage.find_device_by_name_or_ip(name=name, ip=ip)
+    if dup_id:
+        dup_device = storage.load_device(dup_id)
+        dup_name = dup_device['name'] if dup_device else name
+        if ip and dup_device and dup_device.get('ip') == ip:
+            return 409, {'error': f'이미 등록된 IP입니다 ("{dup_name}"로 등록되어 있습니다)'}
+        return 409, {'error': f'이미 등록된 이름입니다: "{dup_name}"'}
     if mode == 'ping':
         # Registering a device that's already unreachable just guarantees an
         # immediate "위험" incident with nothing anyone can do about it from
