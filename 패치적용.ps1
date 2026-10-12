@@ -1,13 +1,17 @@
 ﻿<#
 InfraSight 패치 적용 스크립트
 =============================
-패치 내용을 이 PC에 설치된 InfraSight 저장소에 적용합니다. (오프라인 PC용 -
-git pull이 안 되는 환경에서 패치를 옮겨와 적용할 때 사용)
+main 브랜치의 git bundle을 이 PC에 설치된 InfraSight 저장소에 fast-forward
+병합합니다. (오프라인 PC용 - git pull이 안 되는 환경에서 패치를 옮겨와
+적용할 때 사용) 대상 PC가 지금 어느 커밋에 있든(한참 예전 버전이어도)
+히스토리상 조상이기만 하면 항상 최신으로 올라간다 -- 특정 기준 커밋과의
+diff가 아니라 번들이라서 "설치된 버전이 기준과 달라 패치가 안 먹는" 문제가
+구조적으로 없다.
 
-빌드(ps2exe 컴파일) 시 아래 $EMBEDDED_PATCH_B64에 실제 패치 내용이 base64로
-치환되어 들어가므로, 컴파일된 exe 하나만 있으면 되고 옆에 별도 .patch 파일을
+빌드(ps2exe 컴파일) 시 아래 $EMBEDDED_PATCH_B64에 실제 bundle 내용이 base64로
+치환되어 들어가므로, 컴파일된 exe 하나만 있으면 되고 옆에 별도 .bundle 파일을
 같이 둘 필요가 없다. (치환 전 플레이스홀더 상태로 .ps1을 직접 돌리는 경우에는
-같은 폴더의 .patch 파일을 대신 찾는 예전 방식으로 동작한다 -- 개발 중 테스트용.)
+같은 폴더의 .bundle 파일을 대신 찾는 예전 방식으로 동작한다 -- 개발 중 테스트용.)
 
 사용법: 패치적용.bat을 더블클릭하거나, 직접 실행:
     powershell -ExecutionPolicy Bypass -File 패치적용.ps1
@@ -61,20 +65,18 @@ $tempPatchPath = $null
 ## 똑같은 문자열을 전부 바꿔버리는 단순 .Replace()라서, 여기 그 리터럴을
 ## 또 쓰면 "치환됐는지 비교하는 기준값" 자체도 같이 치환되어 늘 거짓이 되는
 ## 버그가 생긴다(실측: 빌드된 exe가 매번 내장 패치를 무시하고 사이드카
-## .patch 파일을 찾는 예전 경로로 빠졌음). 그래서 패턴 비교(선행 밑줄
+## .bundle 파일을 찾는 예전 경로로 빠졌음). 그래서 패턴 비교(선행 밑줄
 ## 두 개는 base64에 나올 수 없음)로만 판단한다.
 if ($EMBEDDED_PATCH_B64 -and $EMBEDDED_PATCH_B64 -notlike '__*') {
-    # base64로 담아두는 이유: 여기-문자열(@'...'@)로 diff 텍스트를 그대로
-    # 박아넣으면, diff 내용 중 우연히 줄 맨 앞에 '@가 오는 경우(있을 가능성은
-    # 낮지만 git diff 포맷을 전부 통제할 수 없다) 거기서 문자열이 조기
-    # 종료되어 버린다 -- base64는 그런 걱정이 전혀 없다.
-    $tempPatchPath = Join-Path $env:TEMP "infrasight-embedded-$([guid]::NewGuid().ToString('N')).patch"
+    # base64로 담아두는 이유: bundle은 바이너리 파일이라 여기-문자열에
+    # 그대로 박아넣을 방법이 없다 -- base64는 그런 걱정이 전혀 없다.
+    $tempPatchPath = Join-Path $env:TEMP "infrasight-embedded-$([guid]::NewGuid().ToString('N')).bundle"
     [System.IO.File]::WriteAllBytes($tempPatchPath, [Convert]::FromBase64String($EMBEDDED_PATCH_B64))
     $patchFile = Get-Item $tempPatchPath
-    Write-Ok '내장된 패치 내용을 사용합니다 (별도 .patch 파일 불필요)'
+    Write-Ok '내장된 패치 내용을 사용합니다 (별도 .bundle 파일 불필요)'
 } else {
     # 플레이스홀더가 안 바뀐 채로 돌아간 경우(치환 전 .ps1을 직접 실행하는
-    # 개발/테스트 상황) -- 예전처럼 같은 폴더의 .patch 파일을 찾는다.
+    # 개발/테스트 상황) -- 예전처럼 같은 폴더의 .bundle 파일을 찾는다.
     # ps2exe로 컴파일된 실행 파일은 $PSScriptRoot가 exe 자신의 실제 폴더를
     # 가리키지 못할 수 있다(비어있거나 작업 디렉터리에 따라 달라짐) -- 실측
     # 확인: 바탕화면에서 더블클릭하면 우연히 맞았지만, 다른 폴더(예:
@@ -87,35 +89,34 @@ if ($EMBEDDED_PATCH_B64 -and $EMBEDDED_PATCH_B64 -notlike '__*') {
         try { $scriptDir = Split-Path -Parent ([System.Reflection.Assembly]::GetEntryAssembly().Location) } catch {}
     }
     if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
-    $patchFile = Get-ChildItem $scriptDir -Filter '*.patch' | Select-Object -First 1
-    if (-not $patchFile) { throw "$scriptDir 폴더에 .patch 파일이 없습니다." }
+    $patchFile = Get-ChildItem $scriptDir -Filter '*.bundle' | Select-Object -First 1
+    if (-not $patchFile) { throw "$scriptDir 폴더에 .bundle 파일이 없습니다." }
 }
 Write-Ok "패치 파일: $($patchFile.Name)"
 
 # ------------------------------------------------------ [4] 패치 적용 --
-# git 명령의 stderr를 PowerShell에서 리다이렉트하면(2>$null 포함) 5.1에서
+# git fetch로 번들에서 main의 최신 커밋을 받아온 뒤 --ff-only로 병합한다.
+# diff/am 방식과 달리 "대상 PC가 지금 어느 커밋에 있는지"를 전혀 몰라도
+# 되고(히스토리상 조상이기만 하면 항상 성공), 새 커밋을 만드는 게 아니라
+# 포인터만 전진시키는 fast-forward라서 git am이 요구하던 committer
+# 이름/이메일 설정도 필요 없다. 이미 최신 상태면 git이 그대로 "Already
+# up to date."만 출력하고 끝난다 -- 별도의 "이미 적용됐는지" 사전 확인이
+# 필요 없다.
+#
+# git 명령의 stderr를 PowerShell에서 리다이렉트하면 5.1에서
 # NativeCommandError로 감싸져 $ErrorActionPreference='Stop'과 만나 스크립트가
-# 죽어버린다 (실패가 예상되는 "이미 적용됐는지 확인" 단계에서도) -- 그래서
-# 리다이렉트하지 않고 그대로 출력되게 둔 뒤 $LASTEXITCODE로만 분기한다.
+# 죽어버리므로, 리다이렉트하지 않고 그대로 출력되게 둔 뒤 $LASTEXITCODE로만
+# 분기한다.
 Push-Location $InstallDir
 try {
-    Write-Host '    (적용 여부 확인 중 -- 아래 git 메시지가 보여도 정상입니다)' -ForegroundColor DarkGray
-    & $gitExe apply --check -R $patchFile.FullName
-    $alreadyApplied = ($LASTEXITCODE -eq 0)
+    & $gitExe fetch $patchFile.FullName main
+    if ($LASTEXITCODE -ne 0) { throw '패치 파일(번들)을 읽는 데 실패했습니다.' }
 
-    if ($alreadyApplied) {
-        Write-Ok '이미 이 패치가 적용되어 있습니다. 할 일이 없습니다.'
-    } else {
-        & $gitExe am $patchFile.FullName
-        if ($LASTEXITCODE -ne 0) {
-            & $gitExe am --abort
-            & $gitExe apply $patchFile.FullName
-            if ($LASTEXITCODE -ne 0) {
-                throw '패치 적용에 실패했습니다. 설치된 버전이 패치와 맞지 않을 수 있습니다 (예전 버전이거나 이미 다르게 수정됨). InfraSight 폴더에서 git pull로 최신 버전을 받은 뒤 다시 시도해주세요.'
-            }
-        }
-        Write-Ok '패치 적용 완료'
+    & $gitExe merge --ff-only FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) {
+        throw '패치 적용에 실패했습니다 (fast-forward 불가). InfraSight 폴더가 로컬에서 직접 수정되었을 수 있습니다 -- git status로 확인해주세요.'
     }
+    Write-Ok '패치 적용 완료 (이미 최신 상태였다면 변경 없음)'
 } finally {
     Pop-Location
     if ($tempPatchPath) { Remove-Item $tempPatchPath -Force -ErrorAction SilentlyContinue }
