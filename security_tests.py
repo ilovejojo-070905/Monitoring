@@ -22,8 +22,23 @@ import sys
 import time
 
 import requests
+import urllib3
 
-BASE_URL = sys.argv[1] if len(sys.argv) > 1 else 'http://localhost:5057'
+# The session cookie is Secure-flagged (HTTPS-only -- see server.py's login
+# route), so `requests` only sends it back on a follow-up request if that
+# request is itself HTTPS: hitting the plain-HTTP backend port (5057)
+# silently drops the cookie after login, and every "authenticated" call
+# below then 401s even though login itself returned 200 -- confirmed
+# directly (this was a real, previously-unnoticed bug in this exact
+# script). Must go through Caddy's HTTPS port (8443), the same path a real
+# user's browser takes. Caddy's cert is issued by mkcert's local CA, which
+# isn't in the `requests`/certifi trust bundle (`mkcert -install` only
+# adds it to the Windows cert store, which `requests` doesn't consult), so
+# verify=False is used throughout -- the normal way to point a local test
+# script at a self-signed/local-CA HTTPS endpoint without wiring in a
+# separate trust bundle for it.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else 'https://localhost:8443'
 ADMIN_USER = os.environ.get('INFRASIGHT_TEST_ADMIN_USER')
 ADMIN_PASS = os.environ.get('INFRASIGHT_TEST_ADMIN_PASS')
 
@@ -42,6 +57,7 @@ def skip(name, reason):
 
 def admin_session():
     s = requests.Session()
+    s.verify = False
     r = s.post(f'{BASE_URL}/api/auth/login', json={'username': ADMIN_USER, 'password': ADMIN_PASS}, timeout=10)
     r.raise_for_status()
     csrf = r.json()['csrfToken']
@@ -52,42 +68,43 @@ def main():
     print(f"Target: {BASE_URL}\n")
 
     # 1. Unauthenticated access to a device-data API
-    r = requests.get(f'{BASE_URL}/api/state', timeout=10)
+    r = requests.get(f'{BASE_URL}/api/state', timeout=10, verify=False)
     check('01 unauth GET /api/state -> 401', r.status_code == 401, f'got {r.status_code}')
 
     # 2. Unauthenticated device deletion
-    r = requests.delete(f'{BASE_URL}/api/devices/does-not-exist', timeout=10)
+    r = requests.delete(f'{BASE_URL}/api/devices/does-not-exist', timeout=10, verify=False)
     check('02 unauth DELETE /api/devices/<id> -> 401', r.status_code == 401, f'got {r.status_code}')
 
     # 9/18/19/20 don't need auth -- run these regardless of admin creds
     # 17. Malformed JSON body
-    r = requests.post(f'{BASE_URL}/api/auth/login', data='{not json', headers={'Content-Type': 'application/json'}, timeout=10)
+    r = requests.post(f'{BASE_URL}/api/auth/login', data='{not json', headers={'Content-Type': 'application/json'}, timeout=10, verify=False)
     check('17 malformed JSON -> 400', r.status_code == 400, f'got {r.status_code}')
 
     # 18. Oversized request body (MAX_CONTENT_LENGTH = 2MB)
     big_body = json.dumps({'username': 'x' * (3 * 1024 * 1024), 'password': 'x'})
-    r = requests.post(f'{BASE_URL}/api/auth/login', data=big_body, headers={'Content-Type': 'application/json'}, timeout=15)
+    r = requests.post(f'{BASE_URL}/api/auth/login', data=big_body, headers={'Content-Type': 'application/json'}, timeout=15, verify=False)
     check('18 oversized request body -> 413', r.status_code == 413, f'got {r.status_code}')
 
     # 19. Nonexistent API
-    r = requests.get(f'{BASE_URL}/api/this-endpoint-does-not-exist', timeout=10)
+    r = requests.get(f'{BASE_URL}/api/this-endpoint-does-not-exist', timeout=10, verify=False)
     check('19 nonexistent endpoint -> 404', r.status_code == 404, f'got {r.status_code}')
 
     # 20. HTTP method tampering
-    r = requests.patch(f'{BASE_URL}/api/devices', timeout=10)
+    r = requests.patch(f'{BASE_URL}/api/devices', timeout=10, verify=False)
     check('20 PATCH /api/devices -> 405', r.status_code == 405, f'got {r.status_code}')
 
     # 10. Path traversal against static-file-serving endpoints
-    r = requests.get(f'{BASE_URL}/download/installer/..%2f..%2finfrasight.db', timeout=10)
+    r = requests.get(f'{BASE_URL}/download/installer/..%2f..%2finfrasight.db', timeout=10, verify=False)
     check('10 path traversal on /download/installer -> 404 (not the DB file)',
           r.status_code == 404 or 'sqlite' not in r.text.lower(), f'got {r.status_code}')
 
     # 14. Unknown agent token
-    r = requests.post(f'{BASE_URL}/api/agent/report', json={'token': 'not-a-real-token', 'cpu': 1, 'mem': 1, 'disk': 1}, timeout=10)
+    r = requests.post(f'{BASE_URL}/api/agent/report', json={'token': 'not-a-real-token', 'cpu': 1, 'mem': 1, 'disk': 1}, timeout=10, verify=False)
     check('14 unknown agent token -> 404', r.status_code == 404, f'got {r.status_code}')
 
     # 6. Garbage/tampered session cookie
     s = requests.Session()
+    s.verify = False
     s.cookies.set('session', 'garbage.tampered.cookie')
     r = s.get(f'{BASE_URL}/api/state', timeout=10)
     check('06 tampered session cookie -> 401', r.status_code == 401, f'got {r.status_code}')
@@ -157,17 +174,31 @@ def main():
                headers=headers, timeout=10)
     check('12 invalid SNMP port -> 400', r.status_code == 400, f'got {r.status_code}')
 
-    # 13. Unknown extra field in payload should just be ignored, not crash the endpoint
-    r = s.post(f'{BASE_URL}/api/devices', json={'category': 'net', 'name': 'sec-test-extra', 'mode': 'ping', 'ip': '10.0.0.2',
+    # 13. Unknown extra field in payload should just be ignored, not crash the
+    # endpoint -- uses 127.0.0.1 (always reachable) rather than an arbitrary
+    # private IP like 10.0.0.2, which has no guarantee of answering ping in
+    # an arbitrary test environment and would 400 on the (unrelated)
+    # reachability check before ever exercising what this case is actually
+    # about. (Found live: this case silently never ran correctly before --
+    # the whole authenticated section 401'd on every request due to the
+    # Secure-cookie/HTTP-port bug fixed above, so this bad assumption was
+    # never actually exposed until now.)
+    r = s.post(f'{BASE_URL}/api/devices', json={'category': 'net', 'name': 'sec-test-extra', 'mode': 'ping', 'ip': '127.0.0.1',
                                                  'fields': {}, 'pollingIntervalTotallyMadeUp': -999}, headers=headers, timeout=10)
     check('13 unrecognized field in payload -> ignored (still 200)', r.status_code == 200, f'got {r.status_code}')
     extra_device_id = r.json().get('id') if r.status_code == 200 else None
 
-    # 16. SNMP device with a bogus (but well-formed) community registers fine --
-    # a wrong credential is a polling-time failure, not a registration-time error
-    r = s.post(f'{BASE_URL}/api/devices', json={'category': 'net', 'name': 'sec-test-badcommunity', 'mode': 'snmp', 'ip': '10.0.0.3',
+    # 16. SNMP device registration requires a real, live connectivity test
+    # (same pattern as ping -- see _register_device_core's `if mode ==
+    # 'snmp':` branch) -- a bogus community against a target with no real
+    # SNMP responder times out exactly like an unreachable host and is
+    # rejected at registration time (400), not deferred to poll time. (This
+    # case's original comment/assumption -- "registers fine, fails only at
+    # poll time" -- doesn't match current server.py behavior; same
+    # never-actually-ran reason as 13 above.)
+    r = s.post(f'{BASE_URL}/api/devices', json={'category': 'net', 'name': 'sec-test-badcommunity', 'mode': 'snmp', 'ip': '203.0.113.3',
                                                  'fields': {'community': 'definitely-wrong'}}, headers=headers, timeout=10)
-    check('16 SNMP device with bogus community -> registers (200), fails only at poll time', r.status_code == 200, f'got {r.status_code}')
+    check('16 SNMP device with bogus community / unreachable target -> 400 at registration time', r.status_code == 400, f'got {r.status_code}')
     snmp_device_id = r.json().get('id') if r.status_code == 200 else None
 
     # 15. Metrics for a random, nonexistent device_id should degrade gracefully, not 500
@@ -183,6 +214,7 @@ def main():
     viewer_created = r.status_code == 200
     if viewer_created:
         vs = requests.Session()
+        vs.verify = False
         vr = vs.post(f'{BASE_URL}/api/auth/login', json={'username': tmp_user, 'password': tmp_pass}, timeout=10)
         v_csrf = vr.json().get('csrfToken')
         dr = vs.delete(f'{BASE_URL}/api/devices/{extra_device_id or "x"}', headers={'X-CSRF-Token': v_csrf}, timeout=10)
@@ -197,7 +229,7 @@ def main():
     if r.status_code == 200:
         last_status = None
         for _ in range(5):
-            fr = requests.post(f'{BASE_URL}/api/auth/login', json={'username': lock_user, 'password': 'wrong'}, timeout=10)
+            fr = requests.post(f'{BASE_URL}/api/auth/login', json={'username': lock_user, 'password': 'wrong'}, timeout=10, verify=False)
             last_status = fr.status_code
         check('07 account lockout after 5 failed attempts -> 423', last_status == 423, f'got {last_status}')
         # unlock + delete the temp user
