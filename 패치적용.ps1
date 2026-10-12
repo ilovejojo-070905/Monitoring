@@ -140,10 +140,42 @@ try {
     Write-Warn2 "원격 접속 구성 중 문제가 있었습니다 (무시하고 계속합니다): $_"
 }
 
+# --------------------------------------------------- [6] 백엔드 재시작 --
+# 패치는 코드 파일만 바꾸고 떠 있는 python/caddy 프로세스는 그대로 두므로,
+# 서버를 직접 내렸다 올려야 실제로 새 코드가 반영된다 (index.html은
+# no-cache라 새로고침만으로 바로 보이지만, server.py 변경은 그렇지 않다 --
+# 실측으로 확인됨). stop.ps1으로 깨끗이 내린 뒤, 로그인 시 등록해둔
+# "InfraSight Supervisor" 예약 작업을 즉시 한 번 더 실행시켜 새로 띄운다
+# -- 이 작업은 어차피 1분마다 자동으로도 똑같이 하지만, 사용자가 지금 바로
+# 확인하고 싶을 거라서 기다리지 않고 바로 트리거한다. 예약 작업이 없는 경우
+# (한 번도 register-task.ps1이 돌지 않은 드문 상황)에는 register-task.ps1과
+# 똑같은 vbs-wrapper 방식(WScript.Shell.Run, 창 숨김)으로 직접 띄운다 --
+# powershell.exe -WindowStyle Hidden을 바로 쓰면 무한 루프인 supervisor.ps1
+# 창이 간혹 안 숨겨진 채로 남는 걸 register-task.ps1 작성 당시 실측으로
+# 확인했던 것과 같은 이유.
+try {
+    Write-Host "`n[재시작] 백엔드를 재시작하는 중..." -ForegroundColor Cyan
+    & (Join-Path $InstallDir 'ops\stop.ps1')
+
+    $task = Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue
+    if ($task) {
+        Start-ScheduledTask -TaskName 'InfraSight Supervisor'
+    } else {
+        $supervisorPath = Join-Path $InstallDir 'ops\supervisor.ps1'
+        $vbsPath = Join-Path $env:TEMP "infrasight-restart-$([guid]::NewGuid().ToString('N')).vbs"
+        $vbsContent = "CreateObject(`"WScript.Shell`").Run ""powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File """"$supervisorPath"""""", 0, False"
+        [System.IO.File]::WriteAllText($vbsPath, $vbsContent, (New-Object System.Text.UTF8Encoding $false))
+        Start-Process -FilePath 'wscript.exe' -ArgumentList "`"$vbsPath`""
+    }
+    Start-Sleep -Seconds 2
+    Write-Ok '백엔드를 재시작했습니다.'
+} catch {
+    Write-Warn2 "백엔드 자동 재시작에 실패했습니다 -- ops\stop.ps1 실행 후 잠시(최대 1분) 기다리거나 PC를 재부팅해주세요: $_"
+}
+
 Write-Host "`n============================================================" -ForegroundColor Green
 Write-Host ' 완료되었습니다!' -ForegroundColor Green
-Write-Host ' 브라우저에서 강력 새로고침(Ctrl+F5) 해주세요.' -ForegroundColor Yellow
-Write-Host ' 화면이 그대로면 InfraSight를 재시작해주세요 (로그아웃 후 재로그인하면 자동으로 다시 시작됩니다).'
+Write-Host ' 백엔드까지 재시작했습니다. 브라우저에서 강력 새로고침(Ctrl+F5)만 해주세요.' -ForegroundColor Yellow
 Write-Host '============================================================' -ForegroundColor Green
 
 Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
