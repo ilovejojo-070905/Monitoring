@@ -69,10 +69,31 @@ Write-Host ' InfraSight 제거' -ForegroundColor Cyan
 Write-Host '============================================================' -ForegroundColor Cyan
 
 # ------------------------------------------------------ [1] 설치 폴더 --
+# 패치적용.ps1과 동일한 이유/방식: 기본 추정 경로가 틀리면(커스텀 경로에
+# 설치한 경우가 흔함) 물어보기 전에 "InfraSight Supervisor" 예약 작업의
+# WorkingDirectory에서 실제 설치 경로를 먼저 자동으로 찾아본다.
 Write-Step '[1/7] 설치 폴더 확인'
+function Find-InstallDirFromTask {
+    try {
+        $task = Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue
+        if ($task -and $task.Actions -and $task.Actions[0].WorkingDirectory) {
+            return $task.Actions[0].WorkingDirectory
+        }
+    } catch {}
+    return $null
+}
+
 if (-not $InstallDir) { $InstallDir = Join-Path $env:LOCALAPPDATA 'InfraSight' }
+if (-not (Test-Path (Join-Path $InstallDir 'server.py'))) {
+    $fromTask = Find-InstallDirFromTask
+    if ($fromTask -and (Test-Path (Join-Path $fromTask 'server.py'))) {
+        $InstallDir = $fromTask
+        Write-Ok "예약 작업에서 설치 경로를 자동으로 찾았습니다: $InstallDir"
+    }
+}
 while (-not (Test-Path (Join-Path $InstallDir 'server.py'))) {
     Write-Warn2 "InfraSight 설치 폴더를 찾을 수 없습니다: $InstallDir"
+    Write-Warn2 '(모르시면: 작업 스케줄러(taskschd.msc) 실행 -> "InfraSight Supervisor" 찾기 -> 속성 -> 동작 탭의 "시작 위치"가 설치 경로입니다)'
     $InstallDir = Read-Host 'InfraSight가 설치된 폴더 경로를 입력해주세요 (취소하려면 Ctrl+C)'
 }
 Write-Ok "설치 폴더: $InstallDir"

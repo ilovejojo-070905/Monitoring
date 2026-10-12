@@ -55,9 +55,35 @@ $gitExe = Resolve-Git
 Write-Ok "git: $gitExe"
 
 # ------------------------------------------------------ [2] 설치 폴더 --
+# InstallDir을 안 넘겼고, 기본 추정 경로(%LOCALAPPDATA%\InfraSight)에도 없으면
+# -- 요즘은 D:\InfraSight 같은 커스텀 경로를 고르는 경우가 흔해서 이 추정이
+# 거의 항상 틀린다 -- 사용자에게 직접 물어보기 전에, 로그온 시 자동 시작용
+# "InfraSight Supervisor" 예약 작업(register-task.ps1이 등록, 설치 과정에
+# 항상 자동으로 생긴다)의 WorkingDirectory에서 실제 설치 경로를 먼저
+# 찾아본다 -- 실측 확인: `(Get-ScheduledTask 'InfraSight Supervisor').Actions`가
+# 정확히 install.ps1이 clone한 그 경로를 그대로 들고 있음. 이 덕분에 사용자가
+# 설치 경로를 몰라도(대부분의 경우) 직접 입력할 필요가 아예 없어진다.
+function Find-InstallDirFromTask {
+    try {
+        $task = Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue
+        if ($task -and $task.Actions -and $task.Actions[0].WorkingDirectory) {
+            return $task.Actions[0].WorkingDirectory
+        }
+    } catch {}
+    return $null
+}
+
 if (-not $InstallDir) { $InstallDir = Join-Path $env:LOCALAPPDATA 'InfraSight' }
+if (-not (Test-Path (Join-Path $InstallDir '.git'))) {
+    $fromTask = Find-InstallDirFromTask
+    if ($fromTask -and (Test-Path (Join-Path $fromTask '.git'))) {
+        $InstallDir = $fromTask
+        Write-Ok "예약 작업에서 설치 경로를 자동으로 찾았습니다: $InstallDir"
+    }
+}
 while (-not (Test-Path (Join-Path $InstallDir '.git'))) {
     Write-Warn2 "InfraSight 설치 폴더를 찾을 수 없습니다: $InstallDir"
+    Write-Warn2 '(모르시면: 작업 스케줄러(taskschd.msc) 실행 -> "InfraSight Supervisor" 찾기 -> 속성 -> 동작 탭의 "시작 위치"가 설치 경로입니다)'
     $InstallDir = Read-Host 'InfraSight가 설치된 폴더 경로를 입력해주세요'
 }
 Write-Ok "설치 폴더: $InstallDir"
