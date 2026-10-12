@@ -2347,9 +2347,9 @@ def api_smtp_alert_log():
 
 # ---------------------------------------------------------- 2-4 알림 채널 --
 def _webhook_settings_endpoints(prefix, channel_label, channel_cls_path):
-    """Slack and Teams are configured/tested identically (one webhook URL +
-    enabled + minSeverity) -- this registers the 3 routes for one prefix
-    instead of writing the same handler twice."""
+    """Generic single-webhook channel (one URL + enabled + minSeverity),
+    currently just Slack -- this registers the 3 routes for one prefix
+    instead of writing the same handler by hand."""
 
     def get_settings():
         return jsonify(storage.get_webhook_config_public(prefix))
@@ -2385,15 +2385,14 @@ def _webhook_settings_endpoints(prefix, channel_label, channel_cls_path):
     # Flask derives each endpoint's name from the view function's __name__ by
     # default -- since get_settings/set_settings/test_send are redefined
     # fresh (but identically named) on every call to this helper, an
-    # explicit endpoint= per route is required or the second call (teams)
-    # would collide with the first (slack) and Flask would refuse to start.
+    # explicit endpoint= per route is required or a second call for another
+    # channel would collide with this one and Flask would refuse to start.
     app.get(f'/api/settings/{prefix}', endpoint=f'{prefix}_get_settings')(require_role('OPERATOR')(get_settings))
     app.put(f'/api/settings/{prefix}', endpoint=f'{prefix}_set_settings')(require_role('OPERATOR')(set_settings))
     app.post(f'/api/settings/{prefix}/test', endpoint=f'{prefix}_test_send')(require_role('OPERATOR')(test_send))
 
 
 _webhook_settings_endpoints('slack', 'Slack', 'alerts.slack_channel.SlackChannel')
-_webhook_settings_endpoints('teams', 'Teams', 'alerts.teams_channel.TeamsChannel')
 
 
 @app.get('/api/settings/kakao')

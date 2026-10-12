@@ -1,6 +1,6 @@
 """Kakao '나에게 보내기' (self-message) alert channel (2-4, Method A).
 
-Different shape from Slack/Teams: there's no single webhook URL. Kakao Login
+Different shape from Slack: there's no single webhook URL. Kakao Login
 OAuth issues a short-lived access_token (~6h) and a long-lived refresh_token;
 sending a message needs a *valid* access_token, so this channel refreshes it
 inline when storage.py's copy looks stale, rather than assuming the caller

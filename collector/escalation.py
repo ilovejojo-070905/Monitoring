@@ -14,7 +14,7 @@ running and the next tier gets notified on schedule regardless, exactly as
 it would if the email had gone through but nobody read it.
 
 Only ever uses email (alerts.email_channel.EmailChannel) -- a named 담당자 is
-a person with an address, not a team channel like Slack/Teams, and the
+a person with an address, not a team channel like Slack, and the
 existing SMTP settings (storage.get_smtp_config()) are reused as-is rather
 than inventing a second mail configuration just for this.
 """

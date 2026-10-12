@@ -975,8 +975,8 @@ def ack_incident(incident_id, acknowledged_by=None):
 # 알림 에스컬레이션: configured contact tiers + per-incident progress through
 # them. Notification delivery itself (collector/escalation.py's tick()) only
 # ever uses the email channel -- see that module's docstring for why a named
-# 담당자 maps naturally to a personal email address where Slack/Teams (team
-# channels, not individuals) don't.
+# 담당자 maps naturally to a personal email address where a team channel
+# like Slack (not an individual) doesn't.
 
 def get_escalation_settings_public():
     return {
@@ -2626,16 +2626,16 @@ def set_smtp_config(host, port, username, password=None, use_tls=True, alert_to=
         set_credential(SMTP_SYSTEM_ID, 'smtp_password', password)
 
 
-# 2-4: Slack/Teams are both plain incoming-webhook POSTs -- one URL *is* the
+# 2-4: Slack is a plain incoming-webhook POST -- one URL *is* the
 # destination, unlike email's separate host/port/credentials vs. alert_to.
 # Reuses the same settings+credentials split as SMTP (the URL is treated as
 # a credential, same as the SMTP password, since a leaked webhook URL lets
 # anyone post into that channel) under the same synthetic SMTP_SYSTEM_ID row
 # -- one extra credential key per channel, not a new table.
 def get_webhook_config(prefix):
-    """prefix: 'slack' or 'teams'. Returns {url, min_severity} if enabled and
-    a URL is set, else None -- same "fully configured or not used" contract
-    as get_smtp_config()."""
+    """prefix: 'slack'. Returns {url, min_severity} if enabled and a URL is
+    set, else None -- same "fully configured or not used" contract as
+    get_smtp_config()."""
     if get_setting(f'{prefix}_enabled') != '1':
         return None
     url = get_credential(SMTP_SYSTEM_ID, f'{prefix}_webhook_url')
@@ -2877,10 +2877,6 @@ def _get_alert_channels():
     if slack_cfg:
         from alerts.slack_channel import SlackChannel
         channels.append(('slack', SlackChannel(), slack_cfg['url'], slack_cfg['min_severity']))
-    teams_cfg = get_webhook_config('teams')
-    if teams_cfg:
-        from alerts.teams_channel import TeamsChannel
-        channels.append(('teams', TeamsChannel(), teams_cfg['url'], teams_cfg['min_severity']))
     kakao_cfg = get_kakao_config()
     if kakao_cfg:
         from alerts.kakao_channel import KakaoChannel
@@ -2895,7 +2891,7 @@ def _get_alert_channels():
 # 1-2: a transient SMTP hiccup (relay momentarily unreachable, timeout) is
 # common enough that giving up after one try would under-deliver real
 # incident alerts -- mirrors report_delivery.py's RETRY_ATTEMPTS=3 pattern.
-# Slack/Teams aren't retried here: this ticket is specifically about email,
+# Slack isn't retried here: this ticket is specifically about email,
 # and a webhook POST failing almost always means a bad/revoked URL (not a
 # transient blip), where retrying 3x just delays the "발송 실패" incident
 # for no benefit.
@@ -2930,13 +2926,13 @@ def _dispatch_one_channel(name, channel, destination, severity, source, message)
 def _dispatch_alert(severity, source, message, force=False):
     # Channels used to go out one at a time, in sequence -- email first (up
     # to 3 attempts, each a real SMTP connect+TLS+auth round trip over the
-    # network), then Slack/Teams only once email's attempt(s) finished. A
+    # network), then other channels only once email's attempt(s) finished. A
     # slow or timing-out mail server didn't just delay the email itself, it
     # delayed every other channel behind it (and blocked the collector's
     # poll loop the whole time, since add_incident() calls this inline).
     # Firing each channel from its own thread means they all start at once,
-    # so Slack/Teams land as soon as their own webhook POST completes
-    # instead of waiting on email's.
+    # so e.g. Slack lands as soon as its own webhook POST completes instead
+    # of waiting on email's.
     #
     # force=True is what add_incident() passes for a recovery ('info')
     # message that actually closed an open incident -- recovery is always
