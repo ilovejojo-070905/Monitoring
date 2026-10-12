@@ -5928,9 +5928,8 @@ function drawPingDevice(e, catLabel){
       ${trafficCard}
     </div>
     <div style="${pingGrid2}">
-      ${envCard}
+      <div style="display:flex;flex-direction:column;gap:10px;min-width:0">${envCard}${responseTimeCard}</div>
       ${ifaceCard}
-      ${responseTimeCard}
     </div>
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
