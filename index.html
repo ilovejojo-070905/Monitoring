@@ -6176,6 +6176,7 @@ setInterval(tickClock, 1000);
   // instead of leaving the user on the overview screen wondering if it worked.
   const kakaoAuthResult = new URLSearchParams(location.search).get('kakaoAuth');
   if(kakaoAuthResult){
+    const kakaoReason = new URLSearchParams(location.search).get('kakaoReason');
     history.replaceState(null, '', location.pathname);
     switchView('channels');
     const kakaoHead = $('#view-channels [data-collapse="ch-kakao-body"]');
@@ -6184,7 +6185,14 @@ setInterval(tickClock, 1000);
     if(kakaoWrap) kakaoWrap.classList.remove('collapsed');
     const kakaoStatusEl = $('#ch-kakao-status');
     if(kakaoStatusEl){
-      kakaoStatusEl.textContent = kakaoAuthResult === 'success' ? '카카오 계정이 연결되었습니다' : '카카오 연결에 실패했습니다. 감사 로그를 확인하세요';
+      // kakaoReason: server.py's /api/kakao/callback appends a short,
+      // specific failure reason (e.g. "redirect_uri mismatch", "카카오
+      // 로그인 화면에서 취소하셨습니다") to the redirect -- showing it here
+      // directly instead of "감사 로그를 확인하세요" (there's no screen in
+      // this app that shows the audit log, so that instruction was a dead
+      // end for the admin).
+      kakaoStatusEl.textContent = kakaoAuthResult === 'success' ? '카카오 계정이 연결되었습니다'
+        : ('카카오 연결에 실패했습니다' + (kakaoReason ? `: ${kakaoReason}` : ''));
       kakaoStatusEl.style.color = kakaoAuthResult === 'success' ? 'var(--good)' : 'var(--crit)';
     }
   }else{

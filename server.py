@@ -2451,11 +2451,18 @@ def api_kakao_authorize():
 @app.get('/api/kakao/callback')
 @require_role('ADMIN')
 def api_kakao_callback():
+    # kakaoReason: a short, human-readable reason appended to the redirect so
+    # the frontend can show it directly -- the status text used to just say
+    # "감사 로그를 확인하세요" (check the audit log), but there's no screen in
+    # this app that actually shows the audit log, so that instruction sent
+    # the admin nowhere. The full detail still goes to audit() for anyone
+    # who DOES query the DB directly; this is just the user-facing summary.
     code = request.args.get('code')
     oauth_error = request.args.get('error')
     if oauth_error or not code:
         audit('KAKAO_OAUTH_CALLBACK', details=f"failed: {oauth_error or 'no code'}")
-        return redirect('/?kakaoAuth=error')
+        reason = '카카오 로그인 화면에서 취소하셨습니다' if oauth_error == 'access_denied' else (oauth_error or '인가 코드를 받지 못했습니다')
+        return redirect(f'/?kakaoAuth=error&kakaoReason={urllib.parse.quote(reason)}')
     redirect_uri = request.url_root.rstrip('/') + '/api/kakao/callback'
     rest_api_key = storage.get_setting('kakao_rest_api_key')
     client_secret = storage.get_credential(storage.SMTP_SYSTEM_ID, 'kakao_client_secret')
@@ -2480,13 +2487,23 @@ def api_kakao_callback():
     except urllib.error.HTTPError as e:
         # The raw Kakao error body can include request details -- keep it in
         # the audit log for the admin to look up server-side, same pattern as
-        # TEST_SMTP's smtplib error, not in the redirect URL.
+        # TEST_SMTP's smtplib error, not in the redirect URL. Kakao's token
+        # endpoint returns {"error":"...","error_description":"..."} on
+        # failure -- error_description is the actually useful, specific part
+        # (e.g. "redirect_uri mismatch") so that's what's surfaced, not the
+        # generic HTTP status.
         detail = e.read().decode('utf-8', 'replace')[:300]
         audit('KAKAO_OAUTH_CALLBACK', details=f"failed: HTTP {e.code}: {detail}")
-        return redirect('/?kakaoAuth=error')
+        reason = detail
+        try:
+            kakao_err = json.loads(detail)
+            reason = kakao_err.get('error_description') or kakao_err.get('error') or detail
+        except (ValueError, AttributeError):
+            pass
+        return redirect(f'/?kakaoAuth=error&kakaoReason={urllib.parse.quote(reason[:200])}')
     except Exception as e:
         audit('KAKAO_OAUTH_CALLBACK', details=f"failed: {type(e).__name__}: {e}")
-        return redirect('/?kakaoAuth=error')
+        return redirect(f'/?kakaoAuth=error&kakaoReason={urllib.parse.quote(str(e)[:200])}')
 
 
 @app.post('/api/settings/kakao/test')
