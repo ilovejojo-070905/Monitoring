@@ -281,8 +281,15 @@ if ($hasAdmin -eq '1') {
 Pop-Location
 
 # --------------------------------------------------------- [7] 자동 시작 --
+# powershell.exe -ExecutionPolicy Bypass로 직접 불러야 한다 -- `& 경로\*.ps1`
+# 식으로 바로 부르면 그 PC의 PowerShell 실행 정책(기본값이 흔히 Restricted인
+# 평범한 사용자 PC)에 그대로 걸려 "이 시스템에서 스크립트를 실행할 수
+# 없으므로..." 오류로 죽는다 -- 실측으로 확인됨(이 단계가 try/catch로
+# 안 감싸여 있어서 install.ps1 전체가 여기서 중단됨). uninstall.ps1은
+# 처음부터 이 방식으로 불러서 같은 문제를 겪은 적이 없었음.
 Write-Step '[7/9] 로그온 시 자동 시작 등록'
-& (Join-Path $InstallDir 'ops\register-task.ps1')
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $InstallDir 'ops\register-task.ps1')
+if ($LASTEXITCODE -ne 0) { throw "register-task.ps1 실행 실패 (종료 코드 $LASTEXITCODE)" }
 
 # ----------------------------------------------------------- [8] 방화벽 --
 Write-Step '[8/9] 방화벽 인바운드 규칙'
@@ -309,9 +316,11 @@ foreach ($r in $rules) {
 }
 
 # ----------------------------------------------------- [9] 원격 접속 구성 --
+# 위 [7/9]와 같은 이유로 powershell.exe -ExecutionPolicy Bypass로 직접 부른다.
 Write-Step '[9/9] 네트워크 장비 원격 접속(SSH/Telnet) 구성'
 try {
-    & (Join-Path $InstallDir 'ops\setup-remote-access.ps1') -InstallDir $InstallDir -PythonExe $pythonExe
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $InstallDir 'ops\setup-remote-access.ps1') -InstallDir $InstallDir -PythonExe $pythonExe
+    if ($LASTEXITCODE -ne 0) { throw "setup-remote-access.ps1 실행 실패 (종료 코드 $LASTEXITCODE)" }
 } catch {
     Write-Warn2 "원격 접속 구성 중 문제가 있었습니다 (무시하고 계속합니다): $_"
 }

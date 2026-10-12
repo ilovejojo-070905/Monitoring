@@ -133,7 +133,13 @@ try {
         $pythonExe = (Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" -ErrorAction SilentlyContinue -File | Select-Object -First 1).FullName
     }
     if ($pythonExe) {
-        & (Join-Path $InstallDir 'ops\setup-remote-access.ps1') -InstallDir $InstallDir -PythonExe $pythonExe
+        # powershell.exe -ExecutionPolicy Bypass로 직접 불러야 한다 -- 실측으로
+        # 확인됨: `& 경로\*.ps1` 식으로 바로 부르면 그 PC의 PowerShell 실행
+        # 정책(기본값이 흔히 Restricted인 평범한 사용자 PC)에 걸려 "이
+        # 시스템에서 스크립트를 실행할 수 없으므로..." 오류로 조용히 건너뜀
+        # (install.ps1에도 같은 문제가 있었고 같은 이유로 고침).
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $InstallDir 'ops\setup-remote-access.ps1') -InstallDir $InstallDir -PythonExe $pythonExe
+        if ($LASTEXITCODE -ne 0) { throw "setup-remote-access.ps1 실행 실패 (종료 코드 $LASTEXITCODE)" }
     } else {
         Write-Warn2 'python을 찾을 수 없어 원격 접속(SSH/Telnet) 구성을 건너뜁니다.'
     }
@@ -156,7 +162,10 @@ try {
 # 확인했던 것과 같은 이유.
 try {
     Write-Host "`n[재시작] 백엔드를 재시작하는 중..." -ForegroundColor Cyan
-    & (Join-Path $InstallDir 'ops\stop.ps1')
+    # powershell.exe -ExecutionPolicy Bypass로 직접 불러야 한다 (위
+    # setup-remote-access.ps1 호출과 같은 이유 -- 실행 정책에 걸리는 문제).
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $InstallDir 'ops\stop.ps1')
+    if ($LASTEXITCODE -ne 0) { throw "stop.ps1 실행 실패 (종료 코드 $LASTEXITCODE)" }
 
     $task = Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue
     if ($task) {
