@@ -30,6 +30,15 @@ param(
     [switch]$SkipBrowserLaunch
 )
 
+# 빌드(ps2exe 컴파일) 시 build-release.ps1이 dist\InfraSightAgent.exe(에이전트
+# 실행 파일)를 base64로 치환해 넣는다 -- 에이전트 다운로드 기능(장비 등록 시
+# "InfraSightAgent.exe 다운로드")이 git에는 안 올라가는(용량 때문에
+# .gitignore 처리된) 이 파일에 의존하는데, git clone만으로 설치하면 이 파일이
+# 아예 없어서 다운로드가 500 에러로 실패하는 문제가 실측으로 확인됐음 --
+# 설치 과정 자체에 끼워 넣어 해결한다. 패치적용.ps1의 $EMBEDDED_PATCH_B64와
+# 완전히 같은 패턴(치환 전이면 플레이스홀더 그대로 남아있어 건너뜀).
+$EMBEDDED_AGENT_EXE_B64 = '__EMBEDDED_AGENT_EXE_B64__'
+
 $ErrorActionPreference = 'Stop'
 
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
@@ -323,6 +332,21 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "setup-remote-access.ps1 실행 실패 (종료 코드 $LASTEXITCODE)" }
 } catch {
     Write-Warn2 "원격 접속 구성 중 문제가 있었습니다 (무시하고 계속합니다): $_"
+}
+
+# --------------------------------------------------- [에이전트] 설치 파일 --
+Write-Step '서버/PC 모니터링용 에이전트(InfraSightAgent.exe) 배치'
+try {
+    if ($EMBEDDED_AGENT_EXE_B64 -and $EMBEDDED_AGENT_EXE_B64 -notlike '__*') {
+        $distDir = Join-Path $InstallDir 'dist'
+        New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+        [System.IO.File]::WriteAllBytes((Join-Path $distDir 'InfraSightAgent.exe'), [Convert]::FromBase64String($EMBEDDED_AGENT_EXE_B64))
+        Write-Ok '에이전트 설치 파일을 배치했습니다 (장비 등록 시 다운로드 가능).'
+    } else {
+        Write-Warn2 '에이전트 실행 파일이 이 설치 프로그램에 포함되어 있지 않습니다 (개발/테스트용 직접 실행 -- 건너뜁니다).'
+    }
+} catch {
+    Write-Warn2 "에이전트 설치 파일 배치 중 문제가 있었습니다 (무시하고 계속합니다): $_"
 }
 
 # ------------------------------------------------------------ 지금 시작 --

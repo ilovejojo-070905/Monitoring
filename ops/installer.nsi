@@ -21,6 +21,14 @@ Unicode true
 !ifndef VERSION
   !define VERSION "dev"
 !endif
+; build-release.ps1이 install.ps1 원본 대신, dist\InfraSightAgent.exe를
+; base64로 치환해 넣은 임시 복사본 경로를 넘겨준다 (수동으로
+; `makensis /DVERSION=dev ops\installer.nsi`만 돌리는 개발/테스트 때는 이
+; 정의가 없으니 원본 install.ps1을 그대로 쓴다 -- 에이전트 내장 없이 건너뜀,
+; install.ps1 자신의 플레이스홀더 미치환 분기가 이미 그 경우를 처리함).
+!ifndef INSTALL_PS1_PATH
+  !define INSTALL_PS1_PATH "..\install.ps1"
+!endif
 
 Name "InfraSight"
 OutFile "..\setup\InfraSight-Setup-GUI-${VERSION}.exe"
@@ -66,7 +74,7 @@ Section "InfraSight" SecInstall
     StrCpy $1 "$TEMP\InfraSightInstaller"
     CreateDirectory "$1"
     SetOutPath "$1"
-    File "..\install.ps1"
+    File "/oname=install.ps1" "${INSTALL_PS1_PATH}"
 
     ; $INSTDIR 끝에 백슬래시가 붙어 있으면(드라이브 루트 바로 아래를 고르면
     ; 흔히 이렇게 됨 -- 실측: "D:\InfraSight" 선택 시 재현됨) 아래처럼 따옴표로

@@ -2,7 +2,8 @@
 InfraSight 릴리스 빌드 (Setup.exe + Setup-GUI.exe + 자체 내장형 Patch.exe + Uninstall.exe)
 =============================================================================
 현재 HEAD 기준으로 이 저장소의 setup\ 폴더에 새로 만든다:
-  - InfraSight-Setup-*.exe       : install.ps1을 그대로 ps2exe로 감싼 콘솔
+  - InfraSight-Setup-*.exe       : install.ps1(에이전트 exe가 base64로
+                                    치환된 임시 복사본)을 ps2exe로 감싼 콘솔
                                     설치 프로그램 (자동화/무인 설치에 적합)
   - InfraSight-Setup-GUI-*.exe   : 같은 install.ps1을 NSIS 마법사(환영 ->
                                     설치 위치 선택 -> 설치 진행 -> 완료)로
@@ -25,6 +26,15 @@ InfraSight 릴리스 빌드 (Setup.exe + Setup-GUI.exe + 자체 내장형 Patch.
                                     (기준 커밋을 매 빌드마다 갱신해줘야
                                     하는데 깜빡하기 쉬운 구조였음) 폐기함.
   - InfraSight-Uninstall-*.exe   : uninstall.ps1을 ps2exe로 감싼 제거 프로그램
+
+Setup/Patch 둘 다 dist\InfraSightAgent.exe(장비 등록 시 다운로드하는 에이전트
+실행 파일)도 base64로 함께 내장한다 -- 이 파일은 용량 때문에 .gitignore
+대상이라 git bundle에는 안 담기는데, 그렇다고 아예 안 실으면 설치/패치를
+받은 PC에서 "에이전트 다운로드"가 500 에러로 실패하는 문제가 실제로
+있었음(이 파일 자체가 아예 없어서). PyInstaller가 있으면 agent.py에서
+매번 새로 빌드해 최신으로 유지하고, 없으면 이미 dist\에 있는 걸 그대로
+쓰고, 그것도 없으면 건너뛴다(install.ps1/패치적용.ps1 쪽도 그 경우 조용히
+건너뛰게 되어 있음).
 
 사용법 (저장소 루트에서):
     powershell -ExecutionPolicy Bypass -File ops\build-release.ps1
@@ -58,19 +68,44 @@ try {
     $diffB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($bundlePath))
     Remove-Item $bundlePath -Force -ErrorAction SilentlyContinue
 
+    # 에이전트 실행 파일: PyInstaller가 있으면 agent.py에서 매번 새로 빌드해
+    # dist\InfraSightAgent.exe가 항상 최신(지금 빌드하는 코드 버전과 일치)이
+    # 되게 한다 -- 없으면 이미 dist\에 있는 걸 그대로 쓴다(없을 수도 있음).
+    $agentExePath = Join-Path $repoRoot 'dist\InfraSightAgent.exe'
+    $pyinstaller = Get-Command pyinstaller -ErrorAction SilentlyContinue
+    if ($pyinstaller) {
+        & pyinstaller --noconfirm (Join-Path $repoRoot 'InfraSightAgent.spec')
+        if ($LASTEXITCODE -ne 0) { Write-Warning "에이전트(PyInstaller) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 기존 dist\InfraSightAgent.exe가 있으면 그걸 그대로 씁니다." }
+    } else {
+        Write-Warning 'PyInstaller를 찾을 수 없어 에이전트를 새로 빌드하지 못합니다 (pip install pyinstaller) -- 기존 dist\InfraSightAgent.exe가 있으면 그걸 그대로 씁니다.'
+    }
+    $agentExeB64 = $null
+    if (Test-Path $agentExePath) {
+        $agentExeB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($agentExePath))
+    } else {
+        Write-Warning 'dist\InfraSightAgent.exe가 없어 에이전트 다운로드 기능 없이 빌드합니다.'
+    }
+
     $patchSrc = Get-Content (Join-Path $repoRoot '패치적용.ps1') -Raw -Encoding UTF8
     $patchSrc = $patchSrc.Replace('__EMBEDDED_PATCH_B64__', $diffB64)
-    $tempPs1 = Join-Path $env:TEMP "infrasight-patch-embedded-$([guid]::NewGuid().ToString('N')).ps1"
+    if ($agentExeB64) { $patchSrc = $patchSrc.Replace('__EMBEDDED_AGENT_EXE_B64__', $agentExeB64) }
+    $tempPatchPs1 = Join-Path $env:TEMP "infrasight-patch-embedded-$([guid]::NewGuid().ToString('N')).ps1"
+
+    $installSrc = Get-Content (Join-Path $repoRoot 'install.ps1') -Raw -Encoding UTF8
+    if ($agentExeB64) { $installSrc = $installSrc.Replace('__EMBEDDED_AGENT_EXE_B64__', $agentExeB64) }
+    $tempInstallPs1 = Join-Path $env:TEMP "infrasight-install-embedded-$([guid]::NewGuid().ToString('N')).ps1"
+
     # ps2exe가 소스를 한글 주석까지 포함해 정확히 읽으려면 BOM이 있어야 한다
     # (이번 세션에 실제로 BOM 없는 .ps1이 $PSParser에서 깨진 전례가 있었음).
     $utf8Bom = New-Object System.Text.UTF8Encoding $true
-    [System.IO.File]::WriteAllText($tempPs1, $patchSrc, $utf8Bom)
+    [System.IO.File]::WriteAllText($tempPatchPs1, $patchSrc, $utf8Bom)
+    [System.IO.File]::WriteAllText($tempInstallPs1, $installSrc, $utf8Bom)
 
     $iconFile = Join-Path $repoRoot 'ops\assets\installer.ico'
 
     Import-Module ps2exe
-    Invoke-ps2exe -inputFile (Join-Path $repoRoot 'install.ps1') -outputFile (Join-Path $outDir "InfraSight-Setup-$date-$sha.exe") -title 'InfraSight Setup' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
-    Invoke-ps2exe -inputFile $tempPs1 -outputFile (Join-Path $outDir "InfraSight-Patch-$date-$sha.exe") -title 'InfraSight Patch' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
+    Invoke-ps2exe -inputFile $tempInstallPs1 -outputFile (Join-Path $outDir "InfraSight-Setup-$date-$sha.exe") -title 'InfraSight Setup' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
+    Invoke-ps2exe -inputFile $tempPatchPs1 -outputFile (Join-Path $outDir "InfraSight-Patch-$date-$sha.exe") -title 'InfraSight Patch' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall.ps1') -outputFile (Join-Path $outDir "InfraSight-Uninstall-$date-$sha.exe") -title 'InfraSight Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
 
     $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
@@ -78,7 +113,7 @@ try {
     if (Test-Path $makensis) {
         Push-Location (Join-Path $repoRoot 'ops')
         try {
-            & $makensis "/DVERSION=$date-$sha" installer.nsi
+            & $makensis "/DVERSION=$date-$sha" "/DINSTALL_PS1_PATH=$tempInstallPs1" installer.nsi
             if ($LASTEXITCODE -ne 0) { Write-Warning "GUI 설치 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다." }
         } finally {
             Pop-Location
@@ -87,7 +122,7 @@ try {
         Write-Warning 'NSIS(makensis.exe)를 찾을 수 없어 GUI 설치 프로그램 빌드를 건너뜁니다 (winget install NSIS.NSIS로 설치해주세요).'
     }
 
-    Remove-Item $tempPs1 -Force -ErrorAction SilentlyContinue
+    Remove-Item $tempPatchPs1, $tempInstallPs1 -Force -ErrorAction SilentlyContinue
     Write-Host "`n빌드 완료: $outDir" -ForegroundColor Green
     Get-ChildItem $outDir
 } finally {

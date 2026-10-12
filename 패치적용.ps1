@@ -23,6 +23,10 @@ param(
 )
 
 $EMBEDDED_PATCH_B64 = '__EMBEDDED_PATCH_B64__'
+# dist\InfraSightAgent.exe는 .gitignore 대상(용량 때문)이라 위 git bundle에는
+# 안 담기므로, 에이전트 다운로드 기능이 계속 최신으로 유지되도록 별도로
+# base64 내장해 배치한다 (install.ps1과 동일한 패턴).
+$EMBEDDED_AGENT_EXE_B64 = '__EMBEDDED_AGENT_EXE_B64__'
 
 # 'Stop'으로 두면 ps2exe로 컴파일된 실행 파일 안에서는 git(네이티브 exe)이
 # stderr에 한 줄만 써도(리다이렉션 여부와 무관하게) 스크립트 전체가 죽어버린다
@@ -145,6 +149,18 @@ try {
     }
 } catch {
     Write-Warn2 "원격 접속 구성 중 문제가 있었습니다 (무시하고 계속합니다): $_"
+}
+
+# --------------------------------------------- [에이전트] 설치 파일 갱신 --
+try {
+    if ($EMBEDDED_AGENT_EXE_B64 -and $EMBEDDED_AGENT_EXE_B64 -notlike '__*') {
+        $distDir = Join-Path $InstallDir 'dist'
+        New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+        [System.IO.File]::WriteAllBytes((Join-Path $distDir 'InfraSightAgent.exe'), [Convert]::FromBase64String($EMBEDDED_AGENT_EXE_B64))
+        Write-Ok '에이전트 설치 파일(InfraSightAgent.exe)을 최신으로 갱신했습니다.'
+    }
+} catch {
+    Write-Warn2 "에이전트 설치 파일 갱신 중 문제가 있었습니다 (무시하고 계속합니다): $_"
 }
 
 # --------------------------------------------------- [6] 백엔드 재시작 --
