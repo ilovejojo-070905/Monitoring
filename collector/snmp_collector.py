@@ -242,12 +242,24 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
                     result['hrMemSize'] = hr_size.get(ram_idx)
                     result['hrMemUsed'] = hr_used.get(ram_idx)
                     result['hrMemUnits'] = hr_units.get(ram_idx)
-            if profile.get('name') == 'cisco':
+            env_mib = profile.get('env_mib')
+            if env_mib == 'cisco_envmon':
                 result['envTempDescr'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_TEMP_DESCR, timeout=timeout)
                 result['envTempValue'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_TEMP_VALUE, timeout=timeout)
                 result['envTempState'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_TEMP_STATE, timeout=timeout)
                 result['envFanState'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_FAN_STATE, timeout=timeout)
                 result['envSupplyState'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_SUPPLY_STATE, timeout=timeout)
+            elif env_mib == 'juniper_opertable':
+                # Same jnxOperatingTable already walked for CPU above, just
+                # with the descr/state/temp columns this time -- one mixed
+                # table needs classifying into temp/fan/supply buckets
+                # (_juniper_env_from_opertable), unlike Cisco's 3 separate
+                # ready-made tables.
+                oper_descr = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_JUNIPER_OPER_DESCR, timeout=timeout)
+                oper_state = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_JUNIPER_OPER_STATE, timeout=timeout)
+                oper_temp = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_JUNIPER_OPER_TEMP, timeout=timeout)
+                (result['envTempDescr'], result['envTempValue'], result['envTempState'],
+                 result['envFanState'], result['envSupplyState']) = _juniper_env_from_opertable(oper_descr, oper_state, oper_temp)
             try:
                 ent = await _snmp_get(engine, ip, auth_data, port,
                                        [OID_ENT_PHYSICAL_DESCR, OID_ENT_PHYSICAL_MODEL_NAME, OID_ENT_PHYSICAL_SERIAL_NUM],
@@ -288,6 +300,40 @@ def _safe_int(v):
 
 
 _ENVMON_STATE_LABEL = {'1': 'normal', '2': 'warning', '3': 'critical', '4': 'shutdown', '5': 'notPresent'}
+
+
+def _juniper_env_from_opertable(oper_descr, oper_state, oper_temp):
+    """Turns JUNIPER-MIB's one mixed jnxOperatingTable (one row per
+    component -- Routing Engine/FPC/PIC/fan/PSU all together, not separate
+    per-sensor-type tables like Cisco's ENVMON) into the same
+    {envTempDescr, envTempValue, envTempState, envFanState, envSupplyState}
+    shape every profile's extraction produces, so the entity['envTemps'/
+    'envFans'/'envSupplies'] builder further down in sample_snmp stays
+    vendor-agnostic and untouched. Rows are classified by the
+    component-class digit at the start of each row's table index (see
+    snmp_profiles.JUNIPER_CLASS_*); jnxOperatingState's own enum is remapped
+    into Cisco ENVMON's '1'..'5' vocabulary, but only the confirmed-normal
+    codes map to '1' -- everything else becomes '9' (not a real ENVMON
+    code, so _ENVMON_STATE_LABEL.get(...) falls through to 'unknown')
+    rather than guessing a severity it isn't confident about (see
+    snmp_profiles.JUNIPER_STATE_NORMAL_CODES for the full reasoning)."""
+    def remap_state(raw):
+        return '1' if str(raw) in snmp_profiles.JUNIPER_STATE_NORMAL_CODES else '9'
+
+    env_temp_descr, env_temp_value, env_temp_state = {}, {}, {}
+    for idx, val in oper_temp.items():
+        temp_val = _safe_int(val)
+        if not temp_val:  # 0/unparseable -- this row isn't a real temperature reading
+            continue
+        env_temp_descr[idx] = oper_descr.get(idx)
+        env_temp_value[idx] = temp_val
+        env_temp_state[idx] = remap_state(oper_state.get(idx))
+
+    env_fan_state = {idx: remap_state(v) for idx, v in oper_state.items()
+                      if idx.split('.')[0] == snmp_profiles.JUNIPER_CLASS_FAN}
+    env_supply_state = {idx: remap_state(v) for idx, v in oper_state.items()
+                         if idx.split('.')[0] == snmp_profiles.JUNIPER_CLASS_POWER_SUPPLY}
+    return env_temp_descr, env_temp_value, env_temp_state, env_fan_state, env_supply_state
 
 
 def sample_snmp(entity, device_row):

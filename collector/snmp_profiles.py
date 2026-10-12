@@ -50,12 +50,37 @@ OID_JUNIPER_MEM_BUFFER = '1.3.6.1.4.1.2636.3.1.13.1.11'
 
 # CISCO-ENVMON-MIB (중간 난이도 항목: 온도/팬/전원 상태) -- Cisco 전용, 'generic'
 # 프로필에서는 조회하지 않는다. 세 상태 OID 모두 같은 enum을 쓴다
-# (1=normal, 2=warning, 3=critical, 4=shutdown, 5=notPresent).
+# (1=normal, 2=warning, 3=critical, 4=shutdown, 5=notPresent). 이 5단계가
+# InfraSight 전체(여기·snmp_collector.py·index.html)가 공유하는 "표준
+# 환경센서 상태 어휘"다 -- 다른 벤더를 추가할 때도 그 벤더의 원래 enum을
+# 그대로 노출하지 않고 반드시 이 5단계로 변환해서 맞춰야 한다 (아래 Juniper
+# 항목 참고).
 OID_CISCO_ENVMON_TEMP_DESCR = '1.3.6.1.4.1.9.9.13.1.3.1.2'
 OID_CISCO_ENVMON_TEMP_VALUE = '1.3.6.1.4.1.9.9.13.1.3.1.3'
 OID_CISCO_ENVMON_TEMP_STATE = '1.3.6.1.4.1.9.9.13.1.3.1.6'
 OID_CISCO_ENVMON_FAN_STATE = '1.3.6.1.4.1.9.9.13.1.4.1.3'
 OID_CISCO_ENVMON_SUPPLY_STATE = '1.3.6.1.4.1.9.9.13.1.5.1.3'
+
+# Juniper 환경센서: 별도 MIB가 아니라 CPU에 이미 쓰고 있는 그 jnxOperatingTable
+# 그대로 재사용한다 (장비당 한 행이 아니라 부품 하나당 한 행 -- Routing
+# Engine/FPC/PIC/팬/전원 전부 같은 테이블에 섞여 있음). Cisco처럼 온도/팬/
+# 전원이 각자 별도 테이블로 안 나뉘어 있어서, 행을 구분하려면 테이블
+# 인덱스의 첫 번째 숫자(부품 종류 코드)로 걸러야 한다 -- 여러 출처에서
+# 공통으로 확인된 값: 2=전원, 4=팬, 7=FPC, 8=PIC, 9=Routing Engine.
+# (snmp_collector.py가 이 구분 로직을 실제로 수행한다 -- 여기는 OID만.)
+OID_JUNIPER_OPER_DESCR = '1.3.6.1.4.1.2636.3.1.13.1.5'
+OID_JUNIPER_OPER_STATE = '1.3.6.1.4.1.2636.3.1.13.1.6'
+OID_JUNIPER_OPER_TEMP = '1.3.6.1.4.1.2636.3.1.13.1.7'
+JUNIPER_CLASS_POWER_SUPPLY = '2'
+JUNIPER_CLASS_FAN = '4'
+
+# jnxOperatingState는 Cisco ENVMON과 전혀 다른 enum이라(부품의 "가동 상태"지
+# "정상/주의/위험" 같은 등급이 아님), 코드 숫자를 그대로 넘기면 완전히 다른
+# 뜻인 Cisco 쪽 '2'(warning)·'3'(critical) 라벨로 잘못 해석된다. 조사로
+# 확실히 확인된 값만 "정상"(Cisco 쪽 '1')으로 변환하고, 나머지(= 확신 없는
+# 값들)는 전부 "알수없음"으로 떨어지게 한다 -- 틀릴 바엔 "모른다"가 "고장난
+# 걸 정상이라고 표시"보다 훨씬 안전하다는 판단.
+JUNIPER_STATE_NORMAL_CODES = ('2', '5')  # running(2) / running at full speed(5)
 
 PROFILES = {
     # 'generic' preserves the exact pre-Phase-7 behavior: try the standard
@@ -77,6 +102,12 @@ PROFILES = {
         'cpu_fallback_oid': None,
         'mem_used_oid': OID_CISCO_MEM_USED,
         'mem_free_oid': OID_CISCO_MEM_FREE,
+        # env_mib: which environment-sensor (온도/팬/전원) parser
+        # snmp_collector.py should use, if any -- None/absent means "this
+        # vendor's env sensor OIDs aren't reliable enough to guess at" (see
+        # the hp/dell/juniper entries below for why that's the honest answer
+        # for some of them, not just an oversight).
+        'env_mib': 'cisco_envmon',
     },
     'ups': {
         'name': 'ups',
@@ -95,6 +126,18 @@ PROFILES = {
         'cpu_fallback_oid': OID_HR_PROCESSOR_LOAD,
         'mem_used_oid': OID_HP_MEM_USED,
         'mem_free_oid': OID_HP_MEM_FREE,
+        # No env_mib: HP-ICF-CHASSIS does have a sensor table
+        # (hpicfSensorDescr/hpicfSensorStatus under icfSensors), but while
+        # researching it the only operational-status value multiple sources
+        # agreed on was good(4) -- one monitoring tool's own state table
+        # listed 2 as "Bad" while its own lookup elsewhere listed 3 as
+        # "Bad" for the same column, and the exact column OIDs beneath
+        # icfSensors weren't confirmed precisely enough to commit here with
+        # the same confidence as the CPU/mem OIDs above. Shipping a sensor
+        # reading that's silently backwards (reports a failed fan as
+        # "normal") is worse than showing nothing, so this is left
+        # unimplemented rather than guessed.
+        'env_mib': None,
     },
     # Dell/Dell EMC Networking's own CPU/memory OIDs turned out to not be
     # usable here: every PowerConnect/PowerSwitch product line keeps them
@@ -115,6 +158,14 @@ PROFILES = {
         'cpu_fallback_oid': None,
         'mem_used_oid': None,
         'mem_free_oid': None,
+        # No env_mib, same reasoning as the CPU/mem decision above: Dell's
+        # temp/fan/power OIDs are split across at least 3 unrelated MIB
+        # trees depending on product generation (62xx/M-series vs
+        # 54xx/34xx vs the tree N-able's own checks use), with no common
+        # prefix and no standard-MIB equivalent to fall back on the way
+        # HOST-RESOURCES-MIB covers CPU/memory -- there's no safe default
+        # here, only "guess which Dell you have."
+        'env_mib': None,
     },
     'juniper': {
         'name': 'juniper',
@@ -135,6 +186,7 @@ PROFILES = {
         # than confidently wrong.
         'mem_used_oid': None,
         'mem_free_oid': None,
+        'env_mib': 'juniper_opertable',
     },
 }
 
