@@ -30,7 +30,7 @@ function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow }
 # 똑같이 재현해 돌리면 매번 성공함), 그 설치 창은 끝나면 로그가 같이 사라져서
 # 사후에 원인을 짚을 방법이 없었다 -- host.ps1의 host-debug.log와 같은 이유로,
 # 매 실행마다 어디까지 도달했는지 파일에 남긴다.
-$diagLog = Join-Path $env:LOCALAPPDATA 'InfraSight\setup-remote-access.log'
+$diagLog = Join-Path $InstallDir 'setup-remote-access.log'
 function Write-Diag($msg) {
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path $diagLog -Parent) -ErrorAction SilentlyContinue | Out-Null
@@ -48,7 +48,16 @@ if (-not (Test-Path $repoRemoteDir)) {
     return
 }
 
-$baseDir = Join-Path $env:LOCALAPPDATA 'InfraSight'
+## 사용자 요청: "설치한 경로 바로 아래"가 %LOCALAPPDATA%보다 찾기 쉽다 --
+## D:\InfraSight에 설치했으면 D:\InfraSight\extension 그대로 보이길 원함.
+## 예전엔 $InstallDir과 무관한 고정 위치(%LOCALAPPDATA%\InfraSight)를 썼는데,
+## 그 이유였던 "앱을 나중에 다른 경로로 재설치해도 확장 프로그램 폴더는 안
+## 바뀐다"는 이점은 실제로는 의미가 없었다 -- uninstall.ps1이 그 폴더 자체를
+## 지우기 때문에, 애초에 재설치할 때마다 Chrome에 다시 로드해야 하는 건
+## 전역 위치를 쓰든 안 쓰든 똑같았다. native-host/extension은 git 저장소
+## 안이지만 머신별로 생성되는 파일이라(host.json의 절대경로, manifest.json의
+## LAN IP) .gitignore에 등록해 커밋되지 않게 한다.
+$baseDir = $InstallDir
 $hostDir = Join-Path $baseDir 'native-host'
 $extDir  = Join-Path $baseDir 'extension'
 $extDirExisted = Test-Path $extDir
@@ -61,9 +70,9 @@ Copy-Item (Join-Path $repoRemoteDir 'native-host\host.bat') (Join-Path $hostDir 
 Copy-Item (Join-Path $repoRemoteDir 'extension\background.js') (Join-Path $extDir 'background.js') -Force
 Write-Diag 'host.ps1/host.bat/background.js 복사 완료'
 
-# host.json의 "path"는 이 PC에서 host.bat가 실제로 있는 절대 경로라 머신마다
-# 달라진다(계정명이 다르면 %LOCALAPPDATA% 전체 경로가 달라짐) -- 그래서
-# 레포에 고정 파일로 두지 않고 설치/패치 시점마다 이 경로를 넣어 새로 만든다.
+# host.json의 "path"는 이 PC에서 host.bat가 실제로 있는 절대 경로라 설치
+# 위치($InstallDir)에 따라 머신마다 달라진다 -- 그래서 레포에 고정 파일로
+# 두지 않고 설치/패치 시점마다 이 경로를 넣어 새로 만든다.
 $hostBatPath = Join-Path $hostDir 'host.bat'
 $extensionId = 'ogpngpbjjcgifjaodhhnejonanmhhdhd'  # extension\manifest.json.template의 "key"에서 고정 유도된 값 -- 경로가 달라도 항상 동일
 $hostJsonObj = [ordered]@{
@@ -154,10 +163,6 @@ if (-not $extDirExisted) {
     Write-Host "      3. '압축해제된 확장 프로그램을 로드합니다' 클릭 -> 아래 폴더 선택:"
     Write-Host "         $extDir" -ForegroundColor Cyan
     Write-Host ''
-    # 이 폴더를 탐색기로 자동으로 여는 건 여기(설치 진행 중)가 아니라
-    # ops\installer.nsi의 마침 버튼 콜백(OnFinishLeave)에서 한다 -- 여기서
-    # 열면 GUI 설치 마법사가 "설치 중" 화면일 때 탐색기 창이 불쑥 끼어들어서
-    # 사용자가 아직 마침 버튼도 안 눌렀는데 다른 창이 앞에 뜨는 흐름이 됐었다.
 } else {
     Write-Ok '확장 프로그램 파일 갱신 완료 (이미 등록되어 있다면 다시 로드할 필요 없음)'
 }

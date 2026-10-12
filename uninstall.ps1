@@ -121,8 +121,10 @@ foreach ($name in $ruleNames) {
 }
 
 # --------------------------------------------- [5] 원격 접속 구성 해제 --
-# ops\setup-remote-access.ps1이 만든 것들 -- InstallDir이 아니라
-# %LOCALAPPDATA%\InfraSight라는 고정 위치(이 PC 로그온 계정 기준)에 있다.
+# ops\setup-remote-access.ps1이 만든 native-host\, extension\은 이제
+# $InstallDir 바로 아래에 있어서(이전엔 %LOCALAPPDATA%\InfraSight라는 별도
+# 고정 위치였음) 사실 [7]의 설치 폴더 전체 삭제에 같이 포함되지만, 레지스트리
+# 키는 설치 폴더 밖(HKCU)에 있어서 그쪽만큼은 여기서 따로 지워야 한다.
 Write-Step '[5/7] 원격 접속(SSH/Telnet) 구성 해제'
 $regKeyPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.infrasight.remote'
 if (Test-Path $regKeyPath) {
@@ -133,9 +135,8 @@ if (Test-Path $regKeyPath) {
         Write-Warn2 '레지스트리 등록 해제에 실패했습니다.'
     }
 }
-$remoteBase = Join-Path $env:LOCALAPPDATA 'InfraSight'
 foreach ($sub in @('native-host', 'extension')) {
-    $p = Join-Path $remoteBase $sub
+    $p = Join-Path $InstallDir $sub
     if (Test-Path $p) {
         Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue
         if (-not (Test-Path $p)) {
