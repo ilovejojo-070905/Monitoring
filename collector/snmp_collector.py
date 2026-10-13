@@ -541,9 +541,21 @@ def sample_snmp(entity, device_row):
                 speed_mbps = _safe_int(high_speed.get(idx))
                 util_in = round(rate['inMbps'] / speed_mbps * 100, 1) if speed_mbps else None
                 util_out = round(rate['outMbps'] / speed_mbps * 100, 1) if speed_mbps else None
+                raw_alias = str(ifalias.get(idx) or '').strip()
+                # H3C/Comware switches (HP A5500 등) 자체 SNMP 에이전트가
+                # 관리자가 설명을 하나도 안 입력해도 ifAlias에 "<ifDescr>
+                # Interface" 형태의 기본값을 자동으로 채워 넣는다 (실제
+                # 장비로 확인함 -- CLI에는 아무 description도 없는데 SNMP는
+                # 빈 문자열이 아니라 이 placeholder를 돌려줌). 그대로
+                # 보여주면 "이름 · 이름 Interface"처럼 이름이 그냥 중복돼
+                # 보이므로, 이 정확한 패턴만 "설명 없음"으로 취급한다 --
+                # 실제로 사람이 "GigabitEthernet1/0/2 Interface"라고 의미
+                # 있는 설명을 적을 일은 없다고 봐도 되는 수준으로 구체적인
+                # 패턴이라 다른 벤더의 진짜 설명을 잘못 지울 위험은 없음.
+                description = '' if raw_alias.lower() == f'{name} interface'.lower() else raw_alias
                 ifaces.append({
                     'idx': idx, 'name': str(name),
-                    'description': str(ifalias.get(idx) or '').strip(),
+                    'description': description,
                     'status': 'up' if str(oper.get(idx, '2')) == '1' else 'down',
                     'adminStatus': 'up' if str(admin.get(idx, '1')) == '1' else 'down',
                     'inMbps': rate['inMbps'], 'outMbps': rate['outMbps'],
