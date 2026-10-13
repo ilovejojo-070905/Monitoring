@@ -247,6 +247,10 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
                     result['hrMemSize'] = hr_size.get(ram_idx)
                     result['hrMemUsed'] = hr_used.get(ram_idx)
                     result['hrMemUnits'] = hr_units.get(ram_idx)
+            if profile.get('entity_module_filter'):
+                ent_class = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHYSICAL_CLASS, timeout=timeout)
+                ent_contained = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHYSICAL_CONTAINED_IN, timeout=timeout)
+                result['entModuleIdx'] = _top_level_module_indices(ent_class, ent_contained)
             env_mib = profile.get('env_mib')
             if env_mib == 'cisco_envmon':
                 result['envTempDescr'] = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_ENVMON_TEMP_DESCR, timeout=timeout)
@@ -302,6 +306,39 @@ def _safe_int(v):
         return int(v)
     except Exception:
         return None
+
+
+def _top_level_module_indices(ent_class, ent_contained_in):
+    """entPhysicalTable 전체에서 class==module(9)인 행 중, containedIn 체인을
+    타고 올라갔을 때 그 위에 또 다른 module(9)이 없는 것만 고른다 (= 최상위
+    보드만, 보드 안에 또 들어있는 서브카드는 제외). H3C 전용: hh3cEntityExt
+    CpuUsage/MemUsage가 포트/전원/팬/센서 등 이 테이블의 모든 행에 대해
+    값을 노출하면서(해당 없는 행은 0), 그중 실제로 CPU/메모리를 갖는
+    행이 어떤 것인지는 class/containedIn으로만 구분할 수 있기 때문
+    (OID_H3C_* 주석 참고)."""
+    # ent_class/ent_contained_in come straight from _snmp_walk: string keys
+    # (the OID suffix), but raw pysnmp value objects, not strings. A value
+    # used as the NEXT lookup key (the parent index) has to be str()'d first,
+    # or the dict lookup against ent_class's string keys silently misses --
+    # which is exactly what happened here before this fix (confirmed live:
+    # every ancestor lookup failed, so 'nested' never tripped and a subcard
+    # that's actually inside the board got kept as if it were top-level too).
+    top_level = []
+    for idx, cls in ent_class.items():
+        if str(cls) != snmp_profiles.ENT_PHYSICAL_CLASS_MODULE:
+            continue
+        ancestor = str(ent_contained_in.get(idx, ''))
+        seen = set()
+        nested = False
+        while ancestor and ancestor != '0' and ancestor not in seen:
+            seen.add(ancestor)
+            if str(ent_class.get(ancestor, '')) == snmp_profiles.ENT_PHYSICAL_CLASS_MODULE:
+                nested = True
+                break
+            ancestor = str(ent_contained_in.get(ancestor, ''))
+        if not nested:
+            top_level.append(idx)
+    return top_level
 
 
 _ENVMON_STATE_LABEL = {'1': 'normal', '2': 'warning', '3': 'critical', '4': 'shutdown', '5': 'notPresent'}
@@ -401,7 +438,8 @@ def sample_snmp(entity, device_row):
     ext_cache = entity.setdefault('_extCache', {})
     for _k in ('adminStatus', 'inErrors', 'outErrors', 'inDiscards', 'outDiscards', 'ifHighSpeed',
                'hrMemSize', 'hrMemUsed', 'hrMemUnits', 'entDescr', 'entModel', 'entSerial',
-               'envTempDescr', 'envTempValue', 'envTempState', 'envFanState', 'envSupplyState'):
+               'envTempDescr', 'envTempValue', 'envTempState', 'envFanState', 'envSupplyState',
+               'entModuleIdx'):
         if _k in result:
             ext_cache[_k] = result[_k]
 
@@ -522,7 +560,17 @@ def sample_snmp(entity, device_row):
         except Exception:
             pass
         try:
-            vals = [int(v) for v in result.get('loads', {}).values() if str(v).lstrip('-').isdigit()]
+            loads = result.get('loads') or {}
+            # entModuleIdx (H3C/Comware only, see OID_H3C_* / _top_level_module_
+            # indices) narrows this table down to the row(s) that actually carry
+            # a CPU -- without it, averaging in the port/PSU/fan/sensor rows
+            # (which all report 0 for this OID) silently crushes the real
+            # reading toward 0. Every other vendor never sets entModuleIdx, so
+            # this is a no-op for them.
+            module_idx = ext_cache.get('entModuleIdx')
+            if module_idx:
+                loads = {k: v for k, v in loads.items() if k in module_idx} or loads
+            vals = [int(v) for v in loads.values() if str(v).lstrip('-').isdigit()]
             if vals:
                 cpu = round(sum(vals) / len(vals), 1)
                 entity['cpu'] = cpu
@@ -532,6 +580,9 @@ def sample_snmp(entity, device_row):
             pass
         try:
             mem_pct_direct = result.get('memPct') or {}
+            module_idx = ext_cache.get('entModuleIdx')
+            if module_idx:
+                mem_pct_direct = {k: v for k, v in mem_pct_direct.items() if k in module_idx} or mem_pct_direct
             mem_used = result.get('memUsed') or {}
             mem_free = result.get('memFree') or {}
             used_total = sum(int(v) for v in mem_used.values())

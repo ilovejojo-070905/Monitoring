@@ -60,8 +60,30 @@ OID_JUNIPER_MEM_BUFFER = '1.3.6.1.4.1.2636.3.1.13.1.11'
 # jnxOperatingBuffer를 mem_used_oid에 잘못 넣으면 공식이 늘 100%로
 # 깨지는 문제를 피하려고 그때 미구현으로 남겨뒀던 것과 같은 함정 --
 # 이번엔 "쓰지 않기"가 아니라 "퍼센트 전용 필드로 제대로 받기"로 해결).
+#
+# 그런데 실제 장비(HP A5500)에 붙여서 확인해보니 (display cpu-usage/display
+# memory의 실측값: CPU 13%, 메모리 15%와 비교) CPU/메모리가 그보다 훨씬 낮게
+# (0.2~0.3%) 떴다 -- 이 테이블이 CPU/메모리를 가진 보드뿐 아니라 전원/팬/
+# 온도센서/포트 등 entPhysicalTable의 모든 행에 대해 똑같이 이 컬럼을
+# 노출하면서, 해당 안 되는 행은 전부 0으로 채워놓기 때문 (실측: 40행 중
+# 진짜 값이 있는 건 "Board"(entPhysicalClass=module) 행 1개뿐, 나머지
+# 39개는 전부 0 -- 그대로 평균 내면 실제 값이 40분의 1 가까이로 희석됨).
+# Juniper 쪽에서 이미 "구성요소 여러 개를 평균 내면 섞인다"는 걸 알고도
+# 받아들인 단순화(허용 범위의 부정확함)와는 질적으로 다른 문제 -- 몇 배가
+# 아니라 자릿수가 바뀌는 수준이라 그냥 받아들일 수 없었음. 그래서 H3C만은
+# ENTITY-MIB(entPhysicalClass/entPhysicalContainedIn, 표준 MIB -- H3C
+# 전용이 아님)로 "module(9)이면서 그 위 조상 중에 또 다른 module(9)이 없는"
+# 행만 골라서(= 최상위 보드만, SubCard 같은 module 안에 또 들어있는
+# module은 제외) 평균 내도록 함 -- 이미 이 코드베이스에 있는 HR-MIB
+# 폴백(hrStorageType을 먼저 walk해서 RAM 행만 골라 쓰는 패턴, 위쪽
+# OID_HR_STORAGE_* 주석 참고)과 같은 종류의 "분류 컬럼을 먼저 봐서 맞는
+# 행만 쓰기" 방식이라 이 모듈의 "테이블 상관관계는 범위 밖" 원칙을 깨는
+# 게 아니라 이미 있는 그 예외를 한 번 더 쓰는 것.
 OID_H3C_CPU = '1.3.6.1.4.1.25506.2.6.1.1.1.1.6'
 OID_H3C_MEM_PCT = '1.3.6.1.4.1.25506.2.6.1.1.1.1.8'
+OID_ENT_PHYSICAL_CLASS = '1.3.6.1.2.1.47.1.1.1.1.5'
+OID_ENT_PHYSICAL_CONTAINED_IN = '1.3.6.1.2.1.47.1.1.1.1.4'
+ENT_PHYSICAL_CLASS_MODULE = '9'
 
 # CISCO-ENVMON-MIB (중간 난이도 항목: 온도/팬/전원 상태) -- Cisco 전용, 'generic'
 # 프로필에서는 조회하지 않는다. 세 상태 OID 모두 같은 enum을 쓴다
@@ -214,6 +236,13 @@ PROFILES = {
         'mem_used_oid': None,
         'mem_free_oid': None,
         'mem_pct_oid': OID_H3C_MEM_PCT,
+        # hh3cEntityExtCpuUsage/MemUsage cover every entPhysicalTable row
+        # (ports/PSU/fans/sensors included, all reporting 0), not just the
+        # CPU-bearing board -- see the OID_H3C_* comment above. This tells
+        # snmp_collector.py to filter cpu_oid/mem_pct_oid's walked rows down
+        # to just the top-level module(s) via ENTITY-MIB classification
+        # before averaging, instead of averaging the whole table.
+        'entity_module_filter': True,
         # No env_mib: scope here is CPU/memory only (the actual reported
         # symptom) -- Comware does have its own entity-sensor MIB
         # (hh3cEntityExtTemperature, under the same enterprise-25506 tree)
