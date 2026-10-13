@@ -48,6 +48,21 @@ OID_HP_MEM_FREE = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6'
 OID_JUNIPER_CPU = '1.3.6.1.4.1.2636.3.1.13.1.8'
 OID_JUNIPER_MEM_BUFFER = '1.3.6.1.4.1.2636.3.1.13.1.11'
 
+# HP A-series/5500 등 Comware 펌웨어(H3C OEM) 장비는 'hp' 프로필(classic
+# ProCurve/ProVision, enterprise-11 트리)과 완전히 다른 칩/트리를 쓴다 --
+# sysDescr엔 "Hewlett-Packard"가 들어있어 'hp'로 오인식되지만 실제로는
+# H3C의 HH3C-ENTITY-EXT-MIB(enterprise-25506)를 쓰는 별도 제품 계열이라
+# enterprise-11 OID엔 아무것도 응답하지 않는다 (CPU/메모리 둘 다 안 보이는
+# 실제 증상으로 확인됨). hh3cEntityExtCpuUsage/MemUsage는 물리 엔티티별
+# 행을 갖는 테이블이지만, 둘 다 이미 0-100 "퍼센트" 값이다 (Cisco/HP처럼
+# used/free 바이트 쌍이 아님) -- 그래서 mem_used_oid에 넣지 않고 아래
+# PROFILES에 새로 추가한 mem_pct_oid 필드로 받는다 (Juniper의
+# jnxOperatingBuffer를 mem_used_oid에 잘못 넣으면 공식이 늘 100%로
+# 깨지는 문제를 피하려고 그때 미구현으로 남겨뒀던 것과 같은 함정 --
+# 이번엔 "쓰지 않기"가 아니라 "퍼센트 전용 필드로 제대로 받기"로 해결).
+OID_H3C_CPU = '1.3.6.1.4.1.25506.2.6.1.1.1.1.6'
+OID_H3C_MEM_PCT = '1.3.6.1.4.1.25506.2.6.1.1.1.1.8'
+
 # CISCO-ENVMON-MIB (중간 난이도 항목: 온도/팬/전원 상태) -- Cisco 전용, 'generic'
 # 프로필에서는 조회하지 않는다. 세 상태 OID 모두 같은 enum을 쓴다
 # (1=normal, 2=warning, 3=critical, 4=shutdown, 5=notPresent). 이 5단계가
@@ -171,22 +186,41 @@ PROFILES = {
         'name': 'juniper',
         'cpu_oid': OID_JUNIPER_CPU,
         'cpu_fallback_oid': OID_HR_PROCESSOR_LOAD,
-        # jnxOperatingBuffer (OID_JUNIPER_MEM_BUFFER, defined above) looks
-        # like it belongs here but deliberately isn't used: it's already a
-        # buffer-pool utilization *percentage* (Gauge32, 0-100), not a
-        # used/free byte count like every other profile's mem OIDs expect.
-        # snmp_collector.py computes mem% as
-        # used/(used+free)*100 -- wiring a percentage into mem_used_oid
-        # with no mem_free_oid would make free_total always 0, so that
-        # formula would always collapse to exactly 100%, not "imprecise"
-        # but flatly wrong (confirmed by reading the actual formula before
-        # shipping this, not assumed). Leaving both unset here falls
-        # through to the HR-MIB hrStorage walk instead (same safe path
-        # 'generic'/'dell' use) -- correct, if JUNOS answers it, rather
-        # than confidently wrong.
+        # jnxOperatingBuffer is already a buffer-pool utilization
+        # *percentage* (Gauge32, 0-100), not a used/free byte count like
+        # mem_used_oid/mem_free_oid expect -- wiring it into mem_used_oid
+        # with no mem_free_oid would make free_total always 0, so
+        # snmp_collector.py's used/(used+free)*100 formula would always
+        # collapse to exactly 100% (confirmed by reading the actual formula
+        # before shipping this, not assumed). mem_pct_oid (added for the
+        # H3C/Comware profile below, which has the same percentage-not-
+        # bytes shape) is the correct home for it instead -- snmp_collector.py
+        # averages mem_pct_oid's walked values directly, no used/free math.
         'mem_used_oid': None,
         'mem_free_oid': None,
+        'mem_pct_oid': OID_JUNIPER_MEM_BUFFER,
         'env_mib': 'juniper_opertable',
+    },
+    # HP A-series switches running Comware (H3C OEM firmware) -- see the
+    # OID_H3C_* comment above for why this can't share the 'hp' profile
+    # despite sysDescr containing "Hewlett-Packard" (confirmed from a real
+    # device: "HP Comware Platform Software ... HP A5500-24G-4SFP HI Switch
+    # ... Hewlett-Packard Development Company, L.P." -- CPU/memory both
+    # blank under 'hp' because enterprise-11 OIDs don't exist on this chip).
+    'hp-comware': {
+        'name': 'hp-comware',
+        'cpu_oid': OID_H3C_CPU,
+        'cpu_fallback_oid': OID_HR_PROCESSOR_LOAD,
+        'mem_used_oid': None,
+        'mem_free_oid': None,
+        'mem_pct_oid': OID_H3C_MEM_PCT,
+        # No env_mib: scope here is CPU/memory only (the actual reported
+        # symptom) -- Comware does have its own entity-sensor MIB
+        # (hh3cEntityExtTemperature, under the same enterprise-25506 tree)
+        # but it wasn't researched/verified as part of this fix, so it's
+        # left unimplemented rather than guessed, same policy as hp/dell's
+        # env_mib above.
+        'env_mib': None,
     },
 }
 
@@ -199,13 +233,21 @@ def resolve_profile(vendor_profile, sys_descr):
     alongside hp/dell/juniper above, same single-substring-check style.
     'hp' itself is deliberately NOT one of the keywords (too short/common a
     substring to safely match against arbitrary sysDescr text) -- HP/Aruba
-    gear is matched by its actual product line names instead."""
+    gear is matched by its actual product line names instead.
+    'comware' is checked BEFORE the hewlett-packard/hpe keywords below: a
+    real Comware device's sysDescr contains BOTH ("HP Comware Platform
+    Software ... Hewlett-Packard Development Company, L.P."), and
+    'hp-comware' is the one that actually has working OIDs for it (see the
+    OID_H3C_* comment above) -- checking order here matters, not just
+    which keywords exist."""
     if vendor_profile and vendor_profile != 'generic':
         return PROFILES.get(vendor_profile, PROFILES['generic'])
     if sys_descr:
         descr = sys_descr.lower()
         if 'cisco' in descr:
             return PROFILES['cisco']
+        if 'comware' in descr:
+            return PROFILES['hp-comware']
         if 'procurve' in descr or 'aruba' in descr or 'hewlett-packard' in descr or 'hpe' in descr:
             return PROFILES['hp']
         if 'dell' in descr or 'powerconnect' in descr:

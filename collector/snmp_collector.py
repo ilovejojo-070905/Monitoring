@@ -225,6 +225,11 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
             result['memUsed'] = await _snmp_walk(engine, ip, auth_data, port, profile['mem_used_oid'], timeout=timeout)
         if profile.get('mem_free_oid'):
             result['memFree'] = await _snmp_walk(engine, ip, auth_data, port, profile['mem_free_oid'], timeout=timeout)
+        if profile.get('mem_pct_oid'):
+            # Already a 0-100 percentage per entity (Juniper jnxOperatingBuffer,
+            # H3C/Comware hh3cEntityExtMemUsage) -- averaged directly below,
+            # not run through the used/(used+free)*100 byte-count formula.
+            result['memPct'] = await _snmp_walk(engine, ip, auth_data, port, profile['mem_pct_oid'], timeout=timeout)
         if extended_due:
             result['adminStatus'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_ADMIN_STATUS, timeout=timeout)
             result['inErrors'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_ERRORS, timeout=timeout)
@@ -232,7 +237,7 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
             result['inDiscards'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_DISCARDS, timeout=timeout)
             result['outDiscards'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OUT_DISCARDS, timeout=timeout)
             result['ifHighSpeed'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_HIGH_SPEED, timeout=timeout)
-            if not result.get('memUsed') and not result.get('memFree'):
+            if not result.get('memUsed') and not result.get('memFree') and not result.get('memPct'):
                 hr_type = await _snmp_walk(engine, ip, auth_data, port, OID_HR_STORAGE_TYPE, timeout=timeout)
                 ram_idx = next((idx for idx, v in hr_type.items() if str(v).lstrip('.') == HR_STORAGE_TYPE_RAM), None)
                 if ram_idx is not None:
@@ -526,12 +531,16 @@ def sample_snmp(entity, device_row):
         except Exception:
             pass
         try:
+            mem_pct_direct = result.get('memPct') or {}
             mem_used = result.get('memUsed') or {}
             mem_free = result.get('memFree') or {}
             used_total = sum(int(v) for v in mem_used.values())
             free_total = sum(int(v) for v in mem_free.values())
             mem_pct = None
-            if used_total + free_total > 0:
+            pct_vals = [int(v) for v in mem_pct_direct.values() if str(v).lstrip('-').isdigit()]
+            if pct_vals:
+                mem_pct = round(sum(pct_vals) / len(pct_vals), 1)
+            elif used_total + free_total > 0:
                 mem_pct = round(used_total / (used_total + free_total) * 100, 1)
             elif ext_cache.get('hrMemSize') and ext_cache.get('hrMemUsed'):
                 units = _safe_int(ext_cache.get('hrMemUnits')) or 1
