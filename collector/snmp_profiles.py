@@ -29,8 +29,19 @@ OID_CISCO_MEM_FREE = '1.3.6.1.4.1.9.9.48.1.1.1.6'
 # don't expose this STATISTICS-MIB branch at all and use HOST-RESOURCES-MIB
 # instead -- cpu_fallback_oid below covers that case the same way 'generic'
 # already does for non-Cisco gear.
+#
+# column .5 자리 bug found live (실제 HP 2530-24G/J9776A에 붙여서 확인,
+# 2026-10-13): 메모리가 63%에 고정된 채 안 변한다는 제보로 테이블 행 전체
+# (.1~.7)를 직접 walk해서 확인함. .5는 "Total Used Memory"가 아니라 CLI의
+# "System Total Memory"와 정확히 일치하는 총 메모리 크기였고(둘 다
+# 67108864), 실제 할당량(used)은 그 다음 컬럼 .7에 있었음 (.6=free,
+# .7=used, .6+.7=.5가 정확히 들어맞는 것도 직접 확인). 기존 .5를 그대로
+# mem_used_oid에 넣으면 공식이 total/(total+free)*100이 되어 총 메모리가
+# 안 변하는 한 결과도 거의 안 변하는, 63% 근처에 "고정된 것처럼 보이는"
+# 틀린 값이 나왔던 것 -- Juniper/H3C 때와 같은 "테이블에서 엉뚱한 행/열을
+# 고른 탓에 숫자가 그럴듯해 보이지만 실제로는 틀린" 종류의 버그.
 OID_HP_CPU = '1.3.6.1.4.1.11.2.14.11.5.1.9.6.1'
-OID_HP_MEM_USED = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.5'
+OID_HP_MEM_USED = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.7'
 OID_HP_MEM_FREE = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6'
 
 # Juniper JUNIPER-MIB jnxOperatingTable -- one row per physical/logical
