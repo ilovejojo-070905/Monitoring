@@ -44,6 +44,32 @@ OID_HP_CPU = '1.3.6.1.4.1.11.2.14.11.5.1.9.6.1'
 OID_HP_MEM_USED = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.7'
 OID_HP_MEM_FREE = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6'
 
+# ArubaOS-CX (6100/6200/6300/... -- a completely different, Linux-based OS
+# from the classic ArubaOS-Switch/ProVision line above, not a newer firmware
+# of the same thing) doesn't answer the STATISTICS-MIB OIDs above at all, so
+# 'hp' silently falls back to generic HOST-RESOURCES-MIB (cpu_fallback_oid,
+# and the hrStorage walk in snmp_collector.py for memory). CPU via
+# hrProcessorLoad turned out fine (community-confirmed, matches this
+# project's own live test against a real 6100/JL675A). Memory did not:
+# hrStorageTable's "Physical memory" used/size on this Linux-based device
+# counts OS page cache/buffers as "used" the way `free`'s naive total-free
+# does, landing at 34% while the switch's own `show system resource-
+# utilization` says 26% -- the same cache-vs-available gap every Linux box
+# has, not a wrong-OID bug like HP/H3C's were, and not reliably reversible
+# from the generic cache/buffer rows alone (tried subtracting them off
+# live: overshoots past zero, because this agent's "Cached"/"Shared" rows
+# don't decompose "Physical memory"'s used value by simple arithmetic).
+# arubaWiredSystemInfoMemory (ARUBAWIRED-SYSTEMINFO-MIB / renamed
+# HPE_ANW-SYSTEMINFO-MIB, confirmed via HPE/Aruba community threads) is
+# Aruba's own already-computed percentage for this -- walked and confirmed
+# live against the same 6100: returns exactly 26, matching the CLI exactly.
+# One row per subsystem (index is a string like "management_module/1/1",
+# matching the module names `show environment` already uses) -- this
+# project's one real CX device only has that single row, so averaging the
+# walk (same pattern as every other profile's mem_pct_oid) is correct here;
+# untested on a stacked/modular CX chassis that might expose more rows.
+OID_ARUBA_CX_MEM_PCT = '1.3.6.1.4.1.47196.4.1.1.3.22.1.0.1.1.4'
+
 # Juniper JUNIPER-MIB jnxOperatingTable -- one row per physical/logical
 # component (Routing Engine, each FPC, each PIC, fan trays, PSUs...), not
 # one row per device, so walking the whole column and averaging (same
@@ -187,6 +213,23 @@ PROFILES = {
         # unimplemented rather than guessed.
         'env_mib': None,
     },
+    # ArubaOS-CX (6100/6200/6300/... -- see the OID_ARUBA_CX_MEM_PCT comment
+    # above). CPU reuses the plain HOST-RESOURCES-MIB OID directly as
+    # cpu_oid (not as a 'hp' cpu_fallback_oid) since this device never
+    # answers the STATISTICS-MIB branch at all -- no point trying it first.
+    'aruba-cx': {
+        'name': 'aruba-cx',
+        'cpu_oid': OID_HR_PROCESSOR_LOAD,
+        'cpu_fallback_oid': None,
+        'mem_used_oid': None,
+        'mem_free_oid': None,
+        'mem_pct_oid': OID_ARUBA_CX_MEM_PCT,
+        # No env_mib: ArubaOS-CX's `show environment` output (confirmed live)
+        # implies ENTITY-SENSOR-MIB or another Aruba-specific table, but that
+        # wasn't researched as part of this fix -- scope here was CPU/memory
+        # only, same as the hp-comware profile's env_mib decision.
+        'env_mib': None,
+    },
     # Dell/Dell EMC Networking's own CPU/memory OIDs turned out to not be
     # usable here: every PowerConnect/PowerSwitch product line keeps them
     # under a different final suffix (62xx vs M-series vs 34xx/54xx all
@@ -279,7 +322,14 @@ def resolve_profile(vendor_profile, sys_descr):
     Software ... Hewlett-Packard Development Company, L.P."), and
     'hp-comware' is the one that actually has working OIDs for it (see the
     OID_H3C_* comment above) -- checking order here matters, not just
-    which keywords exist."""
+    which keywords exist.
+    'aruba' + no 'procurve' is checked BEFORE the procurve/aruba/hewlett-
+    packard/hpe line below: every real ArubaOS-Switch (classic) sysDescr
+    seen so far carries a fixed "(Formerly ProCurve)" marketing string
+    (confirmed live on a 2530/J9776A), while ArubaOS-CX (a different,
+    Linux-based OS with no ProCurve heritage) never does (confirmed live
+    on a 6100/JL675A) -- so 'procurve' present or absent is what actually
+    tells the two apart, not just the word 'aruba' alone (both say it)."""
     if vendor_profile and vendor_profile != 'generic':
         return PROFILES.get(vendor_profile, PROFILES['generic'])
     if sys_descr:
@@ -288,6 +338,8 @@ def resolve_profile(vendor_profile, sys_descr):
             return PROFILES['cisco']
         if 'comware' in descr:
             return PROFILES['hp-comware']
+        if 'aruba' in descr and 'procurve' not in descr:
+            return PROFILES['aruba-cx']
         if 'procurve' in descr or 'aruba' in descr or 'hewlett-packard' in descr or 'hpe' in descr:
             return PROFILES['hp']
         if 'dell' in descr or 'powerconnect' in descr:
