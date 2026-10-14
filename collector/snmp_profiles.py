@@ -44,6 +44,26 @@ OID_HP_CPU = '1.3.6.1.4.1.11.2.14.11.5.1.9.6.1'
 OID_HP_MEM_USED = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.7'
 OID_HP_MEM_FREE = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6'
 
+# Classic ProCurve/ProVision 환경센서: hpicfSensorTable (HP-ICF-CHASSIS),
+# 실제 2530/J9776A로 확인 (예전엔 "조사 자료끼리 상태 코드가 어긋나고
+# 테스트할 실장비가 없어서" 미구현으로 남겨뒀던 바로 그 테이블). 실측
+# 결과 이 장비는 전원 센서 1개 + 팬 센서 1개, 딱 2행만 노출함 (온도 센서
+# 행은 이 모델엔 없음 -- 커뮤니티 자료에도 "일부 구형 5300 계열은 온도
+# 센서가 없다"는 언급이 있어, 아예 없는 모델도 있는 듯함. 그래서 이
+# 프로필은 팬/전원만 다루고 온도는 비워둠, 추측 안 함). 컬럼 2는 어떤
+# 센서인지 가리키는 참조 OID로, icfSensors 하위 노드를 그대로 가리킴
+# (...3.1=전원, ...3.2=팬 -- 실측 확인). 컬럼 4가 상태인데, 실측으로
+# 확인된 값은 정상 상태인 good(4) 하나뿐이라(두 센서 다 4로 나옴, 고장난
+# 센서로는 테스트 못 해봄) 이전과 같은 안전 정책을 그대로 적용: good(4)만
+# "정상"으로 변환하고, 그 외 모든 값(미확인 "불량" 코드 포함)은 전부
+# "모름"으로 떨어지게 함 -- 틀리게 "정상"이라 하느니 "모른다"가 안전.
+OID_HP_ICF_SENSOR_TYPE_REF = '1.3.6.1.4.1.11.2.14.11.1.2.6.1.2'
+OID_HP_ICF_SENSOR_STATUS = '1.3.6.1.4.1.11.2.14.11.1.2.6.1.4'
+OID_HP_ICF_SENSOR_DESCR = '1.3.6.1.4.1.11.2.14.11.1.2.6.1.7'
+HP_ICF_SENSOR_STATUS_GOOD = '4'
+HP_ICF_SENSOR_TYPE_POWER_SUFFIX = '.3.1'
+HP_ICF_SENSOR_TYPE_FAN_SUFFIX = '.3.2'
+
 # ArubaOS-CX (6100/6200/6300/... -- a completely different, Linux-based OS
 # from the classic ArubaOS-Switch/ProVision line above, not a newer firmware
 # of the same thing) doesn't answer the STATISTICS-MIB OIDs above at all, so
@@ -69,6 +89,35 @@ OID_HP_MEM_FREE = '1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1.6'
 # walk (same pattern as every other profile's mem_pct_oid) is correct here;
 # untested on a stacked/modular CX chassis that might expose more rows.
 OID_ARUBA_CX_MEM_PCT = '1.3.6.1.4.1.47196.4.1.1.3.22.1.0.1.1.4'
+
+# ArubaOS-CX 환경센서: 벤더 전용 MIB가 아니라 표준 ENTITY-SENSOR-MIB
+# (1.3.6.1.2.1.99, RFC 3433) -- 실제 6100/JL675A로 확인. entPhySensorType이
+# 바로 온도(celsius=8)/팬(rpm=10)/전원(watts=6)을 구분해주므로 H3C 때처럼
+# 별도 entPhysicalClass 상관관계가 필요 없음. 값 변환도 실측으로 검증함:
+# 온도 센서(엔티티 7001) raw=25750, scale=milli(8), precision=0 ->
+# 25750 * 10^(-3) = 25.75°C, CLI의 "1/1-Inlet-Air ... 26.62 C"와 근접
+# (완전히 같은 센서가 아니라 근처 값이라 오차는 있지만, 공식 자체가
+# 맞다는 건 이 범위로 확인됨 -- MIB 스펙만 보고 추정한 게 아니라 실측
+# 대조). entPhySensorOperStatus(ok=1/unavailable=2/nonoperational=3)는
+# 이 프로젝트의 공용 5단계 어휘로 변환하는데, ok(1)만 "정상"으로 믿고
+# 나머지는 전부 "모름"으로 떨어지게 함 -- 다른 벤더들과 같은 안전 정책.
+# 표준 MIB라 이론적으로는 다른 벤더에도 재사용 가능하지만, 지금은 실제로
+# 확인된 Aruba CX에만 명시적으로 켬 (다른 벤더가 이 MIB를 구현하면서
+# 다르게 동작할 가능성까지 검증 안 했으므로).
+OID_ENT_PHY_SENSOR_TYPE = '1.3.6.1.2.1.99.1.1.1.1'
+OID_ENT_PHY_SENSOR_SCALE = '1.3.6.1.2.1.99.1.1.1.2'
+OID_ENT_PHY_SENSOR_PRECISION = '1.3.6.1.2.1.99.1.1.1.3'
+OID_ENT_PHY_SENSOR_VALUE = '1.3.6.1.2.1.99.1.1.1.4'
+OID_ENT_PHY_SENSOR_OPER_STATUS = '1.3.6.1.2.1.99.1.1.1.5'
+ENT_SENSOR_TYPE_CELSIUS = '8'
+ENT_SENSOR_TYPE_RPM = '10'
+ENT_SENSOR_TYPE_WATTS = '6'
+ENT_SENSOR_STATUS_OK = '1'
+ENT_SENSOR_SCALE_EXPONENT = {
+    '1': -24, '2': -21, '3': -18, '4': -15, '5': -12, '6': -9, '7': -6,
+    '8': -3, '9': 0, '10': 3, '11': 6, '12': 9, '13': 12, '14': 15,
+    '15': 18, '16': 21, '17': 24,
+}
 
 # Juniper JUNIPER-MIB jnxOperatingTable -- one row per physical/logical
 # component (Routing Engine, each FPC, each PIC, fan trays, PSUs...), not
@@ -121,6 +170,35 @@ OID_H3C_MEM_PCT = '1.3.6.1.4.1.25506.2.6.1.1.1.1.8'
 OID_ENT_PHYSICAL_CLASS = '1.3.6.1.2.1.47.1.1.1.1.5'
 OID_ENT_PHYSICAL_CONTAINED_IN = '1.3.6.1.2.1.47.1.1.1.1.4'
 ENT_PHYSICAL_CLASS_MODULE = '9'
+ENT_PHYSICAL_CLASS_POWER_SUPPLY = '6'
+ENT_PHYSICAL_CLASS_FAN = '7'
+
+# H3C/Comware 환경센서: 같은 hh3cEntityExtStateTable(위 CPU/메모리와 같은
+# entPhysicalIndex로 인덱싱)의 다른 컬럼들. 실제 A5500으로 확인:
+# - hh3cEntityExtTemperature(컬럼 12)는 온도 없는 행(포트/컨테이너/PSU/
+#   팬 등)엔 65535(= "해당 없음" sentinel, 실측으로 확인 -- 2바이트
+#   정수의 흔한 null 관례)를 주고, 실제 온도 센서 행에만 진짜 값(Board=
+#   37, Temp Sensor 1=30, Temp Sensor 2=37)을 줌 -- 65535인 행은 그냥
+#   걸러내면 됨, CPU/메모리 때처럼 평균에 끼워 희석시킬 필요 없음.
+# - hh3cEntityExtTemperatureThreshold(컬럼 13)도 같은 65535 sentinel 관례.
+#   Temp Sensor 1/2엔 각각 67/77이라는 실제 임계값이 있어서 값<임계값이면
+#   정상, 아니면 위험으로 판단 가능 -- 이 장비의 Board 행(37도)은 임계값이
+#   없어서(65535) 상태 판단 불가, 그 경우는 '모름'으로 둠(값은 그대로
+#   보여주되 상태만 모름).
+# - hh3cEntityExtOperStatus(컬럼 3, 이미 CPU/모듈 필터용으로 import된
+#   entPhysicalClass와 같이 써서 fan(7)/powerSupply(6) 행만 골라야 함 --
+#   이 컬럼은 포트에도 값이 있어서 class로 안 걸러내면 섞임, 실측 확인)는
+#   enum이 Cisco ENVMON과 전혀 다름(가동 상태 개념): notSupported(1)/
+#   disabled(2)/enabled(3)/dangerous(4) -- 벤더 문서로 확인. enabled(3)만
+#   "정상", dangerous(4)만 "위험"으로 확실히 변환하고(실측 장비는 전부
+#   enabled라 dangerous는 직접 못 봤지만 벤더 문서가 명확해서 신뢰함),
+#   notSupported/disabled는 "꺼져있거나 해당 없음"이라 안전하게 '모름'.
+OID_H3C_TEMPERATURE = '1.3.6.1.4.1.25506.2.6.1.1.1.1.12'
+OID_H3C_TEMPERATURE_THRESHOLD = '1.3.6.1.4.1.25506.2.6.1.1.1.1.13'
+OID_H3C_OPER_STATUS = '1.3.6.1.4.1.25506.2.6.1.1.1.1.3'
+H3C_NA_VALUE = '65535'
+H3C_OPER_STATUS_ENABLED = '3'
+H3C_OPER_STATUS_DANGEROUS = '4'
 
 # CISCO-ENVMON-MIB (중간 난이도 항목: 온도/팬/전원 상태) -- Cisco 전용, 'generic'
 # 프로필에서는 조회하지 않는다. 세 상태 OID 모두 같은 enum을 쓴다
@@ -200,18 +278,12 @@ PROFILES = {
         'cpu_fallback_oid': OID_HR_PROCESSOR_LOAD,
         'mem_used_oid': OID_HP_MEM_USED,
         'mem_free_oid': OID_HP_MEM_FREE,
-        # No env_mib: HP-ICF-CHASSIS does have a sensor table
-        # (hpicfSensorDescr/hpicfSensorStatus under icfSensors), but while
-        # researching it the only operational-status value multiple sources
-        # agreed on was good(4) -- one monitoring tool's own state table
-        # listed 2 as "Bad" while its own lookup elsewhere listed 3 as
-        # "Bad" for the same column, and the exact column OIDs beneath
-        # icfSensors weren't confirmed precisely enough to commit here with
-        # the same confidence as the CPU/mem OIDs above. Shipping a sensor
-        # reading that's silently backwards (reports a failed fan as
-        # "normal") is worse than showing nothing, so this is left
-        # unimplemented rather than guessed.
-        'env_mib': None,
+        # hpicfSensorTable, confirmed live against a real 2530/J9776A (see
+        # the OID_HP_ICF_* comment above) -- fan/power only, no temperature
+        # row on this device/model, and only the confirmed good(4) status
+        # code is trusted (every other code, known or not, falls to
+        # 'unknown' rather than risking a wrong 'normal').
+        'env_mib': 'hp_icfsensor',
     },
     # ArubaOS-CX (6100/6200/6300/... -- see the OID_ARUBA_CX_MEM_PCT comment
     # above). CPU reuses the plain HOST-RESOURCES-MIB OID directly as
@@ -224,11 +296,10 @@ PROFILES = {
         'mem_used_oid': None,
         'mem_free_oid': None,
         'mem_pct_oid': OID_ARUBA_CX_MEM_PCT,
-        # No env_mib: ArubaOS-CX's `show environment` output (confirmed live)
-        # implies ENTITY-SENSOR-MIB or another Aruba-specific table, but that
-        # wasn't researched as part of this fix -- scope here was CPU/memory
-        # only, same as the hp-comware profile's env_mib decision.
-        'env_mib': None,
+        # Standard ENTITY-SENSOR-MIB, confirmed live against a real
+        # 6100/JL675A (see the OID_ENT_PHY_SENSOR_* comment above) -- covers
+        # one overall temp sensor plus fan/PSU status.
+        'env_mib': 'entity_sensor',
     },
     # Dell/Dell EMC Networking's own CPU/memory OIDs turned out to not be
     # usable here: every PowerConnect/PowerSwitch product line keeps them
@@ -297,13 +368,10 @@ PROFILES = {
         # to just the top-level module(s) via ENTITY-MIB classification
         # before averaging, instead of averaging the whole table.
         'entity_module_filter': True,
-        # No env_mib: scope here is CPU/memory only (the actual reported
-        # symptom) -- Comware does have its own entity-sensor MIB
-        # (hh3cEntityExtTemperature, under the same enterprise-25506 tree)
-        # but it wasn't researched/verified as part of this fix, so it's
-        # left unimplemented rather than guessed, same policy as hp/dell's
-        # env_mib above.
-        'env_mib': None,
+        # hh3cEntityExtStateTable's temperature/operStatus columns, confirmed
+        # live against the same A5500 (see the OID_H3C_TEMPERATURE comment
+        # above).
+        'env_mib': 'h3c_entity_ext',
     },
 }
 

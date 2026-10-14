@@ -76,6 +76,12 @@ HR_STORAGE_TYPE_RAM = '1.3.6.1.2.1.25.2.1.2'
 OID_ENT_PHYSICAL_DESCR = '1.3.6.1.2.1.47.1.1.1.1.2.1'
 OID_ENT_PHYSICAL_MODEL_NAME = '1.3.6.1.2.1.47.1.1.1.1.13.1'
 OID_ENT_PHYSICAL_SERIAL_NUM = '1.3.6.1.2.1.47.1.1.1.1.11.1'
+# Same entPhysicalDescr/Name columns as above, but as walkable table
+# prefixes (no fixed ".1" chassis-only index) -- used by the env-sensor
+# handlers below to label a sensor row by whichever physical entity it
+# belongs to, not just the chassis.
+OID_ENT_PHYSICAL_DESCR_TABLE = '1.3.6.1.2.1.47.1.1.1.1.2'
+OID_ENT_PHYSICAL_NAME_TABLE = '1.3.6.1.2.1.47.1.1.1.1.7'
 
 # The 4-3-추가 items below (error/discard counters, admin status, link speed,
 # generic hrStorage memory, ENTITY-MIB, ENVMON) roughly doubled the number of
@@ -247,6 +253,7 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
                     result['hrMemSize'] = hr_size.get(ram_idx)
                     result['hrMemUsed'] = hr_used.get(ram_idx)
                     result['hrMemUnits'] = hr_units.get(ram_idx)
+            ent_class = None
             if profile.get('entity_module_filter'):
                 ent_class = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHYSICAL_CLASS, timeout=timeout)
                 ent_contained = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHYSICAL_CONTAINED_IN, timeout=timeout)
@@ -269,6 +276,29 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
                 oper_temp = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_JUNIPER_OPER_TEMP, timeout=timeout)
                 (result['envTempDescr'], result['envTempValue'], result['envTempState'],
                  result['envFanState'], result['envSupplyState']) = _juniper_env_from_opertable(oper_descr, oper_state, oper_temp)
+            elif env_mib == 'hp_icfsensor':
+                sensor_type_ref = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_HP_ICF_SENSOR_TYPE_REF, timeout=timeout)
+                sensor_status = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_HP_ICF_SENSOR_STATUS, timeout=timeout)
+                result['envFanState'], result['envSupplyState'] = _hp_icfsensor_env(sensor_type_ref, sensor_status)
+            elif env_mib == 'h3c_entity_ext':
+                if ent_class is None:
+                    ent_class = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHYSICAL_CLASS, timeout=timeout)
+                temp_raw = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_H3C_TEMPERATURE, timeout=timeout)
+                temp_threshold = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_H3C_TEMPERATURE_THRESHOLD, timeout=timeout)
+                oper_status = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_H3C_OPER_STATUS, timeout=timeout)
+                phys_descr = await _snmp_walk(engine, ip, auth_data, port, OID_ENT_PHYSICAL_DESCR_TABLE, timeout=timeout)
+                (result['envTempDescr'], result['envTempValue'], result['envTempState'],
+                 result['envFanState'], result['envSupplyState']) = _h3c_entity_env(ent_class, temp_raw, temp_threshold, oper_status, phys_descr)
+            elif env_mib == 'entity_sensor':
+                sensor_type = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHY_SENSOR_TYPE, timeout=timeout)
+                sensor_scale = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHY_SENSOR_SCALE, timeout=timeout)
+                sensor_precision = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHY_SENSOR_PRECISION, timeout=timeout)
+                sensor_value = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHY_SENSOR_VALUE, timeout=timeout)
+                sensor_status = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHY_SENSOR_OPER_STATUS, timeout=timeout)
+                phys_name = await _snmp_walk(engine, ip, auth_data, port, OID_ENT_PHYSICAL_NAME_TABLE, timeout=timeout)
+                (result['envTempDescr'], result['envTempValue'], result['envTempState'],
+                 result['envFanState'], result['envSupplyState']) = _entity_sensor_env(
+                    sensor_type, sensor_scale, sensor_precision, sensor_value, sensor_status, phys_name)
             try:
                 ent = await _snmp_get(engine, ip, auth_data, port,
                                        [OID_ENT_PHYSICAL_DESCR, OID_ENT_PHYSICAL_MODEL_NAME, OID_ENT_PHYSICAL_SERIAL_NUM],
@@ -376,6 +406,107 @@ def _juniper_env_from_opertable(oper_descr, oper_state, oper_temp):
     env_supply_state = {idx: remap_state(v) for idx, v in oper_state.items()
                          if idx.split('.')[0] == snmp_profiles.JUNIPER_CLASS_POWER_SUPPLY}
     return env_temp_descr, env_temp_value, env_temp_state, env_fan_state, env_supply_state
+
+
+def _hp_icfsensor_env(sensor_type_ref, sensor_status):
+    """hpicfSensorTable (HP-ICF-CHASSIS), classic ProCurve/ProVision --
+    confirmed live against a real 2530/J9776A (fan + power rows only, no
+    temperature row on that model; see the OID_HP_ICF_* comment in
+    snmp_profiles.py). The type-ref column's value is the full OID of the
+    icfSensors sub-node it belongs to, so fan/power is told apart by that
+    OID's own suffix, not a short enum. Only the confirmed good(4) status
+    maps to '1' -- any other code (including ones this project hasn't
+    seen on a real faulted sensor) falls to '9', same unmapped-sentinel
+    convention _juniper_env_from_opertable uses above."""
+    fan_state, supply_state = {}, {}
+    for idx, type_ref in sensor_type_ref.items():
+        type_ref_s = str(type_ref)
+        code = '1' if str(sensor_status.get(idx, '')) == snmp_profiles.HP_ICF_SENSOR_STATUS_GOOD else '9'
+        if type_ref_s.endswith(snmp_profiles.HP_ICF_SENSOR_TYPE_FAN_SUFFIX):
+            fan_state[idx] = code
+        elif type_ref_s.endswith(snmp_profiles.HP_ICF_SENSOR_TYPE_POWER_SUFFIX):
+            supply_state[idx] = code
+    return fan_state, supply_state
+
+
+def _h3c_entity_env(ent_class, temp_raw, temp_threshold, oper_status, phys_descr):
+    """hh3cEntityExtStateTable, H3C/Comware -- confirmed live against a
+    real A5500. temp_raw/temp_threshold both use 65535 as an explicit
+    "not applicable" sentinel for every non-sensor row (ports, containers,
+    PSU, fan...) -- filtered out here, not averaged/diluted the way CPU/mem
+    briefly were before the module-filter fix above. A temp row with no
+    threshold (also 65535) still gets its value shown, just with state
+    '9' (unknown) since there's nothing confirmed to compare it against.
+    Fan/supply status comes from a *different* column (hh3cEntityExtOper
+    Status) that also carries values for ports etc, so it's filtered by
+    entPhysicalClass instead; only enabled(3)/dangerous(4) are trusted
+    (per H3C's own MIB doc), everything else (notSupported/disabled, or
+    anything unexpected) falls to '9'."""
+    NA = snmp_profiles.H3C_NA_VALUE
+    temp_descr, temp_value, temp_state = {}, {}, {}
+    for idx, raw in temp_raw.items():
+        if str(raw) == NA:
+            continue
+        temp_descr[idx] = phys_descr.get(idx)
+        temp_value[idx] = raw
+        thresh = str(temp_threshold.get(idx, NA))
+        if thresh == NA:
+            temp_state[idx] = '9'
+        else:
+            try:
+                temp_state[idx] = '3' if int(str(raw)) >= int(thresh) else '1'
+            except Exception:
+                temp_state[idx] = '9'
+
+    def remap_oper(raw):
+        s = str(raw)
+        if s == snmp_profiles.H3C_OPER_STATUS_ENABLED:
+            return '1'
+        if s == snmp_profiles.H3C_OPER_STATUS_DANGEROUS:
+            return '3'
+        return '9'
+
+    fan_state, supply_state = {}, {}
+    for idx, cls in ent_class.items():
+        cls_s = str(cls)
+        if cls_s == snmp_profiles.ENT_PHYSICAL_CLASS_FAN:
+            fan_state[idx] = remap_oper(oper_status.get(idx))
+        elif cls_s == snmp_profiles.ENT_PHYSICAL_CLASS_POWER_SUPPLY:
+            supply_state[idx] = remap_oper(oper_status.get(idx))
+    return temp_descr, temp_value, temp_state, fan_state, supply_state
+
+
+def _entity_sensor_env(sensor_type, sensor_scale, sensor_precision, sensor_value, sensor_status, phys_name):
+    """Standard ENTITY-SENSOR-MIB (RFC 3433), currently only enabled for
+    ArubaOS-CX -- confirmed live against a real 6100/JL675A. entPhySensorType
+    tells temp(celsius)/fan(rpm)/supply(watts) apart directly, no class-table
+    correlation needed (unlike H3C above). Value decode (raw * 10^(scale
+    exponent - precision)) is the RFC's own formula, cross-checked against
+    one real reading rather than taken on faith -- see the
+    OID_ENT_PHY_SENSOR_* comment in snmp_profiles.py. Only ok(1) maps to
+    '1'; unavailable(2)/nonoperational(3) both fall to '9' (unknown) rather
+    than being told apart, since this project hasn't seen a real
+    nonoperational sensor to confirm that split against."""
+    temp_descr, temp_value, temp_state = {}, {}, {}
+    fan_state, supply_state = {}, {}
+    for idx, t in sensor_type.items():
+        t_s = str(t)
+        code = '1' if str(sensor_status.get(idx, '')) == snmp_profiles.ENT_SENSOR_STATUS_OK else '9'
+        if t_s == snmp_profiles.ENT_SENSOR_TYPE_CELSIUS:
+            try:
+                raw = int(str(sensor_value.get(idx)))
+                scale_exp = snmp_profiles.ENT_SENSOR_SCALE_EXPONENT.get(str(sensor_scale.get(idx)), 0)
+                precision = _safe_int(sensor_precision.get(idx)) or 0
+                temp_value[idx] = round(raw * (10 ** (scale_exp - precision)), 1)
+                temp_descr[idx] = phys_name.get(idx)
+                temp_state[idx] = code
+            except Exception:
+                pass
+        elif t_s == snmp_profiles.ENT_SENSOR_TYPE_RPM:
+            fan_state[idx] = code
+        elif t_s == snmp_profiles.ENT_SENSOR_TYPE_WATTS:
+            supply_state[idx] = code
+    return temp_descr, temp_value, temp_state, fan_state, supply_state
 
 
 def sample_snmp(entity, device_row):
