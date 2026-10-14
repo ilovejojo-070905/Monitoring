@@ -109,8 +109,35 @@ Write-Host ' InfraSight 설치' -ForegroundColor Cyan
 Write-Host " 설치 위치: $InstallDir"
 Write-Host '============================================================' -ForegroundColor Cyan
 
-# --------------------------------------------------------- [1] 필수 도구 --
-Write-Step '[1/9] 필수 도구 확인 (Git / Python / Caddy / mkcert)'
+# ------------------------------------------------ [1] 이전 프로세스 정리 --
+# 실측으로 겪은 문제 (2026-10-14): uninstall.ps1을 거치지 않고(예: 설치
+# 폴더를 탐색기에서 직접 지움) 재설치하면, 이전 설치의 백엔드/Caddy
+# 프로세스가 안 죽은 채로 계속 5057/8443 포트를 쥐고 있다 -- 그 상태에서
+# install.ps1이 새 supervisor를 등록/시작하면 새 백엔드가 매 폴링 주기마다
+# "포트를 못 열었나?"로 오인되어 계속 재시작을 시도하면서, 죽지도 않은
+# 예전 프로세스 위에 새 프로세스가 계속 쌓이는 것까지 실제로 확인됨
+# (한 PC에서 30개 넘는 python.exe가 전부 5057에 몰려있었음). uninstall.ps1
+# 쪽은 이미 ops\stop.ps1(이름/커맨드라인 기준 머신 전체 정리)을 거치지만,
+# "지우고 다시 설치"가 꼭 그 스크립트를 거쳐서 일어나는 게 아니므로,
+# 재설치가 실제로 시작되는 이 지점에서 같은 정리를 한 번 더 해야 안전하다.
+# stop.ps1이 아직 없는(설치 폴더가 통째로 사라진) 상태에서도 동작해야 하므로
+# 그 파일을 찾아 호출하는 대신 같은 로직을 그대로 인라인함.
+Write-Step '[1/10] 이전에 남아있을 수 있는 InfraSight 프로세스 정리'
+$staleBackend = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*server.py*' }
+$staleCaddy = Get-Process caddy -ErrorAction SilentlyContinue
+if ($staleBackend -or $staleCaddy) {
+    Write-Warn2 "재설치 전 정리 대상 발견: 백엔드 $(@($staleBackend).Count)개, Caddy $(@($staleCaddy).Count)개 -- 종료합니다."
+    $staleBackend | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    $staleCaddy | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    Write-Ok '정리 완료'
+} else {
+    Write-Ok '남아있는 프로세스 없음'
+}
+
+# --------------------------------------------------------- [2] 필수 도구 --
+Write-Step '[2/10] 필수 도구 확인 (Git / Python / Caddy / mkcert)'
 
 function Install-IfMissing([string]$cmd, [string]$wingetId, [string]$label) {
     # Same WindowsApps-stub trap Resolve-ExeAndAddToPath guards against below
@@ -183,8 +210,8 @@ Write-Ok "python: $pythonExe"
 Write-Ok "caddy:  $caddyExe"
 Write-Ok "mkcert: $mkcertExe"
 
-# --------------------------------------------------------- [2] 프로젝트 받기 --
-Write-Step "[2/9] 프로젝트 받기 ($InstallDir)"
+# --------------------------------------------------------- [3] 프로젝트 받기 --
+Write-Step "[3/10] 프로젝트 받기 ($InstallDir)"
 if (Test-Path (Join-Path $InstallDir '.git')) {
     Write-Ok '이미 받아져 있어 최신 상태로 갱신합니다 (git fetch + reset --hard)'
     Push-Location $InstallDir
@@ -250,13 +277,13 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
     Write-Ok '클론 완료'
 }
 
-# ------------------------------------------------------- [3] 파이썬 패키지 --
-Write-Step '[3/9] 파이썬 패키지 설치 (requirements.txt)'
+# ------------------------------------------------------- [4] 파이썬 패키지 --
+Write-Step '[4/10] 파이썬 패키지 설치 (requirements.txt)'
 Invoke-Native { & $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt') }
 Write-Ok '설치 완료'
 
-# ------------------------------------------------------------- [4] 인증서 --
-Write-Step '[4/9] HTTPS 인증서 발급 (이 PC의 LAN IP 기준)'
+# ------------------------------------------------------------- [5] 인증서 --
+Write-Step '[5/10] HTTPS 인증서 발급 (이 PC의 LAN IP 기준)'
 Push-Location $InstallDir
 Invoke-Native { & $mkcertExe -install }
 $lanIp = (& $pythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
@@ -265,15 +292,15 @@ Invoke-Native { & $mkcertExe -cert-file 'certs\infrasight.crt' -key-file 'certs\
 Write-Ok "인증서 발급 완료 (LAN IP: $lanIp)"
 Pop-Location
 
-# --------------------------------------------------------- [5] DB 초기화 --
-Write-Step '[5/9] 데이터베이스 초기화'
+# --------------------------------------------------------- [6] DB 초기화 --
+Write-Step '[6/10] 데이터베이스 초기화'
 Push-Location $InstallDir
 & $pythonExe -c "import storage; storage.init_db()"
 Pop-Location
 Write-Ok '완료'
 
-# ------------------------------------------------------- [6] 관리자 계정 --
-Write-Step '[6/9] 관리자 계정'
+# ------------------------------------------------------- [7] 관리자 계정 --
+Write-Step '[7/10] 관리자 계정'
 Push-Location $InstallDir
 $hasAdmin = (& $pythonExe -c "import storage; c=storage.get_db(); r=c.execute('SELECT 1 FROM users LIMIT 1').fetchone(); c.close(); print(1 if r else 0)").Trim()
 if ($hasAdmin -eq '1') {
@@ -289,19 +316,19 @@ if ($hasAdmin -eq '1') {
 }
 Pop-Location
 
-# --------------------------------------------------------- [7] 자동 시작 --
+# --------------------------------------------------------- [8] 자동 시작 --
 # powershell.exe -ExecutionPolicy Bypass로 직접 불러야 한다 -- `& 경로\*.ps1`
 # 식으로 바로 부르면 그 PC의 PowerShell 실행 정책(기본값이 흔히 Restricted인
 # 평범한 사용자 PC)에 그대로 걸려 "이 시스템에서 스크립트를 실행할 수
 # 없으므로..." 오류로 죽는다 -- 실측으로 확인됨(이 단계가 try/catch로
 # 안 감싸여 있어서 install.ps1 전체가 여기서 중단됨). uninstall.ps1은
 # 처음부터 이 방식으로 불러서 같은 문제를 겪은 적이 없었음.
-Write-Step '[7/9] 로그온 시 자동 시작 등록'
+Write-Step '[8/10] 로그온 시 자동 시작 등록'
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $InstallDir 'ops\register-task.ps1')
 if ($LASTEXITCODE -ne 0) { throw "register-task.ps1 실행 실패 (종료 코드 $LASTEXITCODE)" }
 
-# ----------------------------------------------------------- [8] 방화벽 --
-Write-Step '[8/9] 방화벽 인바운드 규칙'
+# ----------------------------------------------------------- [9] 방화벽 --
+Write-Step '[9/10] 방화벽 인바운드 규칙'
 $rules = @(
     @{ Name = 'InfraSight HTTPS (Caddy)'; Port = 8443; Protocol = 'TCP' },
     @{ Name = 'InfraSight HTTP (agents)';  Port = 5057; Protocol = 'TCP' },
@@ -324,9 +351,9 @@ foreach ($r in $rules) {
     }
 }
 
-# ----------------------------------------------------- [9] 원격 접속 구성 --
-# 위 [7/9]와 같은 이유로 powershell.exe -ExecutionPolicy Bypass로 직접 부른다.
-Write-Step '[9/9] 네트워크 장비 원격 접속(SSH/Telnet) 구성'
+# ---------------------------------------------------- [10] 원격 접속 구성 --
+# 위 [8/10]과 같은 이유로 powershell.exe -ExecutionPolicy Bypass로 직접 부른다.
+Write-Step '[10/10] 네트워크 장비 원격 접속(SSH/Telnet) 구성'
 try {
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $InstallDir 'ops\setup-remote-access.ps1') -InstallDir $InstallDir -PythonExe $pythonExe
     if ($LASTEXITCODE -ne 0) { throw "setup-remote-access.ps1 실행 실패 (종료 코드 $LASTEXITCODE)" }

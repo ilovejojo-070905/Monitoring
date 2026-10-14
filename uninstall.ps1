@@ -114,13 +114,28 @@ if (Test-Path $unregScript) {
 }
 
 # --------------------------------------------------- [3] 프로세스 종료 --
+# ops\stop.ps1을 찾으면 그걸로 정상 종료를 먼저 시도하지만(supervisor.log에
+# "정상 종료"로 남게), 그 파일을 못 찾는 경우(설치 폴더가 이미 일부 손상된
+# 경우 등)에도 정리 자체는 반드시 되어야 한다 -- stop.ps1 자신의 마지막
+# 블록(이름/커맨드라인 기준 머신 전체 정리, 이 설치 소유 여부 무관)을 그대로
+# 인라인해서 무조건 한 번 더 실행한다. 이렇게 해야 재설치(install.ps1의
+# [1/10])가 시작될 때 포트를 쥔 프로세스가 하나도 없다고 확실히 보장된다.
 Write-Step '[3/7] 실행 중인 프로세스 종료'
 $stopScript = Join-Path $InstallDir 'ops\stop.ps1'
 if (Test-Path $stopScript) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $stopScript
 } else {
-    Write-Warn2 'ops\stop.ps1을 찾을 수 없어 건너뜁니다 (이미 실행 중이 아니라면 문제 없음).'
+    Write-Warn2 'ops\stop.ps1을 찾을 수 없어 이 단계에서 직접 정리합니다.'
 }
+$staleBackend = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*server.py*' }
+$staleCaddy = Get-Process caddy -ErrorAction SilentlyContinue
+if ($staleBackend -or $staleCaddy) {
+    $staleBackend | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    $staleCaddy | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
+Write-Ok '프로세스 정리 완료'
 
 # ----------------------------------------------------- [4] 방화벽 규칙 --
 Write-Step '[4/7] 방화벽 인바운드 규칙 제거'
