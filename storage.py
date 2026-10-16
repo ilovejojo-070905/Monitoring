@@ -598,6 +598,20 @@ def init_db():
         last_error TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_pending_alert_retries_due ON pending_alert_retries(next_attempt_at)')
+    # MAC/VLAN 수집 (신규 기능, 2026-10-16) -- device_links와 같은 "매번
+    # 전체 교체" 패턴: 스위치의 실제 MAC 테이블 자체가 계속 바뀌므로, 이번
+    # walk에서 안 보인 MAC은 그 장비 자리에서 그냥 지운다(별도 aging 로직
+    # 불필요 -- 스위치 자신이 이미 MAC을 내려놓으면 다음 walk에 그 MAC이
+    # 안 잡힐 뿐).
+    conn.execute('''CREATE TABLE IF NOT EXISTS mac_table(
+        device_id TEXT NOT NULL,
+        mac TEXT NOT NULL,
+        if_index TEXT,
+        if_name TEXT,
+        vlan_id INTEGER,
+        last_seen INTEGER NOT NULL,
+        PRIMARY KEY (device_id, mac)
+    )''')
     # 3-4: 외부 공개 상태 페이지. `label`/`description` are the ONLY text an
     # admin writes for public consumption -- device_id is resolved
     # server-side to compute live status, but is NEVER itself serialized
@@ -2718,6 +2732,34 @@ def replace_lldp_links(from_device_id, current_links):
 def load_device_links():
     conn = get_db()
     rows = conn.execute('SELECT * FROM device_links').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def replace_mac_table(device_id, entries):
+    """Same whole-set-replace pattern as replace_lldp_links -- see mac_table's
+    CREATE TABLE comment above for why no separate aging logic is needed."""
+    conn = get_db()
+    now = int(time.time() * 1000)
+    keep = []
+    for e in entries:
+        keep.append(e['mac'])
+        conn.execute(
+            'INSERT INTO mac_table(device_id,mac,if_index,if_name,vlan_id,last_seen) VALUES (?,?,?,?,?,?) '
+            'ON CONFLICT(device_id,mac) DO UPDATE SET if_index=excluded.if_index, if_name=excluded.if_name, vlan_id=excluded.vlan_id, last_seen=excluded.last_seen',
+            (device_id, e['mac'], e.get('ifIndex'), e.get('ifName'), e.get('vlanId'), now))
+    if keep:
+        placeholders = ','.join('?' * len(keep))
+        conn.execute(f'DELETE FROM mac_table WHERE device_id=? AND mac NOT IN ({placeholders})', (device_id, *keep))
+    else:
+        conn.execute('DELETE FROM mac_table WHERE device_id=?', (device_id,))
+    conn.commit()
+    conn.close()
+
+
+def load_mac_table(device_id):
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM mac_table WHERE device_id=? ORDER BY vlan_id, mac', (device_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

@@ -2245,6 +2245,19 @@ def api_topology_links():
     return jsonify({'links': storage.load_device_links()})
 
 
+@app.get('/api/devices/<device_id>/mac-table')
+@require_role('VIEWER')
+def api_device_mac_table(device_id):
+    # 신규 기능(2026-10-16): 'net' 카테고리 SNMP 장비의 BRIDGE-MIB/
+    # Q-BRIDGE-MIB 기반 MAC/VLAN 수집 (collector/snmp_collector.py의
+    # _collect_mac_vlan_table 주석 참고 -- VLAN은 그 MAC이 보인 포트의
+    # PVID 기반 근사치). 읽기 전용이라 /api/topology/links와 같은 등급.
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    return jsonify({'entries': storage.load_mac_table(device_id)})
+
+
 # ------------------------------------------------------------------- 4-3 --
 # NetFlow/sFlow traffic analysis. Read-only (VIEWER, like /api/state) --
 # nothing here writes anything; collector/flow_listener.py's UDP threads and

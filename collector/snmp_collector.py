@@ -57,6 +57,25 @@ OID_IF_OUT_DISCARDS = '1.3.6.1.2.1.2.2.1.19'
 OID_IF_HIGH_SPEED = '1.3.6.1.2.1.31.1.1.1.15'
 OID_UPS_BATTERY_CAPACITY = '1.3.6.1.2.1.33.1.2.4.0'
 
+# MAC 주소/VLAN 수집 (신규 기능, 2026-10-16) -- 표준 BRIDGE-MIB/Q-BRIDGE-MIB
+# (벤더 전용 아님). dot1dTpFdbTable은 MAC별로 안 뜨고 "브리지 포트 번호"로만
+# 어디서 봤는지 알려줘서(VLAN 정보 없음), dot1dBasePortIfIndex로 그 브리지
+# 포트를 실제 ifIndex로, dot1qPvid로 그 포트의 기본(access) VLAN으로 각각
+# 상관시켜야 한다. 트렁크 포트처럼 VLAN이 여러 개인 포트는 PVID 하나로만
+# 표시되는 단순화가 있음 -- 포트당 "그 MAC이 정확히 어떤 VLAN의 프레임으로
+# 왔는지"까지 구분하려면 Q-BRIDGE-MIB의 dot1qTpFdbTable(FDB를 VLAN마다
+# 별도 컨텍스트/인스턴스로 노출, 벤더 구현 편차가 커서 신뢰도가 낮음)이
+# 필요한데, 이 프로젝트의 기존 원칙(HP/Dell 환경센서 때처럼 확신 없는 걸
+# 구현 안 함)과 같은 기준으로 범위에서 뺐다 -- "이 MAC이 보인 포트의 PVID"는
+# 액세스 포트에서는 정확하고, 트렁크 포트에서는 "그 포트의 여러 VLAN 중
+# 하나"라는 근사치임을 그대로 인정하고 쓴다.
+OID_DOT1D_TP_FDB_PORT = '1.3.6.1.2.1.17.4.3.1.2'
+OID_DOT1D_TP_FDB_STATUS = '1.3.6.1.2.1.17.4.3.1.3'
+OID_DOT1D_BASE_PORT_IFINDEX = '1.3.6.1.2.1.17.1.4.1.2'
+OID_DOT1Q_PVID = '1.3.6.1.2.1.17.7.1.4.5.1.1'
+DOT1D_FDB_STATUS_LEARNED = '3'
+MAC_VLAN_INTERVAL_SEC = 300  # LLDP_INTERVAL_SEC와 같은 주기 -- MAC 테이블도 2초마다 걸을 필요 없음
+
 # HOST-RESOURCES-MIB hrStorageTable -- generic (non-Cisco-specific) memory
 # fallback. The 'generic' SNMP profile only tries Cisco OIDs for memory
 # today (snmp_profiles.py), so any non-Cisco device silently gets no memory
@@ -309,6 +328,16 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
                 pass
         if lldp_due:
             result['lldp'] = await lldp.walk_lldp_neighbors(engine, ip, auth_data, port, timeout=timeout)
+            # MAC/VLAN도 LLDP와 같은 느린 주기로 -- 둘 다 "초 단위로 신선할
+            # 필요 없는" 정보고, 바쁜 스위치의 MAC 테이블은 수백~수천 행일
+            # 수 있어 매 2초 틱마다 걷는 건 이 파일 위쪽의 EXTENDED_POLL_
+            # INTERVAL_SEC 주석이 실측으로 겪은 "management-plane 과부하"와
+            # 같은 위험이 있음.
+            try:
+                result['macTable'] = await _collect_mac_vlan_table(
+                    engine, ip, auth_data, port, result.get('ifDescr') or {}, timeout=timeout)
+            except Exception:
+                pass
     elif category in ('server', 'db'):
         profile_srv = snmp_profiles.resolve_profile(vendor_profile, result['sysDescr'])
         cpu_oid = profile_srv['cpu_oid'] or snmp_profiles.OID_HR_PROCESSOR_LOAD
@@ -509,6 +538,51 @@ def _entity_sensor_env(sensor_type, sensor_scale, sensor_precision, sensor_value
     return temp_descr, temp_value, temp_state, fan_state, supply_state
 
 
+def _mac_from_oid_suffix(suffix):
+    """dot1dTpFdbTable's index IS the MAC address, one decimal octet per OID
+    component ('0.1.2.3.4.5' -> 00:01:02:03:04:05) -- no separate "address"
+    column to read, the table index already is one."""
+    try:
+        parts = [int(p) for p in suffix.split('.')]
+        if len(parts) != 6 or any(p < 0 or p > 255 for p in parts):
+            return None
+        return ':'.join(f'{p:02x}' for p in parts)
+    except Exception:
+        return None
+
+
+async def _collect_mac_vlan_table(engine, ip, auth_data, port, if_descr, timeout):
+    """BRIDGE-MIB/Q-BRIDGE-MIB MAC/VLAN table -- see the OID_DOT1D_TP_FDB_*
+    comment above for the standard-MIB choice and the access-port/PVID
+    approximation. Returns a list of {mac, ifIndex, ifName, vlanId}, one row
+    per MAC currently in the switch's forwarding table (status=learned(3)
+    only -- self/mgmt/other rows are the switch's own ports/static entries,
+    not something plugged into the network)."""
+    fdb_port = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1D_TP_FDB_PORT, timeout=timeout)
+    fdb_status = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1D_TP_FDB_STATUS, timeout=timeout)
+    if not fdb_port:
+        return []
+    base_port_ifindex = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1D_BASE_PORT_IFINDEX, timeout=timeout)
+    pvid = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1Q_PVID, timeout=timeout)
+    entries = []
+    for mac_suffix, bridge_port in fdb_port.items():
+        if str(fdb_status.get(mac_suffix, '')) != DOT1D_FDB_STATUS_LEARNED:
+            continue
+        mac = _mac_from_oid_suffix(mac_suffix)
+        if not mac:
+            continue
+        bridge_port_s = str(bridge_port)
+        if_index = base_port_ifindex.get(bridge_port_s)
+        if_index_s = str(if_index) if if_index is not None else None
+        entries.append({
+            'mac': mac,
+            'ifIndex': if_index_s,
+            'ifName': str(if_descr.get(if_index_s) or '') if if_index_s else '',
+            'vlanId': _safe_int(pvid.get(bridge_port_s)),
+        })
+    return entries
+
+
 def sample_snmp(entity, device_row):
     ip = device_row['ip']
     fields = device_row['fields']
@@ -560,6 +634,11 @@ def sample_snmp(entity, device_row):
     if result.get('lldp'):
         try:
             lldp.apply_discovered_links(device_id, result['lldp'])
+        except Exception:
+            pass
+    if 'macTable' in result:
+        try:
+            storage.replace_mac_table(device_id, result['macTable'])
         except Exception:
             pass
 
