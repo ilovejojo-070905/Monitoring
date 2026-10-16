@@ -56,5 +56,17 @@ def parse(data, exporter_ip, recv_ts_ms):
             'protocol': _PROTO_NAMES.get(prot, 'OTHER'),
             'bytes': d_octets, 'packets': d_pkts,
             'ts': recv_ts_ms,
+            # 신규 필드(2026-10-16, "지원 버전을 명확히 표시") -- 지금은 v5만
+            # 받으므로(다른 버전은 parse() 맨 위에서 이미 ValueError) 항상
+            # 5지만, 필드 자체를 데이터에 박아두면 나중에 v9/IPFIX를 추가해도
+            # 소비하는 쪽(저장/화면)이 "어떤 버전에서 왔는지"를 추측 없이
+            # 바로 구분할 수 있다.
+            'version': VERSION,
+            # ingress/egress ifIndex -- 집계에는 안 쓰지만(방향 구분은 이
+            # 프로젝트가 의도적으로 안 하는 단순화, index.html에 명시돼
+            # 있음) 패킷에서 실제로 뽑히는 값 자체를 버리지 않고 남겨서,
+            # 나중에 방향별 분석이 필요해지면 "데이터 자체가 없어서 처음부터
+            # 다시 파싱해야" 하는 상황을 피한다.
+            'in_if': in_if, 'out_if': out_if,
         })
     return out

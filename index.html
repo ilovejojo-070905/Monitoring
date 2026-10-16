@@ -1232,6 +1232,28 @@ function loadTopoLayout(){
 }
 function saveTopoLayout(layout){
   try{ localStorage.setItem(TOPO_LAYOUT_KEY, JSON.stringify(layout)); }catch(e){}
+  // 신규 기능(2026-10-16, "수동 토폴로지 배치 정보를 자동 갱신 중
+  // 보존"): 로컬 저장은 그대로 유지(즉시 반영, 오프라인에서도 동작)하고
+  // 서버에도 같이 올려서 다른 브라우저/PC에서도 같은 배치가 보이게 함 --
+  // fire-and-forget(실패해도 로컬 저장은 이미 끝났으니 화면엔 영향 없음,
+  // VIEWER 권한이면 서버 저장은 403으로 조용히 무시되고 로컬 저장만 적용).
+  try{ apiFetch('/api/topology/layout', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(layout)}).catch(()=>{}); }catch(e){}
+}
+async function hydrateTopoLayoutFromServer(){
+  // 앱 시작 시 한 번만 서버 배치를 받아 localStorage에 반영 -- 이후
+  // rebuildTopology() 등 기존 코드는 그대로 loadTopoLayout()을 동기적으로
+  // 읽기만 하면 되므로 다른 곳은 안 건드림. 매 polling tick마다 불러오지
+  // 않는 이유: 배치는 자주 안 바뀌는 데다, 틱마다 요청을 추가하는 건 이미
+  // 이 프로젝트가 SNMP 쪽에서 겪은 "매 틱 요청 증가 = 과부하" 패턴과 같다.
+  try{
+    const r = await apiFetch('/api/topology/layout', {cache:'no-store'});
+    if(r.ok){
+      const serverLayout = await r.json();
+      if(serverLayout && typeof serverLayout === 'object' && Object.keys(serverLayout).length){
+        localStorage.setItem(TOPO_LAYOUT_KEY, JSON.stringify(serverLayout));
+      }
+    }
+  }catch(e){}
 }
 function loadTopoNodeSizes(){ try{ return JSON.parse(localStorage.getItem(TOPO_NODE_SIZES_KEY)||'{}'); }catch(e){ return {}; } }
 function saveTopoNodeSizes(sizes){ try{ localStorage.setItem(TOPO_NODE_SIZES_KEY, JSON.stringify(sizes)); }catch(e){} }
@@ -2598,7 +2620,7 @@ async function renderFlow(){
     </div>`;
   } else {
     statusBody.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
-      <thead><tr><th>Exporter IP</th><th>매칭된 장비</th><th>방식</th><th>최근 수신</th><th>누적 레코드</th></tr></thead>
+      <thead><tr><th>Exporter IP</th><th>매칭된 장비</th><th>방식</th><th>최근 수신</th><th>누적 레코드</th><th>파싱 오류</th></tr></thead>
       <tbody>${status.exporters.map(e=>`
         <tr>
           <td class="mono">${escapeHtml(e.exporterIp)}</td>
@@ -2606,6 +2628,7 @@ async function renderFlow(){
           <td class="mono">${e.protocol==='netflow'?'NetFlow':'sFlow'}</td>
           <td class="mono">${timeAgo(new Date(e.lastSeenAt))}</td>
           <td class="mono">${fmt0(e.recordCount)}</td>
+          <td class="mono"${e.parseErrorCount ? ` style="color:var(--warn)" title="${escapeHtml(e.lastParseError||'')}"` : ''}>${e.parseErrorCount ? fmt0(e.parseErrorCount) : '-'}</td>
         </tr>`).join('')}</tbody>
     </table></div>`;
   }
@@ -6167,6 +6190,7 @@ setInterval(tickClock, 1000);
 (async function boot(){
   await ensureAuthed();
   await loadGlobalThresholds();
+  await hydrateTopoLayoutFromServer();
   await syncState();
   refreshBadges();
   // Kakao OAuth consent happens as a full-page redirect away to Kakao and

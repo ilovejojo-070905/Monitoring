@@ -38,6 +38,10 @@ _protocols = defaultdict(lambda: [0, 0])
 _pairs = defaultdict(dict)
 # {exporter_ip: [protocol, last_seen_ms, count]}
 _exporters = {}
+# 신규 기능(2026-10-16, "파싱 오류를 명확히 표시"): {(exporter_ip, protocol):
+# [last_seen_ms, error_count, last_error_message]} -- 이전엔 app_logger로만
+# 남기던 걸 /api/flow/status에서 바로 볼 수 있게 집계.
+_parse_errors = {}
 
 _device_ip_cache = {}
 _sockets = []
@@ -85,6 +89,14 @@ def _record_flow(flow, protocol_label):
         exp[2] += 1
 
 
+def _record_parse_error(exporter_ip, protocol_label, ts, message):
+    with _lock:
+        err = _parse_errors.setdefault((exporter_ip, protocol_label), [ts, 0, ''])
+        err[0] = ts
+        err[1] += 1
+        err[2] = message[:300]  # DB 컬럼/로그 부풀림 방지 -- 진단용 요약이면 충분
+
+
 def _listen_loop(sock, parser_module, protocol_label):
     while True:
         try:
@@ -96,9 +108,11 @@ def _listen_loop(sock, parser_module, protocol_label):
             flows = parser_module.parse(data, addr, recv_ts)
         except ValueError as e:
             app_logger.warning('flow_listener: malformed %s packet from %s: %s', protocol_label, addr, e)
+            _record_parse_error(addr, protocol_label, recv_ts, str(e))
             continue
-        except Exception:
+        except Exception as e:
             app_logger.exception('flow_listener: unexpected error parsing %s packet from %s', protocol_label, addr)
+            _record_parse_error(addr, protocol_label, recv_ts, f'{type(e).__name__}: {e}')
             continue
         for flow in flows:
             _record_flow(flow, protocol_label)
@@ -146,13 +160,15 @@ def flush():
     module's start(). Swaps each buffer out under the lock and does the
     (slower) DB writes after releasing it, so a UDP thread never blocks on
     SQLite."""
-    global _bandwidth, _protocols, _pairs, _exporters
+    global _bandwidth, _protocols, _pairs, _exporters, _parse_errors
     with _lock:
         bandwidth, protocols, pairs, exporters = _bandwidth, _protocols, _pairs, _exporters
+        parse_errors = _parse_errors
         _bandwidth = defaultdict(lambda: [0, 0])
         _protocols = defaultdict(lambda: [0, 0])
         _pairs = defaultdict(dict)
         _exporters = {}
+        _parse_errors = {}
 
     if bandwidth:
         storage.record_flow_bandwidth([(did, bts, v[0], v[1]) for (did, bts), v in bandwidth.items()])
@@ -166,6 +182,8 @@ def flush():
         storage.record_flow_top_pairs(rows)
     if exporters:
         storage.record_flow_exporters([(ip, proto, ts, cnt) for ip, (proto, ts, cnt) in exporters.items()])
+    if parse_errors:
+        storage.record_flow_parse_errors([(ip, proto, ts, cnt, msg) for (ip, proto), (ts, cnt, msg) in parse_errors.items()])
 
     # Pick up newly-registered devices (or IP changes) for the next minute's
     # exporter->device_id matching -- cheap enough to just do every cycle.

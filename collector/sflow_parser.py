@@ -124,7 +124,22 @@ def _parse_flow_sample(data, off, end, fmt, exporter_ip, recv_ts_ms):
     sampling_rate, off = _u32(data, off)
     off += 4  # sample_pool
     off += 4  # drops
-    off += 8 if fmt == SAMPLE_FLOW_EXPANDED else 4 * 2  # input+output ifIndex (expanded ones are wider)
+    # input/output ifIndex -- 신규(2026-10-16, "인터페이스 방향을 명확히
+    # 표시"): 이전엔 그냥 건너뛰기만 하고 값을 버렸음. 집계에는 안 쓰지만
+    # (방향별 분리는 이 프로젝트가 의도적으로 안 하는 단순화, index.html에
+    # 명시돼 있음) 패킷에 실제로 있는 값을 더 이상 버리지 않고 결과에
+    # 남겨서 나중에 방향별 분석이 필요해지면 재파싱 없이 바로 쓸 수 있게.
+    if fmt == SAMPLE_FLOW_EXPANDED:
+        # 확장 포맷은 각 방향이 8바이트: interface_format(4, 0=단일
+        # ifIndex/1=복수/2=알수없음 구분자 -- 값 자체가 아니라서 저장 안 함)
+        # + interface_value(4, 실제 ifIndex).
+        off += 4
+        in_if, off = _u32(data, off)
+        off += 4
+        out_if, off = _u32(data, off)
+    else:
+        in_if, off = _u32(data, off)
+        out_if, off = _u32(data, off)
     num_records, off = _u32(data, off)
     out = []
     for _ in range(num_records):
@@ -140,6 +155,9 @@ def _parse_flow_sample(data, off, end, fmt, exporter_ip, recv_ts_ms):
             if rec:
                 rec['exporter_ip'] = exporter_ip
                 rec['ts'] = recv_ts_ms
+                rec['version'] = VERSION
+                rec['in_if'] = in_if
+                rec['out_if'] = out_if
                 out.append(rec)
         # padded to a 4-byte boundary, same as the outer sample length
         off = flow_end + (-flow_len % 4)

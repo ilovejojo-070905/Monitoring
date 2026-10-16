@@ -44,7 +44,9 @@ from collector import snmp_profiles as sp
 from collector import agent_collector as ac
 from collector import escalation
 from collector.state import LAST_REPORT
+from collector import sflow_parser, netflow_parser
 import agent
+import struct
 
 results = []
 
@@ -87,8 +89,12 @@ def test_collect_mac_vlan_table():
     if_descr = {'10001': 'GigabitEthernet0/1', '10002': 'GigabitEthernet0/2'}
 
     async def fake_walk(engine, ip, auth_data, port, oid, timeout):
+        # OID_DOT1Q_TP_FDB_PORT는 일부러 빈 dict -- 이 합성 장비는 실측으로
+        # 확인한 Cisco 2960S처럼 Q-BRIDGE-MIB 테이블에 응답 안 하는 경우를
+        # 흉내내서, 기존 dot1dTpFdbTable+PVID 폴백 경로를 그대로 검증한다.
         return {sc.OID_DOT1D_TP_FDB_PORT: fdb_port, sc.OID_DOT1D_TP_FDB_STATUS: fdb_status,
-                sc.OID_DOT1D_BASE_PORT_IFINDEX: base_port_ifindex, sc.OID_DOT1Q_PVID: pvid}[oid]
+                sc.OID_DOT1D_BASE_PORT_IFINDEX: base_port_ifindex, sc.OID_DOT1Q_PVID: pvid,
+                sc.OID_DOT1Q_TP_FDB_PORT: {}}[oid]
 
     orig = sc._snmp_walk
     sc._snmp_walk = fake_walk
@@ -97,13 +103,55 @@ def test_collect_mac_vlan_table():
     finally:
         sc._snmp_walk = orig
     by_mac = {e['mac']: e for e in entries}
-    check('A5 learned MACs correlated to ifName/VLAN', len(entries) == 4 and
+    check('A5 learned MACs correlated to ifName/VLAN (dot1d+PVID fallback path)', len(entries) == 4 and
           by_mac['00:01:02:03:04:05'] == {'mac': '00:01:02:03:04:05', 'ifIndex': '10001', 'ifName': 'GigabitEthernet0/1', 'vlanId': 10},
           str(entries))
     check('A6 self-status row excluded', '00:01:02:03:04:08' not in by_mac)
     orphan = by_mac.get('00:01:02:03:04:09')
     check('A7 bridge port with no ifIndex mapping handled safely (no crash)',
           orphan is not None and orphan['ifIndex'] is None and orphan['ifName'] == '' and orphan['vlanId'] is None)
+
+
+def test_mac_vlan_from_dot1q_oid_suffix():
+    vlan_id, mac = sc._mac_vlan_from_dot1q_oid_suffix('10.0.1.2.3.4.5')
+    check('A8 dot1q suffix decodes vlan + mac correctly', vlan_id == 10 and mac == '00:01:02:03:04:05', (vlan_id, mac))
+    vlan_id, mac = sc._mac_vlan_from_dot1q_oid_suffix('1.2.3')
+    check('A9 dot1q suffix rejects wrong length', mac is None, (vlan_id, mac))
+    vlan_id, mac = sc._mac_vlan_from_dot1q_oid_suffix('0.1.2.3.4.5.6')
+    check('A10 dot1q suffix rejects vlan id 0 (not a valid VLAN)', mac is None, (vlan_id, mac))
+
+
+def test_collect_mac_vlan_table_prefers_dot1q_when_available():
+    # 신규 기능(2026-10-16, "MAC/VLAN 정보 확장") -- HPE/Aruba(classic)
+    # 실장비에 직접 걸어서 확인한 대로, dot1qTpFdbTable이 응답하면(Cisco와
+    # 달리 커뮤니티 컨텍스트 없이도 바로 보임) 그게 우선이고 PVID 근사치는
+    # 전혀 안 쓰인다 -- 트렁크 포트에서도 정확한 VLAN을 돌려줘야 함.
+    base_port_ifindex = {'1': 10001, '2': 10002}
+    if_descr = {'10001': 'GigabitEthernet0/1', '10002': 'GigabitEthernet0/2'}
+    # VLAN 999는 포트1의 PVID(가정상 10)와 다름 -- dot1q 경로를 썼다는 걸
+    # 확실히 구분하기 위해 일부러 PVID와 다른 값으로 둠.
+    dot1q_port = {'999.0.1.2.3.4.5': 1, '20.0.1.2.3.4.6': 2}
+    dot1q_status = {'999.0.1.2.3.4.5': '3', '20.0.1.2.3.4.6': '3'}
+
+    async def fake_walk(engine, ip, auth_data, port, oid, timeout):
+        return {
+            sc.OID_DOT1D_BASE_PORT_IFINDEX: base_port_ifindex,
+            sc.OID_DOT1Q_TP_FDB_PORT: dot1q_port,
+            sc.OID_DOT1Q_TP_FDB_STATUS: dot1q_status,
+        }[oid]
+
+    orig = sc._snmp_walk
+    sc._snmp_walk = fake_walk
+    try:
+        entries = asyncio.run(sc._collect_mac_vlan_table(None, '0.0.0.0', None, 161, if_descr, timeout=1.0))
+    finally:
+        sc._snmp_walk = orig
+    by_mac = {e['mac']: e for e in entries}
+    check('A11 dot1q path used when it answers -- exact per-MAC VLAN, not a PVID guess',
+          by_mac.get('00:01:02:03:04:05', {}).get('vlanId') == 999, by_mac)
+    check('A12 second entry correlated to its own port/VLAN correctly',
+          by_mac.get('00:01:02:03:04:06') == {'mac': '00:01:02:03:04:06', 'ifIndex': '10002', 'ifName': 'GigabitEthernet0/2', 'vlanId': 20},
+          by_mac)
 
 
 def test_replace_mac_table():
@@ -176,6 +224,133 @@ def test_replace_lldp_links():
         conn.execute("DELETE FROM device_links WHERE from_device_id=?", (from_id,))
         conn.commit()
         conn.close()
+
+
+def test_lldp_bidirectional_confirmation():
+    # 신규 기능(2026-10-16, "LLDP 양방향 확인 여부"): A가 포트1에서 B를,
+    # B가 포트2에서 A를 봤다고 서로 맞교대로(local/remote 포트가 정확히
+    # 뒤집힘) 보고하면 confirmed=True. C는 D를 봤다고 보고했지만 D는
+    # InfraSight에 등록 안 돼 있거나 LLDP가 꺼져 있어 반대 방향 보고가
+    # 전혀 없는 상황 -- confirmed=False여야 한다.
+    a, b, c = 'unittest_lldp_a', 'unittest_lldp_b', 'unittest_lldp_c'
+    conn = storage.get_db()
+    for x in (a, b, c):
+        conn.execute("DELETE FROM device_links WHERE from_device_id=? OR to_device_id=?", (x, x))
+    conn.commit()
+    conn.close()
+    try:
+        storage.replace_lldp_links(a, [(b, '1', '2')])   # A: 포트1에서 B를 봤고, B의 포트가 2라고 보고
+        storage.replace_lldp_links(b, [(a, '2', '1')])   # B: 포트2에서 A를 봤고, A의 포트가 1이라고 보고 (맞교대)
+        storage.replace_lldp_links(c, [('unittest_lldp_unregistered_d', '1', '1')])  # C만 보고, 반대쪽 없음
+        links = {(l['from_device_id'], l['to_device_id']): l['confirmed'] for l in storage.load_device_links()
+                 if l['from_device_id'] in (a, b, c)}
+        check('B5 A->B confirmed (B reported the exact reverse)', links.get((a, b)) is True, links)
+        check('B6 B->A confirmed (symmetric)', links.get((b, a)) is True, links)
+        check('B7 C->unregistered-D NOT confirmed (no reverse report exists)',
+              links.get((c, 'unittest_lldp_unregistered_d')) is False, links)
+    finally:
+        conn = storage.get_db()
+        for x in (a, b, c):
+            conn.execute("DELETE FROM device_links WHERE from_device_id=? OR to_device_id=?", (x, x))
+        conn.commit()
+        conn.close()
+
+
+def test_lldp_walk_distinguishes_failure_from_confirmed_empty():
+    # 신규 기능(2026-10-16, "오래된 링크와 수집 실패를 실제 단절과 구별"):
+    # _snmp_walk(return_status=True)가 "끝까지 확인했는데 0개"와 "도중에
+    # 에러로 끊김"을 구분하는지, 그리고 walk_lldp_neighbors가 그 신호를
+    # 그대로 confirmed로 전달하는지 확인. 실제 장비의 LLDP를 그 자리에서
+    # 끄거나 SNMP를 끊어서 재현할 방법이 없어 합성 데이터로만 검증.
+    async def fake_walk_confirmed_empty(engine, ip, auth_data, port, oid, timeout, return_status=False):
+        return ({}, True) if return_status else {}
+
+    async def fake_walk_failed(engine, ip, auth_data, port, oid, timeout, return_status=False):
+        return ({}, False) if return_status else {}
+
+    from collector import lldp as lldp_mod
+    orig = sc._snmp_walk
+    try:
+        sc._snmp_walk = fake_walk_confirmed_empty
+        result = asyncio.run(lldp_mod.walk_lldp_neighbors(None, '0.0.0.0', None, 161))
+        check('B8 confirmed-empty walk -> neighbors=[] AND confirmed=True (real "no neighbors" signal)',
+              result == {'neighbors': [], 'confirmed': True}, result)
+
+        sc._snmp_walk = fake_walk_failed
+        result = asyncio.run(lldp_mod.walk_lldp_neighbors(None, '0.0.0.0', None, 161))
+        check('B9 failed walk -> neighbors=[] AND confirmed=False (collection failure, not a real disconnect)',
+              result == {'neighbors': [], 'confirmed': False}, result)
+    finally:
+        sc._snmp_walk = orig
+
+
+def test_sample_snmp_lldp_gate_respects_confirmed_flag():
+    # sample_snmp가 confirmed=False일 때 기존 링크를 절대 안 건드리고,
+    # confirmed=True + neighbors=[]일 때는 진짜로 지우는지 끝까지 확인.
+    from collector.state import hist as _hist
+    dev_id = 'unittest_snmp_lldp_gate_dev'
+    other_id = 'unittest_snmp_lldp_gate_other'
+    conn = storage.get_db()
+    conn.execute("DELETE FROM device_links WHERE from_device_id=?", (dev_id,))
+    conn.commit()
+    conn.close()
+    storage.replace_lldp_links(dev_id, [(other_id, '1', 'Gi0/1')])  # 기존 링크 하나 심어둠
+
+    device_row = {
+        'id': dev_id, 'ip': '0.0.0.0', 'name': 'UnitTest LLDP Gate Device',
+        'fields': {'snmpVersion': 'v2c', 'snmpPort': 161, 'community': 'public'},
+        'category': 'net', 'mode': 'snmp', 'vendor_profile': 'generic',
+        'timeout_sec': 1.0, 'consecutive_failures': 0,
+    }
+    entity = {'status': 'good', 'hist': {'latency': _hist(0)}}
+    base_result = {
+        'reachable': True, 'latencyMs': 1.0, 'sysName': 'dev', 'sysDescr': 'generic', 'sysUptimeTicks': '100',
+        'oper': {}, 'ifDescr': {}, 'ifAlias': {}, 'in_oct': {}, 'out_oct': {}, 'ifCounterBits': 32,
+    }
+
+    async def fake_poll_failed(*a, **kw):
+        return dict(base_result, lldp={'neighbors': [], 'confirmed': False})
+
+    async def fake_poll_confirmed_empty(*a, **kw):
+        return dict(base_result, lldp={'neighbors': [], 'confirmed': True})
+
+    orig_poll = sc._snmp_poll
+    try:
+        sc._snmp_poll = fake_poll_failed
+        sc.sample_snmp(entity, device_row)
+        remaining = [l for l in storage.load_device_links() if l['from_device_id'] == dev_id]
+        check('B10 collection-failure tick (confirmed=False) leaves the existing stale link untouched',
+              len(remaining) == 1, remaining)
+
+        sc._snmp_poll = fake_poll_confirmed_empty
+        sc.sample_snmp(entity, device_row)
+        remaining2 = [l for l in storage.load_device_links() if l['from_device_id'] == dev_id]
+        check('B11 confirmed-empty tick (confirmed=True, 0 neighbors) actually clears the stale link',
+              len(remaining2) == 0, remaining2)
+    finally:
+        sc._snmp_poll = orig_poll
+        conn = storage.get_db()
+        conn.execute("DELETE FROM device_links WHERE from_device_id=?", (dev_id,))
+        conn.commit()
+        conn.close()
+
+
+def test_topology_layout_persistence():
+    # 신규 기능(2026-10-16, "수동 토폴로지 배치 정보를 자동 갱신 중
+    # 보존"): 위치가 이제 서버(settings 테이블)에도 저장되는지 -- 저장한
+    # 그대로 읽히는지, 그리고 두 번째 저장이 첫 번째 것을 통째로 교체하는지
+    # (saveTopoLayout이 매번 전체 레이아웃 dict를 보내는 것과 같은 방식).
+    orig = storage.get_topology_layout()
+    try:
+        storage.set_topology_layout({'hub': {'x': 70, 'y': 280}, 'dev1': {'x': 120.5, 'y': 300}})
+        loaded = storage.get_topology_layout()
+        check('B12 topology layout round-trips through storage', loaded == {'hub': {'x': 70, 'y': 280}, 'dev1': {'x': 120.5, 'y': 300}}, loaded)
+
+        storage.set_topology_layout({'dev2': {'x': 5, 'y': 6}})
+        loaded2 = storage.get_topology_layout()
+        check('B13 second save fully replaces the layout (not merged)', loaded2 == {'dev2': {'x': 5, 'y': 6}}, loaded2)
+    finally:
+        storage.set_topology_layout(orig)
 
 
 def test_device_delete_cleans_links():
@@ -756,10 +931,134 @@ def test_snmp_get_returns_tuple_on_unreachable():
         sc.get_cmd = orig_get_cmd
 
 
+# ======================================================================
+# K. NetFlow/sFlow version/direction/parse-error clarity
+# (collector/netflow_parser.py / collector/sflow_parser.py / collector/flow_listener.py)
+# ======================================================================
+
+def _ip_bytes(s):
+    return bytes(int(x) for x in s.split('.'))
+
+
+def _build_sflow_v5_packet(expanded, in_if, out_if, sampling_rate=20):
+    """실측 장비가 없어 합성 패킷으로만 검증(이 환경의 실제 네트워크 장비는
+    NetFlow/sFlow 둘 다 미지원, flow_test_sender.py의 기존 주석과 같은
+    제약). expanded=True면 sFlow v5 flow_sample_expanded(sample_type=3)
+    포맷 -- input/output 각각 8바이트(format 4 + value 4)짜리 구조라서
+    기존 코드가 건너뛰던 바이트 수(8)가 실제로는 16이어야 했던 자리."""
+    eth = b'\x11\x22\x33\x44\x55\x66\xaa\xbb\xcc\xdd\xee\xff' + struct.pack('!H', 0x0800)
+    ip_hdr = bytes([0x45, 0, 0, 40, 0, 0, 0, 0, 64, 17, 0, 0]) + _ip_bytes('10.1.1.1') + _ip_bytes('10.1.1.2')
+    udp_hdr = struct.pack('!HH', 53124, 53) + b'\x00' * 16
+    header = eth + ip_hdr + udp_hdr
+
+    flow_record_data = struct.pack('!IIII', 1, 512, 0, len(header)) + header
+    flow_record = struct.pack('!II', 1, len(flow_record_data)) + flow_record_data
+    flow_record += b'\x00' * ((-len(flow_record_data)) % 4)
+
+    if expanded:
+        sample_type = 3
+        sample_data = struct.pack('!III', 1, 1, 1)  # sequence_number, source_id_type, source_id_index
+        sample_data += struct.pack('!III', sampling_rate, 0, 0)  # sampling_rate, sample_pool, drops
+        sample_data += struct.pack('!II', 0, in_if)   # input: format(0=single ifIndex) + value
+        sample_data += struct.pack('!II', 0, out_if)  # output: format + value
+    else:
+        sample_type = 1
+        sample_data = struct.pack('!IIIIIII', 1, (1 << 24) | 1, sampling_rate, 0, 0, in_if, out_if)
+    sample_data += struct.pack('!I', 1) + flow_record  # num_flow_records=1
+    sample = struct.pack('!II', sample_type, len(sample_data)) + sample_data
+
+    datagram = struct.pack('!II', 5, 1) + _ip_bytes('192.168.1.1') + struct.pack('!IIII', 0, 100, 999, 1)
+    return datagram + sample
+
+
+def test_sflow_classic_sample_captures_version_and_direction():
+    data = _build_sflow_v5_packet(expanded=False, in_if=7, out_if=9)
+    flows = sflow_parser.parse(data, '192.168.1.1', 123456)
+    check('K1 classic sFlow sample parses to exactly one flow', len(flows) == 1, flows)
+    f = flows[0]
+    check('K2 version field present and correct', f.get('version') == 5, f)
+    check('K3 input ifIndex captured (not discarded)', f.get('in_if') == 7, f)
+    check('K4 output ifIndex captured (not discarded)', f.get('out_if') == 9, f)
+
+
+def test_sflow_expanded_sample_offset_fixed():
+    # 버그 수정(2026-10-16, "NetFlow/sFlow ... 인터페이스 방향을 명확히
+    # 표시" 작업 중 발견): expanded 포맷(sample_type=3)의 input/output은
+    # 각각 8바이트(format+value)인데, 기존 코드는 총 8바이트만 건너뛰어서
+    # (16바이트가 맞음) 그다음 num_flow_records부터 전부 틀린 자리를
+    # 읽었음 -- 이 환경의 실제 장비는 expanded 포맷을 안 써서(ifIndex가
+    # 2^24를 안 넘음) 지금까지 아무도 못 봤던 경로. 합성 패킷으로 오프셋이
+    # 맞는지 확인: 맞게 읽히면 flow 1개가 정상적으로 나오고 in/out ifIndex도
+    # (format 필드가 아니라) 진짜 값과 일치해야 한다.
+    data = _build_sflow_v5_packet(expanded=True, in_if=11, out_if=22)
+    flows = sflow_parser.parse(data, '192.168.1.1', 123456)
+    check('K5 expanded-format sample parses to exactly one flow (offset not corrupted)', len(flows) == 1, flows)
+    f = flows[0] if flows else {}
+    check('K6 expanded-format input ifIndex is the actual value, not the format discriminator', f.get('in_if') == 11, f)
+    check('K7 expanded-format output ifIndex is the actual value, not the format discriminator', f.get('out_if') == 22, f)
+    check('K8 expanded-format flow data itself still parses correctly past the fixed offset',
+          f.get('src_ip') == '10.1.1.1' and f.get('dst_ip') == '10.1.1.2', f)
+
+
+def test_netflow_v5_captures_version_and_direction():
+    header = struct.pack('!HHIIIIBBH', 5, 1, 12345, int(time.time()), 0, 1, 0, 0, 0)
+    record = struct.pack(
+        '!IIIHHIIIIHHBBBBHHBBH',
+        0x0A630005, 0xCB007109, 0, 3, 4,
+        7, 4200, 0, 0, 51000, 443, 0, 0, 6, 0, 0, 0, 0, 0, 0,
+    )
+    flows = netflow_parser.parse(header + record, '192.168.1.1', 123456)
+    check('K9 NetFlow v5 record parses to exactly one flow', len(flows) == 1, flows)
+    f = flows[0]
+    check('K10 version field present and correct', f.get('version') == 5, f)
+    check('K11 input/output ifIndex captured (not discarded)', f.get('in_if') == 3 and f.get('out_if') == 4, f)
+
+
+def test_flow_parse_error_tracking_and_status_merge():
+    # 신규 기능(2026-10-16, "파싱 오류를 명확히 표시"): flow_listener.py가
+    # 실패한 패킷을 로그에만 남기던 걸 집계까지 하는지, 그리고
+    # storage.load_flow_status()가 "한 번도 성공 못 한" exporter도
+    # (flow_exporters에 행이 없어도) parse-error 쪽만으로 보여주는지.
+    from collector import flow_listener
+    ip = '203.0.113.250'
+    orig = flow_listener._parse_errors
+    flow_listener._parse_errors = {}
+    conn = storage.get_db()
+    conn.execute("DELETE FROM flow_parse_errors WHERE exporter_ip=?", (ip,))
+    conn.execute("DELETE FROM flow_exporters WHERE exporter_ip=?", (ip,))
+    conn.commit()
+    conn.close()
+    try:
+        flow_listener._record_parse_error(ip, 'netflow', 1000, 'not NetFlow v5 (version=9)')
+        flow_listener._record_parse_error(ip, 'netflow', 1001, 'not NetFlow v5 (version=9)')
+        check('K12 in-memory parse-error counter accumulates per (ip, protocol)',
+              flow_listener._parse_errors[(ip, 'netflow')][1] == 2, flow_listener._parse_errors)
+
+        storage.record_flow_parse_errors([(ip, proto, ts, cnt, msg) for (ip2, proto), (ts, cnt, msg) in flow_listener._parse_errors.items() if ip2 == ip])
+        statuses = {(s['exporterIp'], s['protocol']): s for s in storage.load_flow_status()}
+        row = statuses.get((ip, 'netflow'))
+        check('K13 an exporter that only ever failed to parse still shows up in /api/flow/status',
+              row is not None and row['recordCount'] == 0 and row['parseErrorCount'] == 2, row)
+        check('K14 lastParseError carries the actual message, not just a count',
+              row is not None and 'version=9' in (row['lastParseError'] or ''), row)
+    finally:
+        flow_listener._parse_errors = orig
+        conn = storage.get_db()
+        conn.execute("DELETE FROM flow_parse_errors WHERE exporter_ip=?", (ip,))
+        conn.execute("DELETE FROM flow_exporters WHERE exporter_ip=?", (ip,))
+        conn.commit()
+        conn.close()
+
+
 def main():
     for fn in (
-        test_mac_from_oid_suffix, test_collect_mac_vlan_table, test_replace_mac_table,
-        test_top_level_module_indices, test_replace_lldp_links, test_device_delete_cleans_links,
+        test_mac_from_oid_suffix, test_collect_mac_vlan_table,
+        test_mac_vlan_from_dot1q_oid_suffix, test_collect_mac_vlan_table_prefers_dot1q_when_available,
+        test_replace_mac_table,
+        test_top_level_module_indices, test_replace_lldp_links,
+        test_lldp_bidirectional_confirmation, test_lldp_walk_distinguishes_failure_from_confirmed_empty,
+        test_sample_snmp_lldp_gate_respects_confirmed_flag, test_topology_layout_persistence,
+        test_device_delete_cleans_links,
         test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env,
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
@@ -768,6 +1067,8 @@ def main():
         test_maintenance_suppresses_and_renotifies, test_alert_retry_queue,
         test_agent_token_not_in_argv,
         test_classify_snmp_error, test_snmp_get_returns_tuple_on_unreachable,
+        test_sflow_classic_sample_captures_version_and_direction, test_sflow_expanded_sample_offset_fixed,
+        test_netflow_v5_captures_version_and_direction, test_flow_parse_error_tracking_and_status_merge,
     ):
         try:
             fn()

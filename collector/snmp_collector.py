@@ -128,19 +128,30 @@ TRAFFIC_RATE_MAX_RELIABLE_DT_SEC = 60
 # 어디서 봤는지 알려줘서(VLAN 정보 없음), dot1dBasePortIfIndex로 그 브리지
 # 포트를 실제 ifIndex로, dot1qPvid로 그 포트의 기본(access) VLAN으로 각각
 # 상관시켜야 한다. 트렁크 포트처럼 VLAN이 여러 개인 포트는 PVID 하나로만
-# 표시되는 단순화가 있음 -- 포트당 "그 MAC이 정확히 어떤 VLAN의 프레임으로
-# 왔는지"까지 구분하려면 Q-BRIDGE-MIB의 dot1qTpFdbTable(FDB를 VLAN마다
-# 별도 컨텍스트/인스턴스로 노출, 벤더 구현 편차가 커서 신뢰도가 낮음)이
-# 필요한데, 이 프로젝트의 기존 원칙(HP/Dell 환경센서 때처럼 확신 없는 걸
-# 구현 안 함)과 같은 기준으로 범위에서 뺐다 -- "이 MAC이 보인 포트의 PVID"는
-# 액세스 포트에서는 정확하고, 트렁크 포트에서는 "그 포트의 여러 VLAN 중
-# 하나"라는 근사치임을 그대로 인정하고 쓴다.
+# 표시되는 근사치.
 OID_DOT1D_TP_FDB_PORT = '1.3.6.1.2.1.17.4.3.1.2'
 OID_DOT1D_TP_FDB_STATUS = '1.3.6.1.2.1.17.4.3.1.3'
 OID_DOT1D_BASE_PORT_IFINDEX = '1.3.6.1.2.1.17.1.4.1.2'
 OID_DOT1Q_PVID = '1.3.6.1.2.1.17.7.1.4.5.1.1'
 DOT1D_FDB_STATUS_LEARNED = '3'
 MAC_VLAN_INTERVAL_SEC = 300  # LLDP_INTERVAL_SEC와 같은 주기 -- MAC 테이블도 2초마다 걸을 필요 없음
+
+# 확장(2026-10-16, "MAC/VLAN 정보 확장"): 위 PVID 근사치는 트렁크 포트에서
+# 틀릴 수 있다는 걸 알고도 쓰던 것 -- Q-BRIDGE-MIB의 dot1qTpFdbTable은 그
+# 문제가 원천적으로 없다(인덱스 자체가 "<vlanId>.<MAC 6개 옥텟>"이라 VLAN이
+# 추측이 아니라 그 MAC이 실제로 학습된 테이블 안에 이미 들어있음). 예전엔
+# "벤더 구현 편차가 커서 신뢰도가 낮다"는 이유로 범위에서 뺐었는데, 이번에
+# 이 프로젝트가 실제로 등록해 쓰는 4개 실장비에 직접 걸어서 확인한 결과:
+# HPE/Aruba(classic) 2대는 별도 VLAN 컨텍스트 없이 바로 응답(기존
+# dot1dTpFdbTable과 행 수까지 정확히 일치), Cisco 2960S 1대는 0행으로
+# 빈 응답(Cisco는 SNMP community에 "@<vlanId>" 접미사로 VLAN 컨텍스트를
+# 넣어야 그 VLAN의 dot1qTpFdbTable을 보여주는 알려진 제약 -- 이 프로젝트가
+# 쓰는 community 문자열 하나로는 애초에 전체를 못 봄). 그래서 "존재하면
+# 그걸 쓰고, 비어 있으면(Cisco처럼) 기존 PVID 근사 방식으로 자동 폴백" --
+# 기존 반환 형태({mac,ifIndex,ifName,vlanId})는 그대로라 호환성 깨짐 없음,
+# Cisco처럼 폴백하는 장비는 이전과 완전히 같게 동작.
+OID_DOT1Q_TP_FDB_PORT = '1.3.6.1.2.1.17.7.1.2.2.1.2'
+OID_DOT1Q_TP_FDB_STATUS = '1.3.6.1.2.1.17.7.1.2.2.1.3'
 
 # HOST-RESOURCES-MIB hrStorageTable -- generic (non-Cisco-specific) memory
 # fallback. The 'generic' SNMP profile only tries Cisco OIDs for memory
@@ -328,25 +339,39 @@ async def _snmp_get(engine, ip, auth_data, port, oids, timeout=1.5, retries=1):
     return values, None
 
 
-async def _snmp_walk(engine, ip, auth_data, port, base_oid, timeout=1.5, max_rows=256, retries=1):
+async def _snmp_walk(engine, ip, auth_data, port, base_oid, timeout=1.5, max_rows=256, retries=1, return_status=False):
     # 위 _snmp_get과 같은 이유로 기본값 retries=0 -> 1.
+    #
+    # return_status(2026-10-16, "오래된 링크와 수집 실패를 실제 단절과
+    # 구별"): 기본값 False면 이전과 완전히 동일하게 dict만 돌려준다 --
+    # 이미 30곳 넘게 이 함수를 쓰는 기존 호출부를 전부 건드리지 않기
+    # 위한 선택. True로 호출하면 (dict, confirmed) 튜플을 돌려주는데,
+    # confirmed=False는 "도중에 진짜 SNMP 에러로 끊겨서 이 dict가
+    # 불완전/신뢰 불가"라는 뜻이고(빈 dict든 일부만 찼든 마찬가지),
+    # confirmed=True는 "이 테이블을 끝까지 확인했고 이 dict가 전체
+    # 결과"라는 뜻 -- 특히 confirmed=True + 빈 dict는 "그 OID 아래
+    # 항목이 실제로 0개임을 확인함"이라, lldp.py가 이걸로 "장비가 LLDP
+    # 이웃이 하나도 없다고 확인 응답함"과 "이번 폴링이 그냥 실패함"을
+    # 구분해서 전자일 때만 끊어진 링크를 지운다(replace_lldp_links).
     target = await UdpTransportTarget.create((ip, int(port)), timeout=timeout, retries=retries)
     out = {}
     count = 0
+    confirmed = True
     async for (errorIndication, errorStatus, errorIndex, varBinds) in bulk_walk_cmd(
             engine, auth_data, target, ContextData(),
             0, 20, ObjectType(ObjectIdentity(base_oid)), lexicographicMode=False):
         if errorIndication or errorStatus:
+            confirmed = False
             break
         for vb in varBinds:
             oid_str = str(vb[0])
             if not oid_str.startswith(base_oid + '.'):
-                return out
+                return (out, True) if return_status else out
             out[oid_str[len(base_oid) + 1:]] = vb[1]
         count += 1
         if count > max_rows:
             break
-    return out
+    return (out, confirmed) if return_status else out
 
 
 async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lldp_due, extended_due):
@@ -709,18 +734,60 @@ def _mac_from_oid_suffix(suffix):
         return None
 
 
+def _mac_vlan_from_dot1q_oid_suffix(suffix):
+    """dot1qTpFdbTable's index is '<vlanId>.<MAC 6 octets>' -- unlike
+    dot1dTpFdbTable, the VLAN this MAC was actually learned on is already
+    part of the index itself, not something to approximate from a port's
+    PVID. Returns (vlan_id, mac) or (None, None)."""
+    try:
+        parts = [int(p) for p in suffix.split('.')]
+        if len(parts) != 7:
+            return None, None
+        vlan_id, octets = parts[0], parts[1:]
+        if vlan_id < 1 or any(o < 0 or o > 255 for o in octets):
+            return None, None
+        return vlan_id, ':'.join(f'{o:02x}' for o in octets)
+    except Exception:
+        return None, None
+
+
 async def _collect_mac_vlan_table(engine, ip, auth_data, port, if_descr, timeout):
-    """BRIDGE-MIB/Q-BRIDGE-MIB MAC/VLAN table -- see the OID_DOT1D_TP_FDB_*
-    comment above for the standard-MIB choice and the access-port/PVID
-    approximation. Returns a list of {mac, ifIndex, ifName, vlanId}, one row
-    per MAC currently in the switch's forwarding table (status=learned(3)
-    only -- self/mgmt/other rows are the switch's own ports/static entries,
-    not something plugged into the network)."""
+    """BRIDGE-MIB/Q-BRIDGE-MIB MAC/VLAN table. Returns a list of
+    {mac, ifIndex, ifName, vlanId}, one row per MAC currently in the switch's
+    forwarding table (status=learned(3) only -- self/mgmt/other rows are the
+    switch's own ports/static entries, not something plugged into the
+    network).
+
+    dot1qTpFdbTable(VLAN-정확) 우선 시도, 응답 없으면(실측으로 확인된 Cisco의
+    community@vlan 제약 등) dot1dTpFdbTable+PVID 근사치로 폴백 -- 위
+    OID_DOT1Q_TP_FDB_PORT 주석 참고."""
+    base_port_ifindex = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1D_BASE_PORT_IFINDEX, timeout=timeout)
+
+    dot1q_port = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1Q_TP_FDB_PORT, timeout=timeout)
+    if dot1q_port:
+        dot1q_status = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1Q_TP_FDB_STATUS, timeout=timeout)
+        entries = []
+        for suffix, bridge_port in dot1q_port.items():
+            if str(dot1q_status.get(suffix, '')) != DOT1D_FDB_STATUS_LEARNED:
+                continue
+            vlan_id, mac = _mac_vlan_from_dot1q_oid_suffix(suffix)
+            if not mac:
+                continue
+            bridge_port_s = str(bridge_port)
+            if_index = base_port_ifindex.get(bridge_port_s)
+            if_index_s = str(if_index) if if_index is not None else None
+            entries.append({
+                'mac': mac,
+                'ifIndex': if_index_s,
+                'ifName': str(if_descr.get(if_index_s) or '') if if_index_s else '',
+                'vlanId': vlan_id,
+            })
+        return entries
+
     fdb_port = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1D_TP_FDB_PORT, timeout=timeout)
     fdb_status = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1D_TP_FDB_STATUS, timeout=timeout)
     if not fdb_port:
         return []
-    base_port_ifindex = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1D_BASE_PORT_IFINDEX, timeout=timeout)
     pvid = await _snmp_walk(engine, ip, auth_data, port, OID_DOT1Q_PVID, timeout=timeout)
     entries = []
     for mac_suffix, bridge_port in fdb_port.items():
@@ -789,9 +856,17 @@ def sample_snmp(entity, device_row):
     except Exception:
         result = {'reachable': False, 'latencyMs': None}
 
-    if result.get('lldp'):
+    # 신규 기능(2026-10-16, "오래된 링크와 수집 실패를 실제 단절과 구별"):
+    # result['lldp']는 이제 {'neighbors': [...], 'confirmed': bool} 형태.
+    # confirmed=False(이번 폴링에서 LLDP 테이블을 못 받음)면 기존 링크를
+    # 그대로 두고 아무것도 안 한다 -- 모르는 걸 "끊어졌다"고 지우지
+    # 않는다는 안전 정책(이전엔 neighbors가 비어 있으면 confirmed 여부와
+    # 상관없이 똑같이 건너뛰어서, 장비가 "이웃 0개"라고 확실히 응답한
+    # 경우조차 끊어진 링크가 영원히 안 지워졌음).
+    lldp_result = result.get('lldp')
+    if lldp_result is not None and lldp_result.get('confirmed'):
         try:
-            lldp.apply_discovered_links(device_id, result['lldp'])
+            lldp.apply_discovered_links(device_id, lldp_result.get('neighbors') or [])
         except Exception:
             pass
     if 'macTable' in result:

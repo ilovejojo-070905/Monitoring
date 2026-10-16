@@ -2275,6 +2275,38 @@ def api_topology_links():
     return jsonify({'links': storage.load_device_links()})
 
 
+@app.get('/api/topology/layout')
+@require_role('VIEWER')
+def api_get_topology_layout():
+    return jsonify(storage.get_topology_layout())
+
+
+@app.put('/api/topology/layout')
+@require_role('OPERATOR')
+def api_set_topology_layout():
+    # 신규 기능(2026-10-16, "수동 토폴로지 배치 정보를 자동 갱신 중
+    # 보존"): index.html의 saveTopoLayout()이 로컬 저장과 같이 호출하는
+    # fire-and-forget PUT -- 다른 설정 저장 라우트들과 같은 패턴으로
+    # OPERATOR 이상만 쓰기 허용(VIEWER는 조회만, 자기 브라우저에선 여전히
+    # localStorage로 로컬 배치는 가능하지만 서버에는 안 올라감).
+    body = request.get_json(force=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': 'layout은 객체여야 합니다'}), 400
+    if len(body) > 2000:
+        return jsonify({'error': '노드가 너무 많습니다'}), 400
+    cleaned = {}
+    for node_id, pos in body.items():
+        if not isinstance(node_id, str) or len(node_id) > 200 or not isinstance(pos, dict):
+            continue
+        x = validation.clamp_float(pos.get('x'), -100000, 100000)
+        y = validation.clamp_float(pos.get('y'), -100000, 100000)
+        if x is None or y is None:
+            continue
+        cleaned[node_id] = {'x': x, 'y': y}
+    storage.set_topology_layout(cleaned)
+    return jsonify({'ok': True})
+
+
 @app.get('/api/devices/<device_id>/mac-table')
 @require_role('VIEWER')
 def api_device_mac_table(device_id):

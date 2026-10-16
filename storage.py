@@ -358,6 +358,22 @@ def init_db():
         last_seen_at INTEGER NOT NULL,
         record_count INTEGER NOT NULL DEFAULT 0
     )''')
+    # 신규 기능(2026-10-16, "NetFlow/sFlow의 파싱 오류를 명확히 표시"):
+    # 이전엔 flow_listener.py가 파싱 실패를 app_logger로만 남기고(ValueError
+    # -> warning, 그 외 -> exception) 어디에도 집계/노출을 안 해서, 어떤
+    # 장비가 패킷을 잘못 보내고 있는지 알려면 로그 파일을 직접 열어야
+    # 했음. flow_exporters와 같은 PRIMARY KEY(exporter_ip)가 아니라
+    # (exporter_ip, protocol)인 이유: 한 장비가 netflow/sflow 둘 다로
+    # 보내면서 한쪽만 깨질 수도 있어서, protocol별로 따로 집계해야 함.
+    conn.execute('''CREATE TABLE IF NOT EXISTS flow_parse_errors(
+        exporter_ip TEXT NOT NULL,
+        protocol TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        PRIMARY KEY (exporter_ip, protocol)
+    )''')
     # 2-6: network discovery scan history -- a scan's results used to only
     # ever live in the HTTP response and vanish the moment it was read. This
     # persists what was scanned, when, by whom, and what was found (one row
@@ -2076,6 +2092,26 @@ def record_flow_exporters(rows):
     conn.close()
 
 
+def record_flow_parse_errors(rows):
+    """rows: iterable of (exporter_ip, protocol, last_seen_at, error_count,
+    last_error). Same batched-once-per-flush-cycle pattern as
+    record_flow_exporters -- error_count accumulates, last_error is
+    overwritten with whichever error this flush cycle saw last (good enough
+    for "what's currently going wrong", not meant as a full error log)."""
+    if not rows:
+        return
+    conn = get_db()
+    conn.executemany('''
+        INSERT INTO flow_parse_errors(exporter_ip, protocol, first_seen_at, last_seen_at, error_count, last_error)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(exporter_ip, protocol) DO UPDATE SET
+            last_seen_at=excluded.last_seen_at, error_count=error_count+excluded.error_count,
+            last_error=excluded.last_error
+    ''', [(ip, proto, last_seen, last_seen, cnt, err) for ip, proto, last_seen, cnt, err in rows])
+    conn.commit()
+    conn.close()
+
+
 def run_flow_retention():
     """Purges flow_*_1m rows (and exporters not heard from in a while) past
     FLOW_RETENTION_MS. Called from the same daily cron as
@@ -2088,6 +2124,7 @@ def run_flow_retention():
         conn.execute('DELETE FROM flow_protocol_1m WHERE bucket_ts < ?', (cutoff,))
         conn.execute('DELETE FROM flow_top_pairs_1m WHERE bucket_ts < ?', (cutoff,))
         conn.execute('DELETE FROM flow_exporters WHERE last_seen_at < ?', (cutoff,))
+        conn.execute('DELETE FROM flow_parse_errors WHERE last_seen_at < ?', (cutoff,))
         conn.commit()
     finally:
         conn.close()
@@ -2165,20 +2202,36 @@ def load_flow_status():
     """Every exporter ever heard from, each annotated with whichever
     registered device (any category) has a matching IP -- the runtime
     answer to "which of my devices actually support/are configured for
-    NetFlow/sFlow", independent of whether it's even a registered device."""
+    NetFlow/sFlow", independent of whether it's even a registered device.
+
+    신규 기능(2026-10-16, "파싱 오류를 명확히 표시"): parseErrorCount/
+    lastParseError를 같이 내려줌 -- 성공적으로 파싱된 적이 한 번도 없는
+    exporter(완전히 잘못된 패킷만 보내서 flow_exporters에는 행이 전혀
+    없는 경우)도 flow_parse_errors 쪽에만 있으면 여기 그대로 나타나도록
+    (exporter_ip, protocol) 기준으로 두 테이블을 합친다 -- 이전엔 로그
+    파일을 직접 열어야만 알 수 있던 정보."""
     conn = get_db()
-    rows = conn.execute('SELECT * FROM flow_exporters ORDER BY last_seen_at DESC').fetchall()
+    exp_rows = conn.execute('SELECT * FROM flow_exporters').fetchall()
+    err_rows = conn.execute('SELECT * FROM flow_parse_errors').fetchall()
     conn.close()
     devices_by_ip = {d['ip']: d for d in load_devices() if d.get('ip')}
+    exp_by_key = {(r['exporter_ip'], r['protocol']): r for r in exp_rows}
+    err_by_key = {(r['exporter_ip'], r['protocol']): r for r in err_rows}
     out = []
-    for r in rows:
-        d = devices_by_ip.get(r['exporter_ip'])
+    for key in sorted(set(exp_by_key) | set(err_by_key)):
+        exporter_ip, protocol = key
+        e, err = exp_by_key.get(key), err_by_key.get(key)
+        d = devices_by_ip.get(exporter_ip)
+        last_seen = max(v for v in (e['last_seen_at'] if e else None, err['last_seen_at'] if err else None) if v is not None)
         out.append({
-            'exporterIp': r['exporter_ip'], 'protocol': r['protocol'],
-            'firstSeenAt': r['first_seen_at'], 'lastSeenAt': r['last_seen_at'],
-            'recordCount': r['record_count'],
+            'exporterIp': exporter_ip, 'protocol': protocol,
+            'firstSeenAt': (e or err)['first_seen_at'], 'lastSeenAt': last_seen,
+            'recordCount': e['record_count'] if e else 0,
+            'parseErrorCount': err['error_count'] if err else 0,
+            'lastParseError': err['last_error'] if err else None,
             'deviceId': d['id'] if d else None, 'deviceName': d['name'] if d else None,
         })
+    out.sort(key=lambda r: r['lastSeenAt'], reverse=True)
     return out
 
 
@@ -2812,10 +2865,31 @@ def replace_lldp_links(from_device_id, current_links):
 
 
 def load_device_links():
+    """신규 기능(2026-10-16, "LLDP 양방향 확인 여부"): link_type='lldp'인 각
+    행에 대해, 반대 방향(from/to가 뒤집히고 local_port<->remote_port도
+    뒤집힌) 행이 실제로 있는지 확인해서 confirmed 필드로 붙여준다.
+
+    이전엔 한쪽 장비의 LLDP walk 결과만으로 바로 링크를 만들어서 화면에
+    그렸음 -- A가 "포트 X에서 B를 봤다"고만 보고해도 B가 LLDP를 꺼놨거나
+    InfraSight에 등록 안 돼 있어도(그래서 B 쪽에선 절대 이 링크가 안
+    만들어짐) 똑같이 "링크 있음"으로 표시됐다. confirmed=True는 두 장비
+    다 서로를 봤다는 뜻(로컬/원격 포트가 정확히 맞교대로 일치), False는
+    한쪽에서만 관측됐다는 뜻 -- "틀렸다"는 게 아니라 반대쪽이 LLDP
+    미지원/미등록일 수 있다는 걸 화면에서 구분해서 보여주라는 신호.
+    수동으로 그린 링크(link_type != 'lldp')는 이 개념이 없어 confirmed를
+    None으로 둔다(확인 대상 자체가 아님, "확인 안 됨"과 다른 의미)."""
     conn = get_db()
-    rows = conn.execute('SELECT * FROM device_links').fetchall()
+    rows = [dict(r) for r in conn.execute('SELECT * FROM device_links').fetchall()]
     conn.close()
-    return [dict(r) for r in rows]
+    lldp_pairs = {(r['from_device_id'], r['to_device_id'], r['local_port'] or '', r['remote_port'] or '')
+                  for r in rows if r['link_type'] == 'lldp'}
+    for r in rows:
+        if r['link_type'] == 'lldp':
+            reverse = (r['to_device_id'], r['from_device_id'], r['remote_port'] or '', r['local_port'] or '')
+            r['confirmed'] = reverse in lldp_pairs
+        else:
+            r['confirmed'] = None
+    return rows
 
 
 def replace_mac_table(device_id, entries):
@@ -2854,6 +2928,30 @@ def load_mac_table(device_id):
 
 SMTP_SYSTEM_ID = '__system__'
 _SEVERITY_RANK = {'good': 0, 'info': 0, 'warn': 1, 'crit': 2}
+
+
+TOPOLOGY_LAYOUT_SETTING_KEY = 'topology_layout'
+
+
+def get_topology_layout():
+    """신규 기능(2026-10-16, "수동 토폴로지 배치 정보를 자동 갱신 중
+    보존"): 이전엔 노드 위치가 각 브라우저의 localStorage에만 있어서
+    서버에는 전혀 저장이 안 됐음(다른 브라우저/PC에서 열면 늘 기본
+    배치로 보임, 같은 브라우저에서도 캐시를 지우면 사라짐). 기존
+    settings(key,value) 테이블을 그대로 재사용(새 테이블/마이그레이션
+    불필요) -- 값은 {nodeId: {x,y}} 형태의 JSON 문자열."""
+    raw = get_setting(TOPOLOGY_LAYOUT_SETTING_KEY)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def set_topology_layout(layout):
+    set_setting(TOPOLOGY_LAYOUT_SETTING_KEY, json.dumps(layout))
 
 
 def get_setting(key, default=None):
