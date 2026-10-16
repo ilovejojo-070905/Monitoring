@@ -245,16 +245,27 @@ if (-not $Force) {
 }
 
 Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
-if (Test-Path $InstallDir) {
+$folderFullyRemoved = -not (Test-Path $InstallDir)
+if ($folderFullyRemoved) {
+    Write-Ok '설치 폴더 삭제 완료'
+} else {
     Write-Warn2 "일부 파일이 삭제되지 않았습니다 (다른 프로그램이 사용 중일 수 있음): $InstallDir"
     Write-Warn2 '해당 폴더를 직접 확인 후 남은 파일을 지워주세요.'
-} else {
-    Write-Ok '설치 폴더 삭제 완료'
 }
 
-Write-Host "`n============================================================" -ForegroundColor Green
-Write-Host ' InfraSight 제거가 완료되었습니다.' -ForegroundColor Green
-Write-Host '============================================================' -ForegroundColor Green
+# 버그 수정(2026-10-16): 위에서 일부 파일 삭제 실패 경고를 찍어도, 바로
+# 아래 녹색 "제거가 완료되었습니다" 배너가 무조건 떠서 그 경고를 덮어
+# 가려버렸음(터미널이 스크롤되면 경고를 놓치고 "완료" 배너만 보임) --
+# 실제로 폴더가 통째로 안 지워졌는지에 따라 배너 자체를 다르게 보여줌.
+if ($folderFullyRemoved) {
+    Write-Host "`n============================================================" -ForegroundColor Green
+    Write-Host ' InfraSight 제거가 완료되었습니다.' -ForegroundColor Green
+    Write-Host '============================================================' -ForegroundColor Green
+} else {
+    Write-Host "`n============================================================" -ForegroundColor Yellow
+    Write-Host ' InfraSight 제거가 일부만 완료되었습니다 (위 경고 참고).' -ForegroundColor Yellow
+    Write-Host '============================================================' -ForegroundColor Yellow
+}
 Write-Host "`n참고: Git/Python/Caddy/mkcert/PuTTY 자체와 mkcert의 로컬 CA 신뢰는" -ForegroundColor DarkGray
 Write-Host "그대로 남아있습니다 (다른 프로그램이 쓰고 있을 수 있어 건드리지 않습니다)." -ForegroundColor DarkGray
 

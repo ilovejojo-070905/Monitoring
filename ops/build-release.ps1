@@ -116,17 +116,27 @@ try {
 
     $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
     if (-not (Test-Path $makensis)) { $makensis = "$env:ProgramFiles\NSIS\makensis.exe" }
+    $buildFailures = @()
     if (Test-Path $makensis) {
         Push-Location (Join-Path $repoRoot 'ops')
         try {
             & $makensis "/DVERSION=$date-$sha" "/DINSTALL_PS1_PATH=$tempInstallPs1" installer.nsi
-            if ($LASTEXITCODE -ne 0) { Write-Warning "GUI 설치 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다." }
+            if ($LASTEXITCODE -ne 0) {
+                $buildFailures += 'GUI 설치 프로그램'
+                Write-Warning "GUI 설치 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다."
+            }
 
             & $makensis "/DVERSION=$date-$sha" "/DPATCH_PS1_PATH=$tempPatchPs1" patch-gui.nsi
-            if ($LASTEXITCODE -ne 0) { Write-Warning "GUI 패치 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다." }
+            if ($LASTEXITCODE -ne 0) {
+                $buildFailures += 'GUI 패치 프로그램'
+                Write-Warning "GUI 패치 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다."
+            }
 
             & $makensis "/DVERSION=$date-$sha" uninstall-gui.nsi
-            if ($LASTEXITCODE -ne 0) { Write-Warning "GUI 제거 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다." }
+            if ($LASTEXITCODE -ne 0) {
+                $buildFailures += 'GUI 제거 프로그램'
+                Write-Warning "GUI 제거 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다."
+            }
         } finally {
             Pop-Location
         }
@@ -135,7 +145,16 @@ try {
     }
 
     Remove-Item $tempPatchPs1, $tempInstallPs1 -Force -ErrorAction SilentlyContinue
-    Write-Host "`n빌드 완료: $outDir" -ForegroundColor Green
+    # 버그 수정(2026-10-16): makensis 실패는 이미 위에서 Write-Warning으로
+    # 찍혔지만, 그 바로 뒤에 "빌드 완료" 녹색 배너가 무조건 또 떠서 스크롤된
+    # 터미널에서는 경고를 놓치고 "완료"만 보기 쉬웠음 -- 실패가 하나라도
+    # 있으면 배너 자체를 다르게 보여줌 (exe 파일 일부가 안 만들어졌다는 걸
+    # 바로 알 수 있게).
+    if ($buildFailures.Count -gt 0) {
+        Write-Host "`n빌드 일부 실패: $outDir (실패: $($buildFailures -join ', '))" -ForegroundColor Yellow
+    } else {
+        Write-Host "`n빌드 완료: $outDir" -ForegroundColor Green
+    }
     Get-ChildItem $outDir
 } finally {
     Pop-Location

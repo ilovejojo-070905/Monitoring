@@ -280,15 +280,28 @@ if (Test-Path (Join-Path $InstallDir '.git')) {
 # ------------------------------------------------------- [4] 파이썬 패키지 --
 Write-Step '[4/10] 파이썬 패키지 설치 (requirements.txt)'
 Invoke-Native { & $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt') }
+# 버그 수정(2026-10-16): Invoke-Native 자신의 주석이 "호출한 쪽이 $LASTEXITCODE
+# 로 실제 실패를 확인해야 한다"고 명시하는데, 이 호출은 그 확인을 안 해서
+# pip install이 실패해도(예: requirements.txt의 한 패키지가 PyPI에서
+# 사라짐, 디스크 공간 부족) "설치 완료"가 그대로 찍히고 다음 단계로
+# 넘어갔음 -- 나중에 서버가 아예 안 뜨는 원인 불명의 실패로만 나타남.
+if ($LASTEXITCODE -ne 0) { throw "pip install 실패 (종료 코드 $LASTEXITCODE). 네트워크 연결이나 디스크 공간을 확인해주세요." }
 Write-Ok '설치 완료'
 
 # ------------------------------------------------------------- [5] 인증서 --
 Write-Step '[5/10] HTTPS 인증서 발급 (이 PC의 LAN IP 기준)'
 Push-Location $InstallDir
 Invoke-Native { & $mkcertExe -install }
+if ($LASTEXITCODE -ne 0) { throw "mkcert -install 실패 (종료 코드 $LASTEXITCODE)" }
 $lanIp = (& $pythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
+if ($LASTEXITCODE -ne 0) { throw "LAN IP 조회 실패 (종료 코드 $LASTEXITCODE)" }
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'certs') | Out-Null
 Invoke-Native { & $mkcertExe -cert-file 'certs\infrasight.crt' -key-file 'certs\infrasight.key' $lanIp localhost infrasight.local }
+# 버그 수정(2026-10-16): 인증서 발급이 조용히 실패하면(예: LAN IP를 못
+# 구함, mkcert 루트 CA가 깨짐) Caddy가 시작할 때 쓸 인증서 파일이
+# 없는데도 "발급 완료"가 그대로 찍혔음 -- 실제 증상은 몇 단계 뒤
+# Caddy가 못 뜨는 걸로만 보여서 원인 추적이 어려웠음.
+if ($LASTEXITCODE -ne 0) { throw "인증서 발급 실패 (종료 코드 $LASTEXITCODE)" }
 Write-Ok "인증서 발급 완료 (LAN IP: $lanIp)"
 Pop-Location
 
@@ -296,6 +309,11 @@ Pop-Location
 Write-Step '[6/10] 데이터베이스 초기화'
 Push-Location $InstallDir
 & $pythonExe -c "import storage; storage.init_db()"
+# 버그 수정(2026-10-16): DB 초기화가 실패해도(예: 테이블 생성 중 예외)
+# 그대로 "완료"가 찍히고 다음 단계(관리자 계정 생성, DB 접근 필요)로
+# 넘어갔음 -- 그 단계가 더 알아보기 어려운 다른 오류로 실패하는 식으로만
+# 드러났음.
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "데이터베이스 초기화 실패 (종료 코드 $LASTEXITCODE)" }
 Pop-Location
 Write-Ok '완료'
 
@@ -303,6 +321,7 @@ Write-Ok '완료'
 Write-Step '[7/10] 관리자 계정'
 Push-Location $InstallDir
 $hasAdmin = (& $pythonExe -c "import storage; c=storage.get_db(); r=c.execute('SELECT 1 FROM users LIMIT 1').fetchone(); c.close(); print(1 if r else 0)").Trim()
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw "계정 존재 확인 실패 (종료 코드 $LASTEXITCODE)" }
 if ($hasAdmin -eq '1') {
     Write-Ok '이미 계정이 있어 건너뜁니다 (기존 계정 유지)'
 } else {
@@ -312,6 +331,10 @@ if ($hasAdmin -eq '1') {
     # -- the security boundary is "can't use the app with the default
     # password", not "was asked to pick one during install".
     & $pythonExe -c "import storage; storage.create_admin_if_missing('admin', 'admin', must_change_password=True)"
+    # 버그 수정(2026-10-16): 계정 생성이 실패해도 "생성 완료" 메시지가
+    # 그대로 찍혀서, 처음 설치한 사람이 admin/admin으로 로그인해보기
+    # 전까지는 실패한 걸 전혀 알 수 없었음.
+    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "관리자 계정 생성 실패 (종료 코드 $LASTEXITCODE)" }
     Write-Ok "관리자 계정 'admin' / 'admin' 생성 완료 (최초 웹 로그인 시 비밀번호 변경 필수)"
 }
 Pop-Location
