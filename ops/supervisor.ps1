@@ -118,10 +118,38 @@ $caddy = $null
 $crashTimes   = @{ backend = @();   caddy = @()   }
 $backoffUntil = @{ backend = $null; caddy = $null }
 
+# ---------- hang (먹통) detection, 2026-10-16 ----------
+# 실제로 겪은 사각지대: Test-Alive는 프로세스가 "완전히 죽었는지"만 보기
+# 때문에, 내부 작업(APScheduler job)이 교착되거나 Flask가 응답만 느려지고
+# 안 죽어 있으면 이 스크립트는 영원히 "정상"으로 본다. /api/system/
+# health-public(server.py, 인증 없이 호출 가능하도록 새로 추가됨)을
+# 주기적으로 불러서 web/database/collector가 전부 'up'인지 직접 확인하고,
+# 몇 번 연속으로 실패하면 "살아있지만 먹통"으로 판단해 강제로 죽인다 --
+# 그다음은 아래 기존 Test-Alive 블록이 "죽은 걸 감지 -> Register-Crash ->
+# 재시작"을 그대로 처리하므로, 먹통 감지는 "죽이기"만 하고 재시작 로직은
+# 중복으로 안 만듦.
+$HealthCheckGraceSec    = 30  # 막 시작한 프로세스는 초기화 중일 수 있어 이 기간은 확인 안 함
+$HealthCheckIntervalSec = 30
+$HealthFailLimit        = 3   # 연속 실패 횟수 -- 한 번의 일시적 지연으로 재시작하지 않도록
+$backendStartedAt = $null
+$lastHealthCheckAt = $null
+$healthFailCount = 0
+
+function Test-BackendHealthy {
+    try {
+        $resp = Invoke-RestMethod -Uri 'https://localhost:8443/api/system/health-public' -TimeoutSec 5 -ErrorAction Stop
+        return ($resp.web -eq 'up' -and $resp.database -eq 'up' -and $resp.collector -eq 'up')
+    } catch {
+        return $false
+    }
+}
+
 function Start-Backend {
     $p = Start-Process -FilePath $PythonExe -ArgumentList 'server.py' -WorkingDirectory $ProjectRoot `
         -WindowStyle Hidden -PassThru
     Write-Log 'INFO' "Backend 시작됨 (PID $($p.Id))"
+    $script:backendStartedAt = Get-Date
+    $script:healthFailCount = 0
     return $p
 }
 
@@ -193,6 +221,23 @@ try {
             Write-Log 'WARN' "Backend가 비정상 종료된 것을 감지했습니다 (이전 PID $($backend.Id))."
             Register-Crash 'backend'
             if (Test-ShouldRestart 'backend') { $backend = Start-Backend }
+        } elseif (-not (Test-Path $StopMarker)) {
+            $sinceStart = ((Get-Date) - $backendStartedAt).TotalSeconds
+            $sinceLastCheck = if ($lastHealthCheckAt) { ((Get-Date) - $lastHealthCheckAt).TotalSeconds } else { [double]::MaxValue }
+            if ($sinceStart -ge $HealthCheckGraceSec -and $sinceLastCheck -ge $HealthCheckIntervalSec) {
+                $lastHealthCheckAt = Get-Date
+                if (Test-BackendHealthy) {
+                    $healthFailCount = 0
+                } else {
+                    $healthFailCount++
+                    Write-Log 'WARN' "Backend 상태 확인 실패 ($healthFailCount/$HealthFailLimit) -- 프로세스는 살아있지만 응답이 없거나 비정상입니다."
+                    if ($healthFailCount -ge $HealthFailLimit) {
+                        Write-Log 'ERROR' "Backend가 먹통 상태로 판단되어 강제로 재시작합니다 (PID $($backend.Id))."
+                        Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
+                        $healthFailCount = 0
+                    }
+                }
+            }
         }
 
         if (-not (Test-Alive $caddy)) {

@@ -876,6 +876,25 @@ def api_system_health():
     return jsonify(health.get_health())
 
 
+# 신규 기능(2026-10-16, "먹통(hang) 감지") -- ops\supervisor.ps1은 지금까지
+# python.exe/caddy.exe 프로세스가 "완전히 죽었는지"만 보고 재시작을
+# 판단했음: APScheduler 작업이 교착되거나 Flask 자체가 응답만 느려지고
+# 안 죽어 있으면 그 프로세스는 계속 "살아있음"으로 보여 재시작이 전혀
+# 안 걸렸음(실제로 겪은 문제). supervisor.ps1은 PowerShell 스크립트라
+# 로그인 세션을 들고 다닐 수 없으므로, 위 /api/system/health와 같은
+# 데이터를 인증 없이 폴링할 수 있는 창구가 필요함. 이미 이 파일에 있는
+# /api/public/*와 같은 "의도적으로 require_role 없음" 정책 + 같은 IP
+# 레이트리밋을 그대로 적용, collectorLastError.message(예외 텍스트가
+# 어떤 내용을 담고 있을지 확신할 수 없음)는 내려주지 않고 up/down
+# 요약만 노출 -- supervisor가 재시작 여부를 판단하는 데 필요한 전부.
+@app.get('/api/system/health-public')
+def api_system_health_public():
+    if _public_rate_limited(request.remote_addr):
+        return jsonify({'error': 'rate_limited'}), 429
+    h = health.get_health()
+    return jsonify({'web': h['web'], 'database': h['database'], 'collector': h['collector']})
+
+
 @app.post('/api/discovery/scan')
 @require_role('OPERATOR')
 def api_discovery_scan():
