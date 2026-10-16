@@ -139,14 +139,26 @@ def relocate_and_relaunch_if_needed(server, token):
     of what happens to the originally-downloaded file. Best-effort: any
     failure here just falls back to running in place.
 
-    server/token are passed explicitly as --server/--token to the relaunched
-    copy rather than relying on it to rediscover them on its own: that
-    rediscovery works for embedded config (the bytes travel with the file
-    copy below) but NOT for a sidecar InfraSightAgent.cfg sitting next to the
-    *original* exe -- that file never gets copied alongside, so the
-    relaunched copy at the new location would otherwise find no config at
-    all and fall back to the interactive prompt, silently defeating the
-    whole point of the sidecar file."""
+    server/token used to be passed explicitly as --server/--token on the
+    relaunched copy's command line, rather than relying on it to rediscover
+    them on its own: that rediscovery works for embedded config (the bytes
+    travel with the file copy below) but NOT for a sidecar InfraSightAgent.cfg
+    sitting next to the *original* exe -- that file never gets copied
+    alongside, so the relaunched copy at the new location would otherwise
+    find no config at all and fall back to the interactive prompt, silently
+    defeating the whole point of the sidecar file.
+
+    Bug fixed 2026-10-16: a device token on the command line is visible to
+    any other local account on the same PC (Task Manager's Command line
+    column, `wmic process get commandline`, Process Explorer) for as long as
+    this process runs -- a real exposure on a shared/multi-user PC, even
+    though it needs local access to begin with. config_path() resolves to
+    this SAME target_dir regardless of which copy of the exe is running
+    (it's keyed off %LOCALAPPDATA%, not the exe's own path), so writing
+    server/token there with save_config() before spawning the copy gets it
+    the exact same result (the relaunched copy's own load_config() picks it
+    straight up, no args needed) without ever putting the token on a command
+    line anyone else on the box can read."""
     if not IS_WINDOWS or not getattr(sys, 'frozen', False):
         return False
     target_dir = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'InfraSightAgent')
@@ -158,8 +170,9 @@ def relocate_and_relaunch_if_needed(server, token):
     try:
         os.makedirs(target_dir, exist_ok=True)
         shutil.copy2(current, target)
-        extra_args = ['--server', server, '--token', token] if (server and token) else []
-        subprocess.Popen([target] + extra_args, creationflags=subprocess.CREATE_NO_WINDOW)
+        if server and token:
+            save_config({'server': server, 'token': token})
+        subprocess.Popen([target], creationflags=subprocess.CREATE_NO_WINDOW)
         return True
     except Exception as e:
         print('[agent] 파일을 표준 위치로 복사하지 못해 현재 위치에서 계속 실행합니다:', e)
