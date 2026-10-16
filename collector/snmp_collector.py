@@ -31,6 +31,58 @@ try:
 except Exception:
     SNMP_AVAILABLE = False
 
+# 신규 기능(2026-10-16, "SNMPv3 인증 실패/타임아웃/미지원 OID 구분"): pysnmp가
+# errorIndication으로 돌려주는 값은 그냥 문자열이 아니라 pysnmp.proto.errind의
+# 실제 클래스 인스턴스라서(실측으로 확인: RequestTimedOut 등), 그 클래스
+# 이름으로 분류하면 메시지 문자열을 추측해서 매칭하는 것보다 훨씬 안정적이다.
+# 이전엔 errorIndication/errorStatus를 전부 하나로 묶어 그냥 None/실패로만
+# 처리했음 -- "장비가 꺼져있다"와 "SNMP 커뮤니티 문자열이 틀렸다"가 화면에
+# 똑같이 보이던 문제. 전체 열거는 지원 안 함(인증과도, 타임아웃과도 무관한
+# 그 외 전송/프로토콜 오류 전부)로 떨어지게 하는 안전한 기본값 -- 몰라서
+# 틀리게 "인증 실패"라고 하느니 "그 외 오류"가 안전하다는, 이 프로젝트가
+# 환경센서 상태 변환에서 이미 쓰던 것과 같은 정책.
+SNMP_ERROR_TIMEOUT_CLASSES = frozenset({'RequestTimedOut', 'EmptyResponse'})
+SNMP_ERROR_AUTH_CLASSES = frozenset({
+    'UnknownCommunityName', 'NoEncryption', 'EncryptionError', 'DecryptionError',
+    'NoAuthentication', 'AuthenticationError', 'AuthenticationFailure',
+    'UnsupportedAuthProtocol', 'UnsupportedPrivProtocol', 'UnknownSecurityName',
+    'UnsupportedSecurityModel', 'UnsupportedSecurityLevel', 'NotInTimeWindow',
+    'UnknownUserName', 'WrongDigest', 'UnknownEngineID', 'EngineIDMismatch',
+})
+
+
+def classify_snmp_error(error_indication, error_status=None):
+    """(kind, detail) -- kind is one of 'timeout'/'auth'/'transport_error'/
+    'protocol_error'/None (no error). 미지원 OID 자체는 여기서 분류하지
+    않는다: 그건 요청 전체가 아니라 varbind 하나가 noSuchObject/noSuchInstance
+    로 응답한 것이라(errorIndication/errorStatus 둘 다 없는 정상 응답 안에서
+    생기는 일), 이미 _snmp_get/_snmp_walk이 그 값을 None으로 바꿔서 호출한
+    쪽은 "그 OID만 없음"과 "요청 자체가 실패함(이 함수가 다루는 것)"을
+    이미 구분할 수 있다."""
+    if error_indication is not None:
+        name = type(error_indication).__name__
+        if name in SNMP_ERROR_TIMEOUT_CLASSES:
+            return 'timeout', str(error_indication)
+        if name in SNMP_ERROR_AUTH_CLASSES:
+            return 'auth', str(error_indication)
+        return 'transport_error', str(error_indication)
+    if error_status:
+        return 'protocol_error', str(error_status)
+    return None, None
+
+# devices.last_failure_reason은 설계 당시(개발지시서 v2, 7/8항)부터
+# PING_TIMEOUT/SNMP_TIMEOUT/SNMP_AUTH_ERROR/AGENT_OFFLINE/COLLECTOR_ERROR
+# 5종 열거값으로 문서화돼 있었지만, SNMP_AUTH_ERROR는 지금까지 실제로 쓰인
+# 적이 없었다(sample_snmp가 reachable=False면 항상 'SNMP_TIMEOUT'을 그대로
+# 박아넣었음) -- classify_snmp_error의 분류를 그 기존 열거값에 맞춰 매핑.
+# transport_error/protocol_error는 기존 5종에 없는 범주라 'SNMP_TIMEOUT'으로
+# 떨어뜨림(완전히 새 열거값을 추가해 last_failure_reason 소비자쪽을 다 같이
+# 바꾸는 대신, 이미 있는 "응답을 못 받음" 의미에 가장 가까운 값 재사용).
+SNMP_ERROR_KIND_TO_REASON = {
+    'timeout': 'SNMP_TIMEOUT',
+    'auth': 'SNMP_AUTH_ERROR',
+}
+
 OID_SYS_NAME = '1.3.6.1.2.1.1.5.0'
 OID_SYS_DESCR = '1.3.6.1.2.1.1.1.0'
 OID_SYS_UPTIME = '1.3.6.1.2.1.1.3.0'
@@ -56,6 +108,20 @@ OID_IF_OUT_DISCARDS = '1.3.6.1.2.1.2.2.1.19'
 # ifSpeed (ifTable, bps) saturates at 4.3Gbps on gigabit+ links so it's not used.
 OID_IF_HIGH_SPEED = '1.3.6.1.2.1.31.1.1.1.15'
 OID_UPS_BATTERY_CAPACITY = '1.3.6.1.2.1.33.1.2.4.0'
+# 신규 기능(2026-10-16, "64비트 인터페이스 카운터 우선 사용"): ifInOctets/
+# ifOutOctets(위 OID_IF_IN_OCTETS/OID_IF_OUT_OCTETS)는 32비트라 3.4Gbps를
+# 넘는 링크에서는 poll 주기(기본 2초) 안에도 카운터가 한 바퀴 돌 수 있다.
+# ifXTable의 64비트 카운터(ifHCInOctets/ifHCOutOctets)를 걸어서, 있으면
+# 그걸 우선 쓰고 없으면(옛 장비/저속 인터페이스는 RFC 2863 권고상 64비트
+# 테이블에 행이 없을 수 있음) 32비트로 자동 폴백 -- 인터페이스 단위로
+# 섞여도 되게 설계(한 장비 안에서도 포트별로 있고 없고가 다를 수 있음).
+OID_IF_HC_IN_OCTETS = '1.3.6.1.2.1.31.1.1.1.6'
+OID_IF_HC_OUT_OCTETS = '1.3.6.1.2.1.31.1.1.1.10'
+# 측정 간격이 이보다 길면(장애/재시작 등으로 한동안 못 걸렀다가 다시 걸린
+# 경우) 그 구간 평균 Mbps는 "최선의 추정치"일 뿐 순간값과는 거리가 멀다 --
+# 틀렸다고 숨기는 대신 lowConfidence로 표시해서 화면에서 구분 가능하게.
+# 기본 tick이 2초(EXTENDED_POLL_INTERVAL_SEC 주석 참고)인 것 대비 30배.
+TRAFFIC_RATE_MAX_RELIABLE_DT_SEC = 60
 
 # MAC 주소/VLAN 수집 (신규 기능, 2026-10-16) -- 표준 BRIDGE-MIB/Q-BRIDGE-MIB
 # (벤더 전용 아님). dot1dTpFdbTable은 MAC별로 안 뜨고 "브리지 포트 번호"로만
@@ -101,6 +167,49 @@ OID_ENT_PHYSICAL_SERIAL_NUM = '1.3.6.1.2.1.47.1.1.1.1.11.1'
 # belongs to, not just the chassis.
 OID_ENT_PHYSICAL_DESCR_TABLE = '1.3.6.1.2.1.47.1.1.1.1.2'
 OID_ENT_PHYSICAL_NAME_TABLE = '1.3.6.1.2.1.47.1.1.1.1.7'
+
+
+def compute_counter_delta(curr, prev, bits, dt_sec, high_speed_mbps=None):
+    """신규 기능(2026-10-16, "카운터 초기화·오버플로·인터페이스 재생성 처리").
+
+    두 폴링 시점 사이 인터페이스 카운터(ifInOctets/ifHCInOctets 등)의
+    증가량(바이트)을 계산. curr >= prev면 평범한 증가라 바로 뺄셈
+    ('ok'). curr < prev면 두 가지 중 하나인데 카운터 값만 봐서는 원천적으로
+    구분 불가능:
+      1) 카운터가 2**bits에서 한 바퀴 돌았다 (overflow/wraparound)
+      2) 인터페이스가 재생성됐거나 장비가 재부팅돼 카운터가 0 근처부터
+         다시 시작했다 (reset)
+    구분 기준: (1)이 맞으려면 dt_sec 동안 그 비트폭 카운터가 실제로 한
+    바퀴 돌 만큼의 속도가 나와야 한다 -- 그 요구 속도가 이 인터페이스의
+    ifHighSpeed(모르면 10Gbps로 가정) 대비 비정상적으로(4배 넘게) 높으면
+    물리적으로 불가능하다고 보고 (2)로 판단한다. 틀리게 "랩어라운드"라고
+    단정해서 트래픽이 터무니없이 튀어 보이는 것보다, reset 쪽으로 판단해서
+    "이번 구간은 curr 바이트만큼 새로 쌓인 것"으로 보수적으로 처리하는
+    게 더 안전한 기본값.
+
+    반환: (delta_bytes, note) -- note는 'ok'/'wrapped'/'reset'/'implausible'.
+    'implausible'은 계산된 delta가 ifHighSpeed 대비로도 물리적으로
+    불가능한 수준일 때(링크 속도의 4배 초과) -- 그런 경우 화면에 터무니없는
+    순간 속도를 보여주는 대신 0으로 깎아서 돌려준다. 호출부는 note가
+    'ok'가 아니면 그 구간을 lowConfidence로 표시해야 한다."""
+    dt_sec = max(dt_sec, 0.001)
+    wrap_span = 1 << bits
+    if curr >= prev:
+        delta, note = curr - prev, 'ok'
+    else:
+        wrapped_delta = (curr - prev) + wrap_span
+        wrap_required_bps = wrap_span * 8 / dt_sec
+        plausible_cap_bps = max((high_speed_mbps or 10_000) * 1_000_000 * 4, 1)
+        if wrap_required_bps <= plausible_cap_bps:
+            delta, note = wrapped_delta, 'wrapped'
+        else:
+            delta, note = curr, 'reset'
+    if high_speed_mbps:
+        max_bytes = high_speed_mbps * 1_000_000 * dt_sec / 8 * 4
+        if delta > max_bytes:
+            return 0, 'implausible'
+    return delta, note
+
 
 # The 4-3-추가 items below (error/discard counters, admin status, link speed,
 # generic hrStorage memory, ENTITY-MIB, ENVMON) roughly doubled the number of
@@ -165,8 +274,8 @@ def check_reachable(ip, auth_data, port, timeout=1.5):
     _snmp_get's own comment) -- a real, measured regression on registration/
     test-snmp response time, not a hypothetical one."""
     try:
-        result = snmp_run(_snmp_get(SnmpEngine(), ip, auth_data, port, [OID_SYS_NAME], timeout=timeout, retries=0))
-        return result is not None
+        values, _kind = snmp_run(_snmp_get(SnmpEngine(), ip, auth_data, port, [OID_SYS_NAME], timeout=timeout, retries=0))
+        return values is not None
     except Exception:
         return False
 
@@ -210,12 +319,13 @@ async def _snmp_get(engine, ip, auth_data, port, oids, timeout=1.5, retries=1):
     errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
         engine, auth_data, target, ContextData(), *var_binds)
     if errorIndication or errorStatus:
-        return None
+        kind, _detail = classify_snmp_error(errorIndication, errorStatus)
+        return None, kind
     values = []
     for vb in varBinds:
         v = str(vb[1])
         values.append(None if 'No Such' in v else v)
-    return values
+    return values, None
 
 
 async def _snmp_walk(engine, ip, auth_data, port, base_oid, timeout=1.5, max_rows=256, retries=1):
@@ -249,9 +359,10 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
     engine = SnmpEngine()
     result = {'reachable': False, 'latencyMs': None}
     start = time.time()
-    basics = await _snmp_get(engine, ip, auth_data, port, [OID_SYS_NAME, OID_SYS_DESCR, OID_SYS_UPTIME], timeout=timeout)
+    basics, err_kind = await _snmp_get(engine, ip, auth_data, port, [OID_SYS_NAME, OID_SYS_DESCR, OID_SYS_UPTIME], timeout=timeout)
     result['latencyMs'] = round((time.time() - start) * 1000, 1)
     if basics is None:
+        result['failureReason'] = SNMP_ERROR_KIND_TO_REASON.get(err_kind, 'SNMP_TIMEOUT')
         return result
     result['reachable'] = True
     result['sysName'], result['sysDescr'], result['sysUptimeTicks'] = basics[0], basics[1], basics[2]
@@ -260,8 +371,23 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
         result['ifDescr'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_DESCR, timeout=timeout)
         result['ifAlias'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_ALIAS, timeout=timeout)
         result['oper'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OPER_STATUS, timeout=timeout)
-        result['in_oct'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_OCTETS, timeout=timeout)
-        result['out_oct'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OUT_OCTETS, timeout=timeout)
+        # 64비트 카운터(ifHCIn/OutOctets) 우선 사용, 모든 인터페이스를
+        # 못 덮으면(옛 장비, 또는 RFC 2863상 느린 인터페이스는 HC 생략
+        # 가능) 32비트 테이블로 그 틱 전체를 통째로 폴백 -- 인터페이스별로
+        # 섞어 쓰지 않는 이유: 한쪽만 HC가 비어 있는 상태를 섞으면 그
+        # 인터페이스는 매 틱 0바이트로 보일 위험이 있어서, "전부 64비트
+        # 아니면 전부 32비트" 중 더 안전한 쪽(실제로 전부 커버하는 쪽)을
+        # 고른다. ifDescr는 바로 위에서 이미 걸었으니 추가 라운드트립 없이
+        # "몇 개 인터페이스가 있는지"의 기준으로 재사용.
+        in_hc = await _snmp_walk(engine, ip, auth_data, port, OID_IF_HC_IN_OCTETS, timeout=timeout)
+        out_hc = await _snmp_walk(engine, ip, auth_data, port, OID_IF_HC_OUT_OCTETS, timeout=timeout)
+        iface_count = len(result['ifDescr'])
+        if iface_count and len(in_hc) >= iface_count and len(out_hc) >= iface_count:
+            result['in_oct'], result['out_oct'], result['ifCounterBits'] = in_hc, out_hc, 64
+        else:
+            result['in_oct'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_OCTETS, timeout=timeout)
+            result['out_oct'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OUT_OCTETS, timeout=timeout)
+            result['ifCounterBits'] = 32
         loads = {}
         if profile['cpu_oid']:
             loads = await _snmp_walk(engine, ip, auth_data, port, profile['cpu_oid'], timeout=timeout)
@@ -341,7 +467,7 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
                  result['envFanState'], result['envSupplyState']) = _entity_sensor_env(
                     sensor_type, sensor_scale, sensor_precision, sensor_value, sensor_status, phys_name)
             try:
-                ent = await _snmp_get(engine, ip, auth_data, port,
+                ent, _ent_err = await _snmp_get(engine, ip, auth_data, port,
                                        [OID_ENT_PHYSICAL_DESCR, OID_ENT_PHYSICAL_MODEL_NAME, OID_ENT_PHYSICAL_SERIAL_NUM],
                                        timeout=timeout)
                 if ent:
@@ -376,7 +502,7 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
             result['entModuleIdx'] = _top_level_module_indices(ent_class, ent_contained)
         if extended_due:
             try:
-                ent = await _snmp_get(engine, ip, auth_data, port,
+                ent, _ent_err = await _snmp_get(engine, ip, auth_data, port,
                                        [OID_ENT_PHYSICAL_DESCR, OID_ENT_PHYSICAL_MODEL_NAME, OID_ENT_PHYSICAL_SERIAL_NUM],
                                        timeout=timeout)
                 if ent:
@@ -384,7 +510,7 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
             except Exception:
                 pass
     elif category == 'fac':
-        result['batt'] = await _snmp_get(engine, ip, auth_data, port, [OID_UPS_BATTERY_CAPACITY], timeout=timeout)
+        result['batt'], _batt_err = await _snmp_get(engine, ip, auth_data, port, [OID_UPS_BATTERY_CAPACITY], timeout=timeout)
     return result
 
 
@@ -695,7 +821,7 @@ def sample_snmp(entity, device_row):
     now_ms = int(time.time() * 1000)
     storage.update_failure_state(
         device_row['id'], failures,
-        None if result['reachable'] else 'SNMP_TIMEOUT',
+        None if result['reachable'] else result.get('failureReason', 'SNMP_TIMEOUT'),
         now_ms if result['reachable'] else device_row.get('last_success_at'),
         now_ms,
         device_row.get('last_failure_at') if result['reachable'] else now_ms)
@@ -739,8 +865,7 @@ def sample_snmp(entity, device_row):
     if category == 'net' and 'oper' in result:
         try:
             oper, in_oct, out_oct = result['oper'], result['in_oct'], result['out_oct']
-            total_in = sum(int(v) for v in in_oct.values())
-            total_out = sum(int(v) for v in out_oct.values())
+            bits = result.get('ifCounterBits', 32)
             entity['portsUp'] = sum(1 for v in oper.values() if str(v) == '1')
             entity['portsTotal'] = len(oper)
             now = time.time()
@@ -748,23 +873,49 @@ def sample_snmp(entity, device_row):
             prev_ifaces = entity.get('_snmpIfacePrev') or {}
             entity.setdefault('hist', {}).setdefault('traffic', hist(0))
             iface_rates = {}
+            # 신규 기능(2026-10-16, "측정 간격·비정상 카운터 변화 검증" +
+            # "64비트 카운터/오버플로/재생성 처리"): 전체 합계를 먼저 구하고
+            # 그 합계의 증감만 보던 이전 방식은 카운터 오버플로/재생성을
+            # 아예 구분하지 못하고 max(.., 0)으로 음수를 그냥 0으로 뭉갰다 --
+            # 인터페이스 하나가 재부팅으로 카운터가 리셋되면 "이번 틱 트래픽
+            # 0"으로 보였을 것. 이제 인터페이스별로 compute_counter_delta를
+            # 돌려 랩어라운드/리셋을 구분하고, 그 델타들을 합쳐서 장비 전체
+            # 합계를 만든다(합계를 먼저 내고 델타를 구하는 게 아니라).
             if prev:
                 dt = max(now - prev['t'], 1)
-                in_mbps = max((total_in - prev['in']) * 8 / dt / 1_000_000, 0)
-                out_mbps = max((total_out - prev['out']) * 8 / dt / 1_000_000, 0)
-                entity['trafficIn'] = round(in_mbps, 2)
-                entity['trafficOut'] = round(out_mbps, 2)
-                push_cap(entity['hist']['traffic'], round(in_mbps + out_mbps, 2))
+                dt_reliable = dt <= TRAFFIC_RATE_MAX_RELIABLE_DT_SEC
+                high_speed_early = ext_cache.get('ifHighSpeed') or {}
+                total_in_delta = total_out_delta = 0
                 for idx, v in in_oct.items():
-                    if idx in prev_ifaces:
-                        d_in = max(int(v) - prev_ifaces[idx].get('in', 0), 0)
-                        d_out = max(int(out_oct.get(idx, 0)) - prev_ifaces[idx].get('out', 0), 0)
-                        iface_rates[idx] = {
-                            'inMbps': round(d_in * 8 / dt / 1_000_000, 3),
-                            'outMbps': round(d_out * 8 / dt / 1_000_000, 3),
-                        }
-            entity['_snmpPrev'] = {'in': total_in, 'out': total_out, 't': now}
-            entity['_snmpIfacePrev'] = {idx: {'in': int(v), 'out': int(out_oct.get(idx, 0))} for idx, v in in_oct.items()}
+                    prevp = prev_ifaces.get(idx)
+                    # 지난 틱과 카운터 비트폭이 다르면(예: 장비가 막 재시작돼
+                    # 이번 틱부터 64비트 HC 테이블에 응답하기 시작함) 두 값을
+                    # 직접 비교할 수 없다 -- 이번 틱은 델타를 안 내고 다음
+                    # 틱부터 새 비트폭 기준으로 다시 쌓는다.
+                    if not prevp or prevp.get('bits') != bits:
+                        continue
+                    speed_mbps = _safe_int(high_speed_early.get(idx))
+                    d_in, note_in = compute_counter_delta(int(v), prevp.get('in', 0), bits, dt, speed_mbps)
+                    d_out, note_out = compute_counter_delta(int(out_oct.get(idx, 0)), prevp.get('out', 0), bits, dt, speed_mbps)
+                    iface_rates[idx] = {
+                        'inMbps': round(d_in * 8 / dt / 1_000_000, 3),
+                        'outMbps': round(d_out * 8 / dt / 1_000_000, 3),
+                        'lowConfidence': (not dt_reliable) or note_in != 'ok' or note_out != 'ok',
+                    }
+                    total_in_delta += d_in
+                    total_out_delta += d_out
+                in_mbps = round(total_in_delta * 8 / dt / 1_000_000, 2)
+                out_mbps = round(total_out_delta * 8 / dt / 1_000_000, 2)
+                entity['trafficIn'] = in_mbps
+                entity['trafficOut'] = out_mbps
+                # 측정 간격 자체가 너무 길면(장애/재시작 후 한참 지나 다시
+                # 걸린 경우) 그 구간 평균은 "최선의 추정치"일 뿐이라 숨기지
+                # 않고 플래그로 표시 -- 화면/API 소비자가 "신뢰도 낮음"으로
+                # 구분할 수 있게.
+                entity['trafficLowConfidence'] = not dt_reliable
+                push_cap(entity['hist']['traffic'], round(in_mbps + out_mbps, 2))
+            entity['_snmpPrev'] = {'t': now}
+            entity['_snmpIfacePrev'] = {idx: {'in': int(v), 'out': int(out_oct.get(idx, 0)), 'bits': bits} for idx, v in in_oct.items()}
 
             ifdescr = result.get('ifDescr') or {}
             ifalias = result.get('ifAlias') or {}
@@ -777,7 +928,7 @@ def sample_snmp(entity, device_row):
             iface_hist = entity.setdefault('_ifaceHist', {})
             ifaces = []
             for idx, name in ifdescr.items():
-                rate = iface_rates.get(idx, {'inMbps': 0.0, 'outMbps': 0.0})
+                rate = iface_rates.get(idx, {'inMbps': 0.0, 'outMbps': 0.0, 'lowConfidence': False})
                 iface_hist.setdefault(idx, hist(0))
                 push_cap(iface_hist[idx], round(rate['inMbps'] + rate['outMbps'], 3))
                 speed_mbps = _safe_int(high_speed.get(idx))
@@ -801,6 +952,7 @@ def sample_snmp(entity, device_row):
                     'status': 'up' if str(oper.get(idx, '2')) == '1' else 'down',
                     'adminStatus': 'up' if str(admin.get(idx, '1')) == '1' else 'down',
                     'inMbps': rate['inMbps'], 'outMbps': rate['outMbps'],
+                    'trafficLowConfidence': rate.get('lowConfidence', False),
                     'speedMbps': speed_mbps,
                     'utilInPct': util_in, 'utilOutPct': util_out,
                     'inErrors': _safe_int(in_err.get(idx)),

@@ -35,6 +35,7 @@ import network_bulk_import
 from collector import agent_collector, ping_collector
 from collector.snmp_collector import SNMP_AVAILABLE
 from collector import snmp_collector
+from collector import snmp_profiles
 from collector import discovery
 from collector import flow_listener
 
@@ -843,6 +844,16 @@ def serialize_device(d, global_thresholds=None, groups_cache=None):
     # backend's incidents fire on, instead of each duplicating the old
     # hardcoded 75/90/80/92/80/92 independently of whatever's configured.
     base['resolvedThresholds'] = thresholds.resolve_thresholds(d, global_thresholds, groups_cache)
+    # 신규 기능(2026-10-16, "표준 MIB와 제조사별 확장 MIB를 분리"): SNMP로
+    # 수집하는 장비에 한해, 지금 실제로 적용된 벤더 프로필과 그 프로필이
+    # 쓰는 OID들의 표준/벤더 구분을 같이 내려줌 -- 화면에서 "이 CPU%는
+    # 표준 HOST-RESOURCES-MIB에서 왔다" vs "제조사 전용 확장(CISCO-PROCESS-
+    # MIB 등)에서 왔다"를 바로 볼 수 있게. entity.get('sysDescr')는 아직
+    # 한 번도 못 붙은 장비면 비어있을 수 있어 resolve_profile이 그냥
+    # vendor_profile(기본 'generic')만으로 떨어지는데, 그것도 정확한 동작.
+    if d['mode'] == 'snmp':
+        mib_profile = snmp_profiles.resolve_profile(d.get('vendor_profile'), entity.get('sysDescr'))
+        base['mibProfile'] = {'name': mib_profile['name'], **snmp_profiles.profile_mib_summary(mib_profile['name'])}
     return base
 
 

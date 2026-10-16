@@ -234,6 +234,118 @@ JUNIPER_CLASS_FAN = '4'
 # 걸 정상이라고 표시"보다 훨씬 안전하다는 판단.
 JUNIPER_STATE_NORMAL_CODES = ('2', '5')  # running(2) / running at full speed(5)
 
+# 신규 기능(2026-10-16, "표준 MIB와 제조사별 확장 MIB를 분리"): 이전엔 이
+# 구분이 소스 코드 주석에만 있었고(각 OID_* 상수 위의 설명), 실행 중에
+# 쿼리 가능한 데이터가 전혀 아니었음 -- 어떤 OID가 표준 MIB(여러 벤더가
+# 다 구현하길 기대할 수 있는 IETF MIB-II/HOST-RESOURCES-MIB/ENTITY-MIB류)
+# 출신이고 어떤 게 제조사 전용 확장(enterprise OID 트리)인지, 코드를 읽지
+# 않고는 알 방법이 없었음. 이 레지스트리가 그 구분을 실제 데이터로 승격:
+# OID 문자열 -> (MIB 이름, 표준 여부). collector/snmp_collector.py 쪽
+# OID(ifTable/BRIDGE-MIB/sysName 등, 전부 표준 MIB)도 여기 같이 등록함 --
+# snmp_collector가 이 모듈을 import하는 순환 참조를 피하려고 그 상수들을
+# re-import하지 않고 리터럴 OID 문자열을 그대로 다시 적음(두 파일 다
+# 이미 이 정확한 문자열을 하드코딩하고 있어 값 자체는 새로 만든 게
+# 아니라 복제일 뿐).
+OID_MIB_INFO = {
+    # collector/snmp_collector.py의 표준 MIB OID들 (MIB-II/IF-MIB/
+    # BRIDGE-MIB/Q-BRIDGE-MIB/ENTITY-MIB/UPS-MIB -- 전부 RFC 표준, 벤더 무관)
+    '1.3.6.1.2.1.1.5.0': ('SNMPv2-MIB', True),
+    '1.3.6.1.2.1.1.1.0': ('SNMPv2-MIB', True),
+    '1.3.6.1.2.1.1.3.0': ('SNMPv2-MIB', True),
+    '1.3.6.1.2.1.2.2.1.2': ('IF-MIB', True),
+    '1.3.6.1.2.1.31.1.1.1.18': ('IF-MIB', True),
+    '1.3.6.1.2.1.2.2.1.8': ('IF-MIB', True),
+    '1.3.6.1.2.1.2.2.1.7': ('IF-MIB', True),
+    '1.3.6.1.2.1.2.2.1.10': ('IF-MIB', True),
+    '1.3.6.1.2.1.2.2.1.16': ('IF-MIB', True),
+    '1.3.6.1.2.1.2.2.1.14': ('IF-MIB', True),
+    '1.3.6.1.2.1.2.2.1.20': ('IF-MIB', True),
+    '1.3.6.1.2.1.2.2.1.13': ('IF-MIB', True),
+    '1.3.6.1.2.1.2.2.1.19': ('IF-MIB', True),
+    '1.3.6.1.2.1.31.1.1.1.15': ('IF-MIB', True),
+    '1.3.6.1.2.1.33.1.2.4.0': ('UPS-MIB', True),
+    '1.3.6.1.2.1.17.4.3.1.2': ('BRIDGE-MIB', True),
+    '1.3.6.1.2.1.17.4.3.1.3': ('BRIDGE-MIB', True),
+    '1.3.6.1.2.1.17.1.4.1.2': ('BRIDGE-MIB', True),
+    '1.3.6.1.2.1.17.7.1.4.5.1.1': ('Q-BRIDGE-MIB', True),
+    '1.3.6.1.2.1.25.2.3.1.2': ('HOST-RESOURCES-MIB', True),
+    '1.3.6.1.2.1.25.2.3.1.5': ('HOST-RESOURCES-MIB', True),
+    '1.3.6.1.2.1.25.2.3.1.6': ('HOST-RESOURCES-MIB', True),
+    '1.3.6.1.2.1.25.2.3.1.4': ('HOST-RESOURCES-MIB', True),
+    '1.3.6.1.2.1.47.1.1.1.1.2.1': ('ENTITY-MIB', True),
+    '1.3.6.1.2.1.47.1.1.1.1.13.1': ('ENTITY-MIB', True),
+    '1.3.6.1.2.1.47.1.1.1.1.11.1': ('ENTITY-MIB', True),
+    '1.3.6.1.2.1.47.1.1.1.1.2': ('ENTITY-MIB', True),
+    '1.3.6.1.2.1.47.1.1.1.1.7': ('ENTITY-MIB', True),
+    # 이 모듈(snmp_profiles.py) 자체의 표준 MIB OID.
+    OID_HR_PROCESSOR_LOAD: ('HOST-RESOURCES-MIB', True),
+    OID_ENT_PHY_SENSOR_TYPE: ('ENTITY-SENSOR-MIB', True),
+    OID_ENT_PHY_SENSOR_SCALE: ('ENTITY-SENSOR-MIB', True),
+    OID_ENT_PHY_SENSOR_PRECISION: ('ENTITY-SENSOR-MIB', True),
+    OID_ENT_PHY_SENSOR_VALUE: ('ENTITY-SENSOR-MIB', True),
+    OID_ENT_PHY_SENSOR_OPER_STATUS: ('ENTITY-SENSOR-MIB', True),
+    OID_ENT_PHYSICAL_CLASS: ('ENTITY-MIB', True),
+    OID_ENT_PHYSICAL_CONTAINED_IN: ('ENTITY-MIB', True),
+    # 제조사 전용 확장 MIB (enterprise OID 트리 -- 해당 벤더에서만 보장됨).
+    OID_CISCO_CPU_5MIN: ('CISCO-PROCESS-MIB', False),
+    OID_CISCO_MEM_USED: ('CISCO-MEMORY-POOL-MIB', False),
+    OID_CISCO_MEM_FREE: ('CISCO-MEMORY-POOL-MIB', False),
+    OID_CISCO_ENVMON_TEMP_DESCR: ('CISCO-ENVMON-MIB', False),
+    OID_CISCO_ENVMON_TEMP_VALUE: ('CISCO-ENVMON-MIB', False),
+    OID_CISCO_ENVMON_TEMP_STATE: ('CISCO-ENVMON-MIB', False),
+    OID_CISCO_ENVMON_FAN_STATE: ('CISCO-ENVMON-MIB', False),
+    OID_CISCO_ENVMON_SUPPLY_STATE: ('CISCO-ENVMON-MIB', False),
+    OID_HP_CPU: ('STATISTICS-MIB (HP ProCurve)', False),
+    OID_HP_MEM_USED: ('STATISTICS-MIB (HP ProCurve)', False),
+    OID_HP_MEM_FREE: ('STATISTICS-MIB (HP ProCurve)', False),
+    OID_HP_ICF_SENSOR_TYPE_REF: ('HP-ICF-CHASSIS', False),
+    OID_HP_ICF_SENSOR_STATUS: ('HP-ICF-CHASSIS', False),
+    OID_HP_ICF_SENSOR_DESCR: ('HP-ICF-CHASSIS', False),
+    OID_ARUBA_CX_MEM_PCT: ('ARUBAWIRED-SYSTEMINFO-MIB', False),
+    OID_JUNIPER_CPU: ('JUNIPER-MIB', False),
+    OID_JUNIPER_MEM_BUFFER: ('JUNIPER-MIB', False),
+    OID_JUNIPER_OPER_DESCR: ('JUNIPER-MIB', False),
+    OID_JUNIPER_OPER_STATE: ('JUNIPER-MIB', False),
+    OID_JUNIPER_OPER_TEMP: ('JUNIPER-MIB', False),
+    OID_H3C_CPU: ('HH3C-ENTITY-EXT-MIB', False),
+    OID_H3C_MEM_PCT: ('HH3C-ENTITY-EXT-MIB', False),
+    OID_H3C_TEMPERATURE: ('HH3C-ENTITY-EXT-MIB', False),
+    OID_H3C_TEMPERATURE_THRESHOLD: ('HH3C-ENTITY-EXT-MIB', False),
+    OID_H3C_OPER_STATUS: ('HH3C-ENTITY-EXT-MIB', False),
+}
+
+
+def mib_info(oid):
+    """(mib_name, is_standard) -- 모르는 OID는 ('UNKNOWN', None)으로 솔직하게
+    떨어짐(모르면서 표준/벤더 중 하나로 단정하지 않음, 이 프로젝트가 환경센서
+    상태 변환 등에서 이미 쓰는 "모르면 모른다로" 정책과 같은 결)."""
+    return OID_MIB_INFO.get(oid, ('UNKNOWN', None))
+
+
+def profile_mib_summary(profile_name):
+    """주어진 벤더 프로필이 실제로 쓰는 OID들을 표준/벤더 확장으로 나눠서
+    돌려줌 -- /api/state가 각 장비에 붙여 노출해서 "이 장비의 이 수치는
+    표준 MIB에서 왔다/제조사 전용 확장에서 왔다"를 화면에서 바로 구분할 수
+    있게 한다 (이전엔 소스 코드 주석을 읽어야만 알 수 있던 정보)."""
+    profile = PROFILES.get(profile_name)
+    if not profile:
+        return {'standard': [], 'vendor': []}
+    standard, vendor = [], []
+    seen = set()
+    for field in ('cpu_oid', 'cpu_fallback_oid', 'mem_used_oid', 'mem_free_oid', 'mem_pct_oid'):
+        oid = profile.get(field)
+        if not oid or oid in seen:
+            continue
+        seen.add(oid)
+        mib, is_std = mib_info(oid)
+        entry = {'field': field, 'oid': oid, 'mib': mib}
+        if is_std:
+            standard.append(entry)
+        else:
+            vendor.append(entry)
+    return {'standard': standard, 'vendor': vendor}
+
+
 PROFILES = {
     # 'generic' preserves the exact pre-Phase-7 behavior: try the standard
     # OID first, fall back to the Cisco OID if the device doesn't answer it.
