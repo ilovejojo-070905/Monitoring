@@ -282,13 +282,24 @@ def init_db():
     # Phase 7: topology groundwork (directive section 31 -- "prepare" LLDP/CDP,
     # keep the visual topology as-is for now). Links are discovered/stored
     # here; nothing reads this table into the rendered topology yet.
+    # Bug fixed 2026-10-16: the PK used to be (from,to,link_type) only, with
+    # no local-port column at all -- when the same neighbor showed up on two
+    # different local ports (a real, if unusual, topology: e.g. a redundant
+    # pair of uplinks to the same neighbor switch), the second upsert just
+    # overwrote the first one's remote_port, silently collapsing two
+    # physical links into one row. local_port (parsed from LLDP-MIB's own
+    # table index -- see lldp.py) is now part of the key so each local port
+    # keeps its own row; '' (not NULL) means "unknown/not yet seen", so two
+    # such rows still correctly collide into one rather than NULL<>NULL
+    # letting duplicates through.
     conn.execute('''CREATE TABLE IF NOT EXISTS device_links(
         from_device_id TEXT NOT NULL,
         to_device_id TEXT NOT NULL,
         link_type TEXT NOT NULL,
+        local_port TEXT NOT NULL DEFAULT '',
         remote_port TEXT,
         discovered_at INTEGER NOT NULL,
-        PRIMARY KEY (from_device_id, to_device_id, link_type)
+        PRIMARY KEY (from_device_id, to_device_id, link_type, local_port)
     )''')
     conn.execute('''CREATE TABLE IF NOT EXISTS metrics_1h(
         device_id TEXT NOT NULL,
@@ -566,6 +577,27 @@ def init_db():
         attempts INTEGER NOT NULL
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_email_alert_log_ts ON email_alert_log(ts)')
+    # 알림 재시도 큐 (버그 수정, 2026-10-16): 예전엔 email만 같은 스레드
+    # 안에서 즉시 3연속 재시도했고(지연 없음), slack/kakao/kakao_biz는 1회
+    # 실패하면 그 알림이 그 순간 영구히 drop됐다 -- 전부 daemon 스레드로
+    # fire-and-forget이라 서버가 재시작되면 재시도 중이던 것도 흔적 없이
+    # 사라졌다. 이 테이블이 바로 그 "재시작에도 살아남는 큐": 최초 1회
+    # 시도는 여전히 즉시(지연 없이) 하지만, 실패하면 모든 채널이 동일하게
+    # 여기 큐에 들어가고 collector/alert_retry.py의 tick()이 지연(백오프)을
+    # 두고 재시도한다. destination은 채널마다 모양이 달라서(문자열 1개 vs
+    # kakao의 전체 config dict) JSON으로 직렬화해서 저장.
+    conn.execute('''CREATE TABLE IF NOT EXISTS pending_alert_retries(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at INTEGER NOT NULL,
+        channel TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        source TEXT NOT NULL,
+        message TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at INTEGER NOT NULL,
+        last_error TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_pending_alert_retries_due ON pending_alert_retries(next_attempt_at)')
     # 3-4: 외부 공개 상태 페이지. `label`/`description` are the ONLY text an
     # admin writes for public consumption -- device_id is resolved
     # server-side to compute live status, but is NEVER itself serialized
@@ -630,6 +662,30 @@ def migrate_db():
     for col_name, col_def in _NEW_GROUP_COLUMNS:
         if col_name not in existing_groups:
             conn.execute(f'ALTER TABLE device_groups ADD COLUMN {col_name} {col_def}')
+    # device_links' PRIMARY KEY grew a 4th column (local_port) -- see the
+    # CREATE TABLE's own comment above for why. SQLite can't ALTER a PK in
+    # place (the one real exception to this function's "additive-only, never
+    # drop/rename" rule above), so an existing install's old-shape table is
+    # rebuilt: rename it aside, create the new shape, copy every row across
+    # (local_port='' for all of them, since the old schema never had one),
+    # drop the renamed-aside copy. No data is lost -- every existing link
+    # still exists after this, just now addressable by local_port too.
+    existing_links = {r['name'] for r in conn.execute('PRAGMA table_info(device_links)').fetchall()}
+    if existing_links and 'local_port' not in existing_links:
+        conn.execute('ALTER TABLE device_links RENAME TO device_links_old')
+        conn.execute('''CREATE TABLE device_links(
+            from_device_id TEXT NOT NULL,
+            to_device_id TEXT NOT NULL,
+            link_type TEXT NOT NULL,
+            local_port TEXT NOT NULL DEFAULT '',
+            remote_port TEXT,
+            discovered_at INTEGER NOT NULL,
+            PRIMARY KEY (from_device_id, to_device_id, link_type, local_port)
+        )''')
+        conn.execute(
+            "INSERT INTO device_links(from_device_id,to_device_id,link_type,local_port,remote_port,discovered_at) "
+            "SELECT from_device_id,to_device_id,link_type,'',remote_port,discovered_at FROM device_links_old")
+        conn.execute('DROP TABLE device_links_old')
     conn.commit()
     conn.close()
 
@@ -916,14 +972,28 @@ def add_incident(severity, source, category, message, device_id=None, event_type
     conn = get_db()
     try:
         if device_id and event_type and severity != 'info':
+            # 'ack' included here, not just 'open': acknowledging an incident
+            # records that a human has seen it, but the underlying problem
+            # hasn't actually gone away -- treating 'ack' as "not open anymore"
+            # (the bug this fixes) meant a device that was ack'd while crit
+            # and then actually recovered never got a recovery row (the
+            # lookup below for severity=='info' only ever matched status=
+            # 'open'), so the incident sat at status='ack' forever with no
+            # resolved_at, permanently inflating SLA downtime and silencing
+            # the recovery alert. 'ack' and 'open' are both "still ongoing";
+            # only 'resolved' means the problem actually went away.
             existing = conn.execute(
-                "SELECT id, severity FROM incidents WHERE device_id=? AND event_type=? AND status='open' ORDER BY id DESC LIMIT 1",
+                "SELECT id, severity, status FROM incidents WHERE device_id=? AND event_type=? AND status IN ('open','ack') ORDER BY id DESC LIMIT 1",
                 (device_id, event_type)).fetchone()
             if existing:
                 is_new_or_escalated = existing['severity'] != severity
+                # An ack'd incident that gets worse (severity actually
+                # changes) is re-flagged as 'open' -- whoever acked it did so
+                # for the old severity, not this new one.
+                new_status = 'open' if (is_new_or_escalated and existing['status'] == 'ack') else existing['status']
                 conn.execute(
-                    'UPDATE incidents SET severity=?, message=?, last_occurred_at=?, occurrence_count=occurrence_count+1, during_maintenance=? WHERE id=?',
-                    (severity, message, now, 1 if maintenance else 0, existing['id']))
+                    'UPDATE incidents SET severity=?, message=?, last_occurred_at=?, occurrence_count=occurrence_count+1, during_maintenance=?, status=? WHERE id=?',
+                    (severity, message, now, 1 if maintenance else 0, new_status, existing['id']))
             else:
                 is_new_or_escalated = True
                 conn.execute(
@@ -939,8 +1009,10 @@ def add_incident(severity, source, category, message, device_id=None, event_type
                 (now, severity, source, category, message, status, device_id, event_type,
                  now, now, now if status == 'resolved' else None, 1 if maintenance else 0))
             if device_id and event_type and severity == 'info':
+                # Same 'ack' inclusion as the lookup above -- an ack'd
+                # incident must still be closeable by a real recovery.
                 cur = conn.execute(
-                    "UPDATE incidents SET status='resolved', resolved_at=? WHERE device_id=? AND event_type=? AND status='open'",
+                    "UPDATE incidents SET status='resolved', resolved_at=? WHERE device_id=? AND event_type=? AND status IN ('open','ack')",
                     (now, device_id, event_type))
                 # Only a *real* recovery -- this device/event actually had an
                 # open incident that just got closed -- should notify, not
@@ -1120,6 +1192,7 @@ def set_maintenance(device_id, enabled, start=None, end=None, reason=None, windo
         'UPDATE devices SET maintenance_enabled=?, maintenance_start=?, maintenance_end=?, maintenance_reason=?, maintenance_window_id=? WHERE id=?',
         (1 if enabled else 0, start, end, reason, window_id, device_id))
     now = int(time.time() * 1000)
+    still_open_during_maintenance = []
     if enabled:
         conn.execute(
             'INSERT INTO maintenance_log(device_id,window_id,reason,started_at,started_by) VALUES (?,?,?,?,?)',
@@ -1128,8 +1201,29 @@ def set_maintenance(device_id, enabled, start=None, end=None, reason=None, windo
         conn.execute(
             'UPDATE maintenance_log SET ended_at=? WHERE id=(SELECT id FROM maintenance_log WHERE device_id=? AND ended_at IS NULL ORDER BY id DESC LIMIT 1)',
             (now, device_id))
+        # Bug found live (2026-10-16): an incident that opened (or escalated)
+        # during this window had its alert suppressed (add_incident's
+        # maintenance=True path) and tagged during_maintenance=1, but if the
+        # device's severity never changes again after the window ends,
+        # neither ping_collector/snmp_collector/agent_collector's rank check
+        # nor add_incident's dedup ever re-fires for it -- so the primary
+        # channel stays silent forever, and only escalation (if enabled and
+        # the severity clears its floor) ever eventually leaks it out, late
+        # and through the wrong channel. This is the single place a window
+        # actually ends (scheduled tick and the manual drawer toggle both
+        # call this), so it's also the single place to catch up: any still-
+        # open incident on this device that's still marked during_maintenance
+        # gets re-dispatched once, right now, and the flag cleared so it
+        # can't fire again on a later unrelated update.
+        still_open_during_maintenance = conn.execute(
+            "SELECT * FROM incidents WHERE device_id=? AND status IN ('open','ack') AND during_maintenance=1",
+            (device_id,)).fetchall()
+        for inc in still_open_during_maintenance:
+            conn.execute('UPDATE incidents SET during_maintenance=0 WHERE id=?', (inc['id'],))
     conn.commit()
     conn.close()
+    for inc in still_open_during_maintenance:
+        _dispatch_alert(inc['severity'], inc['source'], inc['message'])
 
 
 def load_maintenance_log(device_id=None, limit=50):
@@ -2281,6 +2375,55 @@ def load_email_alert_log(limit=50):
     return [dict(r) for r in rows]
 
 
+# 알림 재시도 큐 -- pending_alert_retries 테이블 설명은 그 CREATE TABLE 바로
+# 위 주석 참고. destination을 저장하지 않고 재시도 시점에 매번 현재 설정을
+# 다시 읽어오는 이유: kakao 같은 채널은 destination이 토큰까지 포함한 설정
+# dict 전체라, 큐에 넣은 뒤 사용자가 설정을 바꾸면(토큰 재발급 등) 저장해둔
+# destination이 바로 낡은 값이 되기 때문 -- 매번 현재 설정으로 재시도하는
+# 쪽이 "몇 분 전 토큰으로 계속 실패"보다 안전하다.
+ALERT_RETRY_BACKOFF_MIN = [2, 10, 30]  # 분 단위, 시도 실패마다 다음 지연
+ALERT_RETRY_MAX_ATTEMPTS = len(ALERT_RETRY_BACKOFF_MIN)
+
+
+def enqueue_alert_retry(channel, severity, source, message, error):
+    now = int(time.time() * 1000)
+    next_at = now + ALERT_RETRY_BACKOFF_MIN[0] * 60000
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO pending_alert_retries(created_at,channel,severity,source,message,attempts,next_attempt_at,last_error) '
+        'VALUES (?,?,?,?,?,0,?,?)',
+        (now, channel, severity, source, message, next_at, error))
+    conn.commit()
+    conn.close()
+
+
+def load_due_alert_retries():
+    now = int(time.time() * 1000)
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM pending_alert_retries WHERE next_attempt_at<=? ORDER BY id', (now,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_alert_retry(retry_id):
+    conn = get_db()
+    conn.execute('DELETE FROM pending_alert_retries WHERE id=?', (retry_id,))
+    conn.commit()
+    conn.close()
+
+
+def bump_alert_retry(retry_id, attempts, error):
+    now = int(time.time() * 1000)
+    backoff_idx = min(attempts, len(ALERT_RETRY_BACKOFF_MIN) - 1)
+    next_at = now + ALERT_RETRY_BACKOFF_MIN[backoff_idx] * 60000
+    conn = get_db()
+    conn.execute(
+        'UPDATE pending_alert_retries SET attempts=?, next_attempt_at=?, last_error=? WHERE id=?',
+        (attempts, next_at, error, retry_id))
+    conn.commit()
+    conn.close()
+
+
 def load_report_delivery_log(schedule_id=None, limit=50):
     conn = get_db()
     q = 'SELECT * FROM report_delivery_log'
@@ -2535,12 +2678,39 @@ def find_device_by_name_or_ip(name=None, ip=None, exclude_id=None):
         conn.close()
 
 
-def upsert_device_link(from_device_id, to_device_id, link_type, remote_port=None):
+def replace_lldp_links(from_device_id, current_links):
+    """Upserts every (to_device_id, local_port, remote_port) this device's
+    latest LLDP walk actually saw, then deletes any of this device's existing
+    'lldp' links that weren't in that set.
+
+    Bug fixed 2026-10-16: the old upsert_device_link() only ever added/
+    updated a row -- nothing ever deleted one, so a neighbor that stopped
+    showing up (cable unplugged, LLDP disabled on the far end, device moved)
+    left a stale link in the table forever (the UI hides it by checking both
+    endpoints still exist, but the DB row itself never went away). Each LLDP
+    walk sees the neighbor table in full, so "not in this walk's result" is
+    exactly the signal needed to tell a real removal apart from "just didn't
+    get re-discovered yet" -- replacing the whole set every walk, instead of
+    only ever adding to it, is what makes that distinction available."""
     conn = get_db()
-    conn.execute(
-        'INSERT INTO device_links(from_device_id,to_device_id,link_type,remote_port,discovered_at) VALUES (?,?,?,?,?) '
-        'ON CONFLICT(from_device_id,to_device_id,link_type) DO UPDATE SET remote_port=excluded.remote_port, discovered_at=excluded.discovered_at',
-        (from_device_id, to_device_id, link_type, remote_port, int(time.time() * 1000)))
+    now = int(time.time() * 1000)
+    keep = set()
+    for to_device_id, local_port, remote_port in current_links:
+        local_port = local_port or ''
+        keep.add((to_device_id, local_port))
+        conn.execute(
+            'INSERT INTO device_links(from_device_id,to_device_id,link_type,local_port,remote_port,discovered_at) VALUES (?,?,?,?,?,?) '
+            'ON CONFLICT(from_device_id,to_device_id,link_type,local_port) DO UPDATE SET remote_port=excluded.remote_port, discovered_at=excluded.discovered_at',
+            (from_device_id, to_device_id, 'lldp', local_port, remote_port, now))
+    existing = conn.execute(
+        "SELECT to_device_id, local_port FROM device_links WHERE from_device_id=? AND link_type='lldp'",
+        (from_device_id,)).fetchall()
+    for row in existing:
+        key = (row['to_device_id'], row['local_port'] or '')
+        if key not in keep:
+            conn.execute(
+                "DELETE FROM device_links WHERE from_device_id=? AND to_device_id=? AND link_type='lldp' AND local_port=?",
+                (from_device_id, row['to_device_id'], row['local_port']))
     conn.commit()
     conn.close()
 
@@ -2868,59 +3038,82 @@ def _get_alert_channels():
     access_token mid-send -- see _dispatch_one_channel's kakao branch for
     where the refreshed token gets persisted back."""
     channels = []
-    smtp_cfg = get_smtp_config()
-    if smtp_cfg:
-        from alerts.email_channel import EmailChannel
-        channel = EmailChannel(smtp_cfg['host'], smtp_cfg['port'], smtp_cfg['username'], smtp_cfg['password'], smtp_cfg['use_tls'])
-        channels.append(('email', channel, smtp_cfg['alert_to'], smtp_cfg['min_severity']))
-    slack_cfg = get_webhook_config('slack')
-    if slack_cfg:
-        from alerts.slack_channel import SlackChannel
-        channels.append(('slack', SlackChannel(), slack_cfg['url'], slack_cfg['min_severity']))
-    kakao_cfg = get_kakao_config()
-    if kakao_cfg:
-        from alerts.kakao_channel import KakaoChannel
-        channels.append(('kakao', KakaoChannel(), kakao_cfg, kakao_cfg['min_severity']))
-    kakaobiz_cfg = get_kakaobiz_config()
-    if kakaobiz_cfg:
-        from alerts.kakao_biz_channel import KakaoBizChannel
-        channels.append(('kakao_biz', KakaoBizChannel(), kakaobiz_cfg, kakaobiz_cfg['min_severity']))
+    for name in ('email', 'slack', 'kakao', 'kakao_biz'):
+        resolved = resolve_alert_channel(name)
+        if resolved:
+            channel, destination, min_severity = resolved
+            channels.append((name, channel, destination, min_severity))
     return channels
 
 
-# 1-2: a transient SMTP hiccup (relay momentarily unreachable, timeout) is
-# common enough that giving up after one try would under-deliver real
-# incident alerts -- mirrors report_delivery.py's RETRY_ATTEMPTS=3 pattern.
-# Slack isn't retried here: this ticket is specifically about email,
-# and a webhook POST failing almost always means a bad/revoked URL (not a
-# transient blip), where retrying 3x just delays the "발송 실패" incident
-# for no benefit.
-EMAIL_ALERT_RETRY_ATTEMPTS = 3
-
-
-def _dispatch_one_channel(name, channel, destination, severity, source, message):
-    subject = f"[InfraSight] {severity.upper()} - {source}"
+def resolve_alert_channel(name):
+    """(channel instance, destination, min_severity) for one named channel,
+    read fresh from current settings -- or None if it isn't configured. Split
+    out of _get_alert_channels() so the retry queue (collector/alert_retry.py)
+    can re-resolve a single channel by name at retry time instead of reusing
+    whatever destination/credentials were current when the retry was first
+    queued (see pending_alert_retries' own comment for why that matters for
+    kakao specifically -- a stale access_token would just fail again)."""
     if name == 'email':
-        ok, err, attempts = False, None, 0
-        for attempts in range(1, EMAIL_ALERT_RETRY_ATTEMPTS + 1):
-            ok, err = channel.send(destination, subject, message)
-            if ok:
-                break
-        record_email_alert(int(time.time() * 1000), severity, source, message, destination,
-                            'success' if ok else 'failed', None if ok else err, attempts)
-        if not ok:
-            add_incident('warn', 'InfraSight', 'SYSTEM',
-                          f"{name} 알림 발송 실패 ({attempts}회 시도): {err}", _no_alert=True)
-    elif name == 'kakao':
+        smtp_cfg = get_smtp_config()
+        if not smtp_cfg:
+            return None
+        from alerts.email_channel import EmailChannel
+        channel = EmailChannel(smtp_cfg['host'], smtp_cfg['port'], smtp_cfg['username'], smtp_cfg['password'], smtp_cfg['use_tls'])
+        return channel, smtp_cfg['alert_to'], smtp_cfg['min_severity']
+    if name == 'slack':
+        slack_cfg = get_webhook_config('slack')
+        if not slack_cfg:
+            return None
+        from alerts.slack_channel import SlackChannel
+        return SlackChannel(), slack_cfg['url'], slack_cfg['min_severity']
+    if name == 'kakao':
+        kakao_cfg = get_kakao_config()
+        if not kakao_cfg:
+            return None
+        from alerts.kakao_channel import KakaoChannel
+        return KakaoChannel(), kakao_cfg, kakao_cfg['min_severity']
+    if name == 'kakao_biz':
+        kakaobiz_cfg = get_kakaobiz_config()
+        if not kakaobiz_cfg:
+            return None
+        from alerts.kakao_biz_channel import KakaoBizChannel
+        return KakaoBizChannel(), kakaobiz_cfg, kakaobiz_cfg['min_severity']
+    return None
+
+
+def send_via_channel(name, channel, destination, severity, source, message):
+    """The actual network attempt for one channel, no retry/logging/incident
+    logic -- just (ok, err). Used by both _dispatch_one_channel (the first,
+    immediate attempt) and collector/alert_retry.py's tick() (every later
+    attempt), so the kakao token-refresh side effect only has to be written
+    once."""
+    subject = f"[InfraSight] {severity.upper()} - {source}"
+    if name == 'kakao':
         ok, err, new_tokens = channel.send(destination, subject, message)
         if new_tokens:
             set_kakao_tokens(new_tokens['access_token'], new_tokens.get('refresh_token'), new_tokens['expires_in'])
-        if not ok:
-            add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)
-    else:
-        ok, err = channel.send(destination, subject, message)
-        if not ok:
-            add_incident('warn', 'InfraSight', 'SYSTEM', f"{name} 알림 발송 실패: {err}", _no_alert=True)
+        return ok, err
+    return channel.send(destination, subject, message)
+
+
+def _dispatch_one_channel(name, channel, destination, severity, source, message):
+    # Bug fixed 2026-10-16: email used to retry 3x immediately, back-to-back,
+    # in this same short-lived daemon thread (no delay between attempts --
+    # not useful against anything but an instant blip), while slack/kakao/
+    # kakao_biz had no retry at all and just gave up after one failure.
+    # Every channel now gets exactly this one immediate attempt here; a
+    # failure enqueues it into pending_alert_retries instead of either
+    # looping in place or dropping it, and collector/alert_retry.py's tick()
+    # retries it later with real backoff (ALERT_RETRY_BACKOFF_MIN) -- still
+    # running even if this process restarts in the meantime, which a
+    # daemon-thread retry loop never could.
+    ok, err = send_via_channel(name, channel, destination, severity, source, message)
+    if name == 'email':
+        record_email_alert(int(time.time() * 1000), severity, source, message, destination,
+                            'success' if ok else 'failed', None if ok else err, 1)
+    if not ok:
+        enqueue_alert_retry(name, severity, source, message, err)
 
 
 def _dispatch_alert(severity, source, message, force=False):

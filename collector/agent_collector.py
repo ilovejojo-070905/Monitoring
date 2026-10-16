@@ -28,23 +28,36 @@ def check_freshness(entity, device_row):
     device_id = device_row['id']
     last = LAST_REPORT.get(device_id)
     now = time.time()
-    # Code review pass, finding #5: no slow I/O anywhere in this function
-    # (this is push-based -- the network wait already happened on the HTTP
-    # request thread that called record_report below), so the whole
-    # mutation can just be one lock scope with no parallelism cost.
+    # Bug found live (2026-10-16): this used to fire an incident only on the
+    # very first online->offline transition (was_online and not is_online_
+    # now), exactly the "only the first good->bad transition" mistake
+    # ping_collector.py/snmp_collector.py already fixed for their own
+    # REACHABILITY incidents (see snmp_collector.py's matching comment).
+    # Once an agent device went offline, it got one WARN alert and then
+    # silently stayed at WARN in every channel even after age passed
+    # WARN_WINDOW_SEC and the device's own status flipped to 'crit' --
+    # nothing ever re-notified for the escalation. Same rank-comparison fix
+    # as the other two collectors: compare prev_status to the status this
+    # check actually computes (new_status), and fire on any upward move,
+    # not just the first one. new_status stays None on an online tick (this
+    # function doesn't touch status when truly online -- record_report's own
+    # resource-threshold status owns that), so no incident fires there.
+    rank = {'good': 0, 'warn': 1, 'crit': 2}
     with state.LOCK:
-        was_online = entity.get('online', False)
+        prev_status = entity.get('status', 'good')
+        new_status = None
         if last is None:
             entity.update(mode='agent', online=False, reachable=False, status='warn')
+            new_status = 'warn'
         else:
             age = now - last
             entity['online'] = age <= ONLINE_WINDOW_SEC
             if not entity['online']:
-                entity['status'] = 'crit' if age > WARN_WINDOW_SEC else 'warn'
+                new_status = 'crit' if age > WARN_WINDOW_SEC else 'warn'
+                entity['status'] = new_status
                 entity['reachable'] = False
-        is_online_now = entity['online']
-    if was_online and not is_online_now:
-        storage.add_incident('warn', device_row['name'], 'SMS', f"{device_row['name']} 에이전트 응답 없음 (통신 두절)",
+    if new_status is not None and rank[new_status] > rank.get(prev_status, 0):
+        storage.add_incident(new_status, device_row['name'], 'SMS', f"{device_row['name']} 에이전트 응답 없음 (통신 두절)",
                               device_id=device_id, event_type='REACHABILITY', maintenance=storage.in_maintenance(device_row))
     # Bookkeeping for the 5-state collection status (연속 실패 횟수/마지막 수집
     # 시간 등): the actual online/offline classification above is unchanged

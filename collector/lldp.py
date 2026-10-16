@@ -22,13 +22,23 @@ async def walk_lldp_neighbors(engine, ip, auth_data, port, timeout=1.5):
     for key, name in sys_names.items():
         name_str = str(name).strip()
         if name_str:
-            neighbors.append({'sysName': name_str, 'portId': str(port_ids.get(key, ''))})
+            # lldpRemTable's own index is "<lldpRemTimeMark>.<lldpRemLocalPortNum>.
+            # <lldpRemIndex>" -- the local port this specific neighbor was seen
+            # on is already right there in the walk's own key, no extra OID
+            # needed. Used (storage.replace_lldp_links) so the same neighbor
+            # showing up on two different local ports keeps two separate link
+            # rows instead of one overwriting the other.
+            key_parts = key.split('.')
+            local_port = key_parts[1] if len(key_parts) >= 2 else ''
+            neighbors.append({'sysName': name_str, 'portId': str(port_ids.get(key, '')), 'localPort': local_port})
     return neighbors
 
 
 def apply_discovered_links(device_id, neighbors):
     import storage
+    current_links = []
     for n in neighbors:
         matched_id = storage.find_device_by_name_or_ip(name=n['sysName'], exclude_id=device_id)
         if matched_id:
-            storage.upsert_device_link(device_id, matched_id, 'lldp', remote_port=n.get('portId'))
+            current_links.append((matched_id, n.get('localPort') or '', n.get('portId')))
+    storage.replace_lldp_links(device_id, current_links)

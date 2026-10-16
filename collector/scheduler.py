@@ -21,6 +21,7 @@ from collector import local_collector, ping_collector, snmp_collector, agent_col
 from collector import flow_listener
 from collector import maintenance
 from collector import escalation
+from collector import alert_retry
 from collector import report_delivery
 
 def _compute_max_workers():
@@ -207,6 +208,12 @@ def start():
     # 2-5: same cadence/pattern as maintenance.tick -- checks every open
     # incident against the configured escalation chain each run.
     _scheduler.add_job(escalation.tick, 'interval', seconds=60, id='escalation_tick',
+                        replace_existing=True, next_run_time=datetime.now())
+    # 알림 재시도 큐 (버그 수정, 2026-10-16) -- 같은 60초 주기/즉시 첫 실행
+    # 패턴. pending_alert_retries에 쌓인, 처음 시도가 실패한 알림들을
+    # 백오프를 두고 재시도한다 (storage.py의 enqueue_alert_retry/
+    # _dispatch_one_channel 쪽 주석 참고).
+    _scheduler.add_job(alert_retry.tick, 'interval', seconds=60, id='alert_retry_tick',
                         replace_existing=True, next_run_time=datetime.now())
     # 3-3: 주간 보고서는 매주 월요일, 월간 보고서는 매월 1일 아침에 생성+발송.
     # collector/report_delivery.period_for_frequency()가 "오늘 자정까지의

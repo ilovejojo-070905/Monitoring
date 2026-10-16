@@ -1269,6 +1269,18 @@ def api_update_device(device_id):
     snmp_port = fields.get('snmpPort')
     if snmp_port not in (None, '') and not validation.is_valid_port(snmp_port):
         return jsonify({'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}), 400
+    # 등록(api_register_device)엔 있던 중복 이름/IP 검사가 이 수정 라우트엔
+    # 없었음 -- 이름을 바꿔서 기존 다른 장비와 같은 이름/IP가 되는 경로가
+    # 그대로 뚫려 있었고, 이게 LLDP 이웃 매칭(find_device_by_name_or_ip를
+    # 그대로 재사용)이 가끔 엉뚱한 장비에 링크를 거는 실제 원인이었음. 등록
+    # 때와 똑같은 검사를 그대로 재사용(exclude_id로 자기 자신은 제외).
+    dup_id = storage.find_device_by_name_or_ip(name=name, ip=ip, exclude_id=device_id)
+    if dup_id:
+        dup_device = storage.load_device(dup_id)
+        dup_name = dup_device['name'] if dup_device else name
+        if ip and dup_device and dup_device.get('ip') == ip:
+            return jsonify({'error': f'이미 등록된 IP입니다 ("{dup_name}"로 등록되어 있습니다)'}), 409
+        return jsonify({'error': f'이미 등록된 이름입니다: "{dup_name}"'}), 409
     group_field = (fields.get('group') or '').strip()
     if group_field:
         if len(group_field) > 60 or not validation.is_safe_name(group_field):
@@ -1354,11 +1366,23 @@ def api_delete_device(device_id):
     if device_id == LOCAL_ID:
         return jsonify({'error': 'cannot delete local device'}), 400
     scheduler.remove_device_job(device_id)
+    # Bug fixed 2026-10-16: devices + credentials used to be two separate
+    # connections/transactions (this one, then a second one inside
+    # storage.delete_credentials()). An exception between them left the
+    # device gone but its SNMP/SSH credentials orphaned in the DB -- the
+    # bulk-delete route below already shares one connection for exactly this
+    # reason; this single-device route now does too. Also cleans up
+    # device_links rows naming this device (either side) -- previously
+    # nothing ever deleted a link, so a removed device's old topology edges
+    # stayed in the table forever as orphans.
     conn = storage.get_db()
-    conn.execute('DELETE FROM devices WHERE id=?', (device_id,))
-    conn.commit()
-    conn.close()
-    storage.delete_credentials(device_id)
+    try:
+        conn.execute('DELETE FROM devices WHERE id=?', (device_id,))
+        conn.execute('DELETE FROM credentials WHERE device_id=?', (device_id,))
+        conn.execute('DELETE FROM device_links WHERE from_device_id=? OR to_device_id=?', (device_id, device_id))
+        conn.commit()
+    finally:
+        conn.close()
     with state.LOCK:
         state.LIVE.pop(device_id, None)
         state.LAST_REPORT.pop(device_id, None)
@@ -1406,6 +1430,7 @@ def api_bulk_delete_devices():
                 skipped.append(device_id)
                 continue
             conn.execute('DELETE FROM credentials WHERE device_id=?', (device_id,))
+            conn.execute('DELETE FROM device_links WHERE from_device_id=? OR to_device_id=?', (device_id, device_id))
             conn.execute(
                 'INSERT INTO audit_log(username,action,target,ts,source_ip,details) VALUES (?,?,?,?,?,?)',
                 (username, 'DELETE_DEVICE', device_id, int(time.time() * 1000), source_ip, None))
@@ -1459,7 +1484,7 @@ def api_list_groups():
         if ids:
             ph = ','.join('?' * len(ids))
             open_incidents = conn.execute(
-                f"SELECT COUNT(*) c FROM incidents WHERE device_id IN ({ph}) AND status='open'", ids).fetchone()['c']
+                f"SELECT COUNT(*) c FROM incidents WHERE device_id IN ({ph}) AND status IN ('open','ack')", ids).fetchone()['c']
             total_incidents = conn.execute(
                 f"SELECT COUNT(*) c FROM incidents WHERE device_id IN ({ph})", ids).fetchone()['c']
         else:

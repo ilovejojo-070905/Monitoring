@@ -50,6 +50,20 @@ def tick():
     for incident in storage.load_open_incidents():
         if _SEVERITY_RANK.get(incident['severity'], 0) < _SEVERITY_RANK.get(min_severity, 2):
             continue
+        # Bug found live (2026-10-16): the primary alert channel (add_
+        # incident's own dispatch) is held back for a device currently in
+        # maintenance, but this loop never checked that at all -- so a
+        # device under an active maintenance window still got escalation
+        # emails sent to on-call tiers, directly contradicting the
+        # suppression the primary channel already applies. Skipping here
+        # (not recording any escalation progress) means the timeout clock
+        # for this incident simply doesn't start/advance while the window is
+        # open; set_maintenance() catches the primary channel back up for
+        # real once the window ends, and this loop resumes normally on its
+        # next tick.
+        device_row = storage.load_device(incident['device_id']) if incident.get('device_id') else None
+        if device_row and storage.in_maintenance(device_row):
+            continue
         state = storage.get_escalation_state(incident['id'])
         if state and state.get('completed'):
             continue
