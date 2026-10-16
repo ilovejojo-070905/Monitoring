@@ -158,9 +158,14 @@ def build_auth_data(device_id, version, community):
 
 def check_reachable(ip, auth_data, port, timeout=1.5):
     """Lightweight one-shot SNMP GET (just sysName) for registration-time
-    validation -- doesn't do any of sample_snmp's per-category polling."""
+    validation -- doesn't do any of sample_snmp's per-category polling.
+    retries=0 explicitly: test_connection() below already calls this up to
+    `attempts` times as its own majority-vote retry, so _snmp_get's own
+    default retry would multiply the worst-case wait on top of that (see
+    _snmp_get's own comment) -- a real, measured regression on registration/
+    test-snmp response time, not a hypothetical one."""
     try:
-        result = snmp_run(_snmp_get(SnmpEngine(), ip, auth_data, port, [OID_SYS_NAME], timeout=timeout))
+        result = snmp_run(_snmp_get(SnmpEngine(), ip, auth_data, port, [OID_SYS_NAME], timeout=timeout, retries=0))
         return result is not None
     except Exception:
         return False
@@ -183,8 +188,24 @@ def test_connection(ip, version, community, port, v3_username=None, v3_auth_prot
     return successes >= needed, successes, attempts
 
 
-async def _snmp_get(engine, ip, auth_data, port, oids, timeout=1.5):
-    target = await UdpTransportTarget.create((ip, int(port)), timeout=timeout, retries=0)
+async def _snmp_get(engine, ip, auth_data, port, oids, timeout=1.5, retries=1):
+    # 버그 수정(2026-10-16): retries=0이면 UDP 패킷 하나만 손실돼도(흔한
+    # 일시적 현상, 꼭 장비가 실제로 다운돼야 생기는 게 아님) 이 호출 전체가
+    # 그 자리에서 바로 실패했음 -- 기본값을 1회 재시도로 바꿔 그런 일시적
+    # 손실을 흡수함. 대가: 진짜로 응답이 없는 장비는 이 호출 하나가 실패를
+    # 확정하기까지 최대 timeout의 2배가 걸림 -- 보통의 poll tick 안에서는
+    # 받아들일 만한 수준(기존 timeout_s 기본값 1.5초 기준 최대 3초)이고,
+    # evaluate_status()가 이미 여러 틱에 걸친 연속 실패를 요구하므로 반응성
+    # 자체가 느려지는 건 아님.
+    #
+    # 다만 check_reachable()/test_connection()처럼 호출 하나가 이미 여러
+    # 번(다수결) 시도하는 경로에서는 그 attempts 횟수에 이 재시도가 또
+    # 곱해져서(예: 3번의 다수결 시도 각각이 최대 timeout의 2배) 등록
+    # API 응답이 눈에 띄게 느려지는 실제 회귀가 있었음(실측: 보안
+    # 테스트 스위트가 자신의 HTTP 클라이언트 타임아웃에 걸려 제대로
+    # 정리도 못 하고 죽는 것까지 확인) -- 그런 호출부는 retries=0을
+    # 명시로 넘겨서 이 재시도가 중복으로 곱해지지 않게 한다.
+    target = await UdpTransportTarget.create((ip, int(port)), timeout=timeout, retries=retries)
     var_binds = [ObjectType(ObjectIdentity(oid)) for oid in oids]
     errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
         engine, auth_data, target, ContextData(), *var_binds)
@@ -197,8 +218,9 @@ async def _snmp_get(engine, ip, auth_data, port, oids, timeout=1.5):
     return values
 
 
-async def _snmp_walk(engine, ip, auth_data, port, base_oid, timeout=1.5, max_rows=256):
-    target = await UdpTransportTarget.create((ip, int(port)), timeout=timeout, retries=0)
+async def _snmp_walk(engine, ip, auth_data, port, base_oid, timeout=1.5, max_rows=256, retries=1):
+    # 위 _snmp_get과 같은 이유로 기본값 retries=0 -> 1.
+    target = await UdpTransportTarget.create((ip, int(port)), timeout=timeout, retries=retries)
     out = {}
     count = 0
     async for (errorIndication, errorStatus, errorIndex, varBinds) in bulk_walk_cmd(
@@ -342,6 +364,16 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
         profile_srv = snmp_profiles.resolve_profile(vendor_profile, result['sysDescr'])
         cpu_oid = profile_srv['cpu_oid'] or snmp_profiles.OID_HR_PROCESSOR_LOAD
         result['loads'] = await _snmp_walk(engine, ip, auth_data, port, cpu_oid, timeout=timeout)
+        # 버그 수정(2026-10-16): 'net' 카테고리에서 H3C/Comware 테이블 평균
+        # 희석 버그를 고치며 넣은 entity_module_filter(entModuleIdx)가
+        # 'server'/'db' 카테고리엔 전혀 연결돼 있지 않았음 -- 같은
+        # hp-comware 프로필이 (이례적이지만) 'server'/'db'로 등록된
+        # 장비에 쓰이면 그 똑같은 버그가 그대로 재발할 수 있었음. 'net'
+        # 쪽과 동일한 로직을 그대로 연결.
+        if profile_srv.get('entity_module_filter'):
+            ent_class = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHYSICAL_CLASS, timeout=timeout)
+            ent_contained = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_ENT_PHYSICAL_CONTAINED_IN, timeout=timeout)
+            result['entModuleIdx'] = _top_level_module_indices(ent_class, ent_contained)
         if extended_due:
             try:
                 ent = await _snmp_get(engine, ip, auth_data, port,
@@ -845,7 +877,11 @@ def sample_snmp(entity, device_row):
             pass
     elif category in ('server', 'db') and 'loads' in result:
         try:
-            vals = [int(v) for v in result['loads'].values() if str(v).lstrip('-').isdigit()]
+            loads = result['loads'] or {}
+            module_idx = ext_cache.get('entModuleIdx')
+            if module_idx:
+                loads = {k: v for k, v in loads.items() if k in module_idx} or loads
+            vals = [int(v) for v in loads.values() if str(v).lstrip('-').isdigit()]
             if vals:
                 cpu = round(sum(vals) / len(vals), 1)
                 entity['cpu'] = cpu
