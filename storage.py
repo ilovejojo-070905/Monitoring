@@ -2662,6 +2662,88 @@ def backup_database(backup_dir, keep_days=BACKUP_RETENTION_DAYS):
     return dest_path
 
 
+def list_backups(backup_dir):
+    if not os.path.isdir(backup_dir):
+        return []
+    out = []
+    for f in os.listdir(backup_dir):
+        if not (f.startswith('infrasight_') and f.endswith('.db')):
+            continue
+        path = os.path.join(backup_dir, f)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        out.append({'file': f, 'sizeBytes': stat.st_size, 'mtime': int(stat.st_mtime * 1000)})
+    out.sort(key=lambda b: b['mtime'], reverse=True)
+    return out
+
+
+def restore_database(backup_dir, filename):
+    """Bug fixed 2026-10-16: backup_database() existed, but nothing ever read
+    a backup back in -- restoring meant stopping the server and manually
+    swapping the .db file. Uses sqlite3's backup() API the same direction
+    backup_database() does (just source/dest swapped): copies the chosen
+    file's pages into the live DB in place, which stays safe even while the
+    collector thread pool is mid-poll (SQLite's own locking covers a brief
+    writer conflict -- the accepted cost already noted on get_db(), not a
+    new one; this only ever runs for a rare, deliberate admin action).
+
+    filename is validated against list_backups()'s own naming convention and
+    resolved strictly inside backup_dir -- an admin picks from a listing,
+    never types a path, but this still refuses to open anything outside that
+    directory (no path traversal via a crafted filename).
+
+    The CURRENT live DB is backed up first (same backup_database() the
+    "지금 백업" button uses) -- choosing to restore an old backup doesn't
+    mean losing the ability to undo that choice.
+
+    Returns (safety_backup_path, key_mismatch_warning_or_None). See
+    secrets_crypto.py's own docstring: encrypted credentials rely on a key
+    file kept OUTSIDE the DB on purpose, so a backup restored without that
+    same key file present decrypts every SNMP/SSH credential to garbage --
+    silently (secrets_crypto.decrypt() degrades to "treated as plaintext"
+    rather than raising, so one bad row doesn't crash a poll cycle). Checking
+    one real row right after the restore turns that into an actionable
+    warning instead of "every device mysteriously stopped connecting"."""
+    if not filename.startswith('infrasight_') or not filename.endswith('.db') or '/' in filename or '\\' in filename or '..' in filename:
+        raise ValueError('invalid backup filename')
+    backup_path = os.path.join(backup_dir, filename)
+    if not os.path.isfile(backup_path) or os.path.dirname(os.path.abspath(backup_path)) != os.path.abspath(backup_dir):
+        raise FileNotFoundError(backup_path)
+
+    check_conn = sqlite3.connect(backup_path)
+    try:
+        result = check_conn.execute('PRAGMA integrity_check').fetchone()[0]
+        if result != 'ok':
+            raise sqlite3.DatabaseError(f'restore source integrity_check failed: {result}')
+    finally:
+        check_conn.close()
+
+    safety_backup_path = backup_database(backup_dir)
+
+    src = sqlite3.connect(backup_path)
+    try:
+        dest = sqlite3.connect(DB_PATH)
+        try:
+            src.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        src.close()
+
+    warning = None
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT secret FROM credentials WHERE secret IS NOT NULL AND secret!='' LIMIT 1").fetchone()
+        if row and not secrets_crypto.is_encrypted(row['secret']):
+            warning = ('이 백업의 자격증명이 지금 이 PC의 암호화 키(.infrasight_credentials_key)와 '
+                        '맞지 않는 것으로 보입니다 -- SNMP/SSH 등 장비 자격증명을 다시 입력해야 할 수 있습니다.')
+    finally:
+        conn.close()
+    return safety_backup_path, warning
+
+
 # --------------------------------------------------------------- Phase 7 --
 # SNMP vendor profile selection, SNMPv3 credentials, and LLDP-based topology
 # link discovery (directive sections 18/19/31).

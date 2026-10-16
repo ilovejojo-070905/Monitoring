@@ -2696,6 +2696,45 @@ def api_trigger_backup():
     return jsonify({'ok': True, 'file': os.path.basename(path)})
 
 
+@app.get('/api/system/backups')
+@require_role('ADMIN')
+def api_list_backups():
+    backup_dir = os.path.join(BASE_DIR, 'backups')
+    return jsonify({'backups': storage.list_backups(backup_dir)})
+
+
+@app.post('/api/system/restore')
+@require_role('ADMIN')
+def api_restore_backup():
+    # 신규 기능(2026-10-16): 백업 생성은 있었는데 복원이 없어서, 지금까지는
+    # 서버를 내리고 .db 파일을 수동으로 바꿔 끼우는 것뿐이었음. 되돌릴 수
+    # 없는 작업이라 "삭제" 문구 재입력 같은 추가 확인 없이, body의 정확한
+    # 파일명(목록에서 고른 것)만 받고 나머지 안전장치(경로 검증/무결성
+    # 검사/복원 전 현재 DB 백업/암호화 키 불일치 경고)는 storage.
+    # restore_database()가 전담.
+    body = request.get_json(silent=True) or {}
+    filename = (body.get('file') or '').strip()
+    if not filename:
+        return jsonify({'error': 'file이 필요합니다'}), 400
+    backup_dir = os.path.join(BASE_DIR, 'backups')
+    try:
+        safety_backup, warning = storage.restore_database(backup_dir, filename)
+    except FileNotFoundError:
+        return jsonify({'error': '해당 백업 파일을 찾을 수 없습니다'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        audit('RESTORE_FAILURE', target=filename, details=str(e))
+        return jsonify({'error': '복원에 실패했습니다. 감사 로그에서 자세한 내용을 확인하세요.'}), 500
+    audit('RESTORE_DATABASE', target=filename, details=f"safety_backup={os.path.basename(safety_backup)}")
+    return jsonify({
+        'ok': True,
+        'safetyBackup': os.path.basename(safety_backup),
+        'warning': warning,
+        'restartRecommended': True,
+    })
+
+
 @app.get('/')
 def index():
     # No-cache: this file changes often during active development, and a
