@@ -118,7 +118,17 @@ def device_uptime_report(device_row, start_ms, end_ms):
     down_intervals = _subtract(_merge(down_raw), excluded_intervals)
     downtime_ms = _total(down_intervals)
 
-    uptime_pct = 100.0 if measured_ms <= 0 else max(0.0, min(100.0, (measured_ms - downtime_ms) / measured_ms * 100))
+    # 버그 수정(2026-10-17, "SLA 집계에서 데이터 누락과 정상 상태를
+    # 구분한다"): measured_ms<=0은 이 기간 전체가 유지보수+수집실패로
+    # 빠져서 "측정된 시간이 아예 없다"는 뜻인데, 이전엔 그런 경우도 그냥
+    # uptimePct=100.0으로 떨어져서 "한 번도 제대로 수집 못 한 장비"와
+    # "그 기간 내내 진짜 정상이었던 장비"가 화면/리포트에서 똑같이
+    # 녹색 100%로 보였음. insufficientData 플래그로 그 둘을 구분 --
+    # uptimePct 자체의 타입/계산은 그대로 두고(숫자를 null로 바꾸면 이미
+    # .toFixed()를 직접 호출하는 기존 소비자가 깨짐), 소비하는 쪽이 이
+    # 플래그를 보고 "데이터 없음"으로 다르게 표시할 수 있게 한다.
+    insufficient_data = measured_ms <= 0
+    uptime_pct = 100.0 if insufficient_data else max(0.0, min(100.0, (measured_ms - downtime_ms) / measured_ms * 100))
 
     # 장애 발생 횟수/MTTR: counted from the (not-yet-maintenance-subtracted)
     # incident rows themselves, by whether first_occurred_at falls in this
@@ -133,6 +143,7 @@ def device_uptime_report(device_row, start_ms, end_ms):
         'deviceId': device_id, 'deviceName': device_row.get('name'),
         'periodStart': start_ms, 'periodEnd': end_ms,
         'uptimePct': round(uptime_pct, 3),
+        'insufficientData': insufficient_data,
         'measuredMs': measured_ms, 'downtimeMs': downtime_ms,
         'maintenanceMs': maintenance_ms, 'collectionGapMs': gap_ms,
         'failureCount': len(failures), 'mttrMs': mttr_ms, 'mtbfMs': mtbf_ms,
@@ -156,7 +167,11 @@ def group_uptime_report(group_name, member_devices, start_ms, end_ms):
     per_device = [device_uptime_report(d, start_ms, end_ms) for d in member_devices]
     total_measured = sum(r['measuredMs'] for r in per_device)
     total_downtime = sum(r['downtimeMs'] for r in per_device)
-    uptime_pct = 100.0 if total_measured <= 0 else max(0.0, min(100.0, (total_measured - total_downtime) / total_measured * 100))
+    # 위 device_uptime_report와 같은 이유(2026-10-17) -- 그룹 전체가 측정된
+    # 시간이 0이면(멤버 전원이 그 기간 내내 유지보수/수집실패였던 드문
+    # 경우) "정상 100%"가 아니라 "데이터 없음"으로 구분해야 한다.
+    insufficient_data = total_measured <= 0
+    uptime_pct = 100.0 if insufficient_data else max(0.0, min(100.0, (total_measured - total_downtime) / total_measured * 100))
     failures = sum(r['failureCount'] for r in per_device)
     all_mttr_samples = [d['durationMs'] for r in per_device for d in r['incidents'] if not d['ongoing']]
     mttr_ms = (sum(all_mttr_samples) / len(all_mttr_samples)) if all_mttr_samples else None
@@ -164,6 +179,7 @@ def group_uptime_report(group_name, member_devices, start_ms, end_ms):
     return {
         'group': group_name, 'periodStart': start_ms, 'periodEnd': end_ms,
         'uptimePct': round(uptime_pct, 3),
+        'insufficientData': insufficient_data,
         'measuredMs': total_measured, 'downtimeMs': total_downtime,
         'maintenanceMs': sum(r['maintenanceMs'] for r in per_device),
         'collectionGapMs': sum(r['collectionGapMs'] for r in per_device),

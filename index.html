@@ -4008,7 +4008,14 @@ function fmtDuration(ms){
   if(!days && mins) parts.push(mins+'분');
   return parts.length ? parts.join(' ') : '0분';
 }
-function uptimePillClass(pct){ return pct>=99.9?'good':pct>=99?'warn':'crit'; }
+function uptimePillClass(pct, insufficientData){
+  // 버그 수정(2026-10-17, "SLA 집계에서 데이터 누락과 정상 상태를
+  // 구분한다"): 측정된 시간이 전혀 없는 기간(유지보수+수집실패로 전부
+  // 빠짐)도 이전엔 그냥 100%로 계산돼 "정상(녹색)"과 똑같이 보였음 --
+  // insufficientData면 등급 판정 자체를 하지 않고 중립(회색)으로.
+  if(insufficientData) return 'neutral';
+  return pct>=99.9?'good':pct>=99?'warn':'crit';
+}
 function toDatetimeLocalValue(ms){
   const d = new Date(ms);
   const pad = n=>String(n).padStart(2,'0');
@@ -4064,7 +4071,7 @@ function slaMetricRowHtml(r, kind){
   return `
     <tr>
       <td class="name">${label}</td>
-      <td><span class="pill ${uptimePillClass(r.uptimePct)}">${r.uptimePct.toFixed(3)}%</span></td>
+      <td><span class="pill ${uptimePillClass(r.uptimePct, r.insufficientData)}" ${r.insufficientData?'title="이 기간 동안 측정된 시간이 없습니다(유지보수/수집실패로 전부 제외됨) -- 정상 100%가 아니라 판단 불가"':''}>${r.insufficientData?'데이터 없음':r.uptimePct.toFixed(3)+'%'}</span></td>
       <td class="mono">${r.failureCount}</td>
       <td style="font-size:11.5px">${fmtDuration(r.mttrMs)}</td>
       <td style="font-size:11.5px">${fmtDuration(r.mtbfMs)}</td>
@@ -4186,7 +4193,7 @@ async function openSlaDetailModal(kind, id, start, end){
   incidents.sort((a,b)=> b.firstOccurredAt - a.firstOccurredAt);
   $('#slaDetailBody').innerHTML = `
     <div class="kv-grid" style="margin-bottom:14px">
-      <div class="kv"><span>가동률</span><b style="color:${uptimePillClass(j.uptimePct)==='good'?'var(--good)':uptimePillClass(j.uptimePct)==='warn'?'var(--warn)':'var(--crit)'}">${j.uptimePct.toFixed(3)}%</b></div>
+      <div class="kv"><span>가동률</span><b style="color:${j.insufficientData?'var(--text-dim)':uptimePillClass(j.uptimePct)==='good'?'var(--good)':uptimePillClass(j.uptimePct)==='warn'?'var(--warn)':'var(--crit)'}" ${j.insufficientData?'title="이 기간 동안 측정된 시간이 없습니다(유지보수/수집실패로 전부 제외됨)"':''}>${j.insufficientData?'데이터 없음':j.uptimePct.toFixed(3)+'%'}</b></div>
       <div class="kv"><span>장애 횟수</span><b>${j.failureCount}</b></div>
       <div class="kv"><span>MTTR (평균 복구 시간)</span><b>${fmtDuration(j.mttrMs)}</b></div>
       <div class="kv"><span>MTBF (평균 무고장 시간)</span><b>${fmtDuration(j.mtbfMs)}</b></div>
@@ -4212,7 +4219,7 @@ async function openSlaDetailModal(kind, id, start, end){
   charts.slaDetail = barChart($('#slaDetailChart'),
     buckets.map(b=> new Date(b.periodStart).toLocaleDateString('ko-KR', {month:'numeric', day:'numeric'})),
     buckets.map(b=> b.uptimePct),
-    buckets.map(b=> b.uptimePct>=99.9?'#00b087':b.uptimePct>=99?'#e6960f':'#ef3b5c'));
+    buckets.map(b=> b.insufficientData?'#6b7280':b.uptimePct>=99.9?'#00b087':b.uptimePct>=99?'#e6960f':'#ef3b5c'));
 }
 function closeSlaDetailModal(){
   $('#slaDetailOverlay').classList.remove('show');

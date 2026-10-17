@@ -31,7 +31,10 @@ Safety contract (same spirit as functional_tests.py):
     (escalation on/off, min severity) without saving and restoring it.
 """
 import asyncio
+import concurrent.futures
 import os
+import shutil
+import sqlite3
 import sys
 import tempfile
 import time
@@ -43,6 +46,7 @@ from collector import snmp_collector as sc
 from collector import snmp_profiles as sp
 from collector import agent_collector as ac
 from collector import escalation
+from collector import sla
 from collector.state import LAST_REPORT
 from collector import sflow_parser, netflow_parser
 import agent
@@ -1164,6 +1168,257 @@ def test_flow_parse_error_tracking_and_status_merge():
         conn.close()
 
 
+# ======================================================================
+# Q. DB 동시접근/디스크실패/백업/SLA 신뢰성 (운영 DB 검토 7개)
+# 안전 규칙: 이 섹션의 테스트는 절대 운영 DB(storage.DB_PATH가 가리키는
+# 실제 파일)를 건드리지 않는다 -- 복사본을 만들어 storage.DB_PATH를
+# 임시로 그 복사본으로 바꿔 돌리고, 끝나면 반드시 원래 경로로 복원한다.
+# ======================================================================
+
+def test_db_concurrent_writes_no_lock_errors():
+    # 점검(2026-10-17, "DB 동시 접근과 트랜잭션 경합을 점검한다"): WAL
+    # 모드 + 15초 busy timeout(storage.get_db())이 실제로 동시 쓰기
+    # 경합을 버텨내는지, 운영 DB의 복사본에 대해 직접 부하를 걸어 확인.
+    # 운영 DB는 절대 안 건드림(복사본만 사용).
+    test_dir = tempfile.mkdtemp(prefix='infrasight_unittest_dbcopy_')
+    test_db = os.path.join(test_dir, 'test.db')
+    shutil.copy(storage.DB_PATH, test_db)
+    orig_path = storage.DB_PATH
+    storage.DB_PATH = test_db
+    try:
+        storage.init_db()  # WAL 모드가 이 복사본 파일에도 적용되도록
+        errors = []
+
+        def writer(i):
+            try:
+                storage.add_incident('info', f'ConcurrencyTest{i}', 'TEST', 'concurrent write test', _no_alert=True)
+            except Exception as e:
+                errors.append(e)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as ex:
+            list(ex.map(writer, range(80)))
+        check('Q1 80 concurrent add_incident calls against WAL-mode DB produce zero "database is locked" errors',
+              len(errors) == 0, errors[:3])
+    finally:
+        storage.DB_PATH = orig_path
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_metrics_aggregation_idempotent_on_rerun():
+    # 점검(2026-10-17, "메트릭 집계 작업의 재실행 및 중복 집계 방지를
+    # 확인한다"): storage.run_metrics_retention()이 같은 raw 데이터에
+    # 대해 여러 번 돌아도 5분/1시간 집계 값이 바뀌지 않는지(평균을 또
+    # 더해서 2배가 되는 식의 중복이 없는지) 확인. 운영 DB 복사본 사용.
+    test_dir = tempfile.mkdtemp(prefix='infrasight_unittest_dbcopy_')
+    test_db = os.path.join(test_dir, 'test.db')
+    shutil.copy(storage.DB_PATH, test_db)
+    orig_path = storage.DB_PATH
+    storage.DB_PATH = test_db
+    try:
+        storage.init_db()
+        dev = 'unittest_agg_dev'
+        conn = storage.get_db()
+        conn.execute("DELETE FROM metrics_raw WHERE device_id=?", (dev,))
+        conn.execute("DELETE FROM metrics_5m WHERE device_id=?", (dev,))
+        conn.commit()
+        conn.close()
+        bucket_start = (int(time.time() * 1000) // storage.FIVE_MIN_MS) * storage.FIVE_MIN_MS
+        storage.record_metrics([(dev, 'cpu', bucket_start + 1000, 10.0), (dev, 'cpu', bucket_start + 2000, 20.0)])
+
+        storage.run_metrics_retention()
+        conn = storage.get_db()
+        row1 = dict(conn.execute("SELECT avg_value, sample_count FROM metrics_5m WHERE device_id=? AND metric='cpu'", (dev,)).fetchone())
+        conn.close()
+
+        storage.run_metrics_retention()  # 재실행
+        storage.run_metrics_retention()  # 한 번 더
+        conn = storage.get_db()
+        row2 = dict(conn.execute("SELECT avg_value, sample_count FROM metrics_5m WHERE device_id=? AND metric='cpu'", (dev,)).fetchone())
+        conn.close()
+
+        check('Q2 re-running aggregation 3x does not change avg_value (no double-counting)',
+              row1['avg_value'] == row2['avg_value'] == 15.0, (row1, row2))
+        check('Q3 re-running aggregation 3x does not inflate sample_count', row2['sample_count'] == 2, row2)
+    finally:
+        storage.DB_PATH = orig_path
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_scheduler_job_survives_disk_full_write_failure():
+    # 점검(2026-10-17, "디스크 용량 부족과 DB 쓰기 실패 시 동작을
+    # 확인한다"): 샘플러 자체가 디스크풀급 에러로 실패하고, 그 에러를
+    # 기록하려는 bookkeeping(update_failure_state/add_incident)까지
+    # 똑같이 실패하는 최악의 경우에도 scheduler._run_job이 예외를 밖으로
+    # 던지지 않고(스케줄러 자체가 안 죽음) health에 기록되는지 확인.
+    from collector import scheduler, health, ping_collector
+    dev = 'unittest_diskfull_dev'
+    conn = storage.get_db()
+    conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+    now_ms = int(time.time() * 1000)
+    conn.execute("INSERT INTO devices(id,category,name,mode,ip,fields,created_at,monitoring_enabled) "
+                 "VALUES (?,'server','DiskFullDev','ping','127.0.0.70','{}',?,1)", (dev, now_ms))
+    conn.commit()
+    conn.close()
+
+    orig_sample_ping = ping_collector.sample_ping
+    orig_update_failure_state = storage.update_failure_state
+
+    def fake_sample_ping(entity, device_row):
+        raise sqlite3.OperationalError('database or disk image is full')
+
+    def fake_update_failure_state(*a, **kw):
+        raise sqlite3.OperationalError('database or disk image is full')
+
+    ping_collector.sample_ping = fake_sample_ping
+    storage.update_failure_state = fake_update_failure_state
+    try:
+        raised = False
+        try:
+            scheduler._run_job(dev)
+        except Exception:
+            raised = True
+        check('Q4 scheduler job does not propagate an exception even when the error AND its own bookkeeping both fail',
+              not raised, raised)
+        health_now = health.get_health()
+        check('Q5 the failure is still visible via health.get_health() (file+in-memory log survives even if DB writes fail)',
+              health_now.get('collectorLastError') is not None and 'disk image is full' in health_now['collectorLastError']['message'],
+              health_now.get('collectorLastError'))
+    finally:
+        ping_collector.sample_ping = orig_sample_ping
+        storage.update_failure_state = orig_update_failure_state
+        conn = storage.get_db()
+        conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+        conn.commit()
+        conn.close()
+
+
+def test_backup_integrity_check_rejects_corrupt_file():
+    # 점검(2026-10-17, "백업 파일의 무결성 확인... 검증한다"): 손상된
+    # .db 파일을 "백업"으로 복원 시도하면 거부되는지(라이브 DB를 건드리기
+    # 전에) 확인. 운영 DB는 안 건드림 -- 가짜 손상 파일만 사용.
+    test_dir = tempfile.mkdtemp(prefix='infrasight_unittest_backup_')
+    try:
+        corrupt_path = os.path.join(test_dir, 'infrasight_corrupt.db')
+        with open(corrupt_path, 'wb') as f:
+            f.write(b'not a real sqlite database file' * 100)
+        raised = False
+        try:
+            storage.restore_database(test_dir, 'infrasight_corrupt.db')
+        except Exception:
+            raised = True
+        check('Q6 restoring a corrupt file is rejected before ever touching the live DB', raised, raised)
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_backup_failure_triggers_incident_and_health_log():
+    # 점검(2026-10-17, "백업 실패 여부를 감지하고 알림을 제공한다"):
+    # collector/scheduler.py의 _run_backup_job이 백업 실패를 health
+    # 로그 + incident(알림 경로)로 둘 다 남기는지 확인.
+    from collector import scheduler, health
+    orig_backup = storage.backup_database
+
+    def fake_backup_database(*a, **kw):
+        raise OSError('disk full (simulated)')
+
+    storage.backup_database = fake_backup_database
+    conn = storage.get_db()
+    conn.execute("DELETE FROM incidents WHERE source='InfraSight' AND message LIKE 'DB 백업 실패%'")
+    conn.commit()
+    conn.close()
+    try:
+        scheduler._run_backup_job()
+        health_now = health.get_health()
+        check('Q7 backup failure is logged via health.get_health()',
+              health_now.get('collectorLastError') is not None and 'disk full' in health_now['collectorLastError']['message'],
+              health_now.get('collectorLastError'))
+        conn = storage.get_db()
+        row = conn.execute("SELECT * FROM incidents WHERE source='InfraSight' AND message LIKE 'DB 백업 실패%' ORDER BY id DESC LIMIT 1").fetchone()
+        conn.close()
+        check('Q8 backup failure also creates an incident (goes through the normal alert-dispatch path)',
+              row is not None and row['status'] == 'open', dict(row) if row else None)
+    finally:
+        storage.backup_database = orig_backup
+        conn = storage.get_db()
+        conn.execute("DELETE FROM incidents WHERE source='InfraSight' AND message LIKE 'DB 백업 실패%'")
+        conn.commit()
+        conn.close()
+
+
+def test_restore_verifies_separate_copy_before_touching_live_db():
+    # 점검+버그 수정(2026-10-17, "백업 파일의 무결성 확인 및 별도 경로
+    # 복원 절차를 검증한다"): restore_database가 운영 DB_PATH에 바로
+    # 쓰기 전에 별도의 임시 경로로 먼저 복원해보고 그 결과까지
+    # integrity_check하는지 확인. 이 테스트는 storage.DB_PATH를 테스트
+    # 복사본으로 바꿔서 실행 -- "운영 DB"라는 게 이 테스트 안에서는 그
+    # 복사본이므로, 실제 운영 파일은 여전히 안 건드림.
+    test_dir = tempfile.mkdtemp(prefix='infrasight_unittest_restore_')
+    test_db = os.path.join(test_dir, 'live.db')
+    backup_dir = os.path.join(test_dir, 'backups')
+    os.makedirs(backup_dir, exist_ok=True)
+    shutil.copy(storage.DB_PATH, test_db)
+    orig_path = storage.DB_PATH
+    storage.DB_PATH = test_db
+    try:
+        storage.init_db()
+        backup_path = storage.backup_database(backup_dir)
+        backup_filename = os.path.basename(backup_path)
+
+        safety_backup_path, warning = storage.restore_database(backup_dir, backup_filename)
+        check('Q9 restore_database succeeds for a genuinely valid backup', os.path.isfile(test_db), test_db)
+        check('Q10 restore_database still produces its pre-restore safety backup', os.path.isfile(safety_backup_path), safety_backup_path)
+        tmp_leftover = test_db + '.restore_verify.tmp'
+        check('Q11 the temporary separate-path verification copy is cleaned up afterward (not left behind)',
+              not os.path.exists(tmp_leftover), tmp_leftover)
+    finally:
+        storage.DB_PATH = orig_path
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_sla_insufficient_data_distinguished_from_healthy():
+    # 버그 수정(2026-10-17, "SLA 집계에서 데이터 누락과 정상 상태를
+    # 구분한다"): 측정 시간이 전혀 없는 기간(전부 유지보수로 빠짐)이
+    # "정상 100%"와 다르게 insufficientData=True로 구분되는지, 그리고
+    # 실제로 측정된 시간이 있고 장애가 없는 기간은 insufficientData가
+    # False인 진짜 100%로 나오는지 확인.
+    dev = 'unittest_sla_gap_dev'
+    conn = storage.get_db()
+    conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+    conn.execute("DELETE FROM maintenance_log WHERE device_id=?", (dev,))
+    conn.execute("DELETE FROM incidents WHERE device_id=?", (dev,))
+    now_ms = int(time.time() * 1000)
+    period_start = now_ms - 2 * 3600 * 1000
+    period_end = now_ms
+    conn.execute("INSERT INTO devices(id,category,name,mode,ip,fields,created_at) "
+                 "VALUES (?,'server','SlaGapDev','ping','127.0.0.71','{}',?)", (dev, now_ms))
+    conn.execute("INSERT INTO maintenance_log(device_id,started_at,ended_at,started_by,reason) VALUES (?,?,?,?,?)",
+                 (dev, period_start, period_end, 'tester', 'unittest full-period maintenance'))
+    conn.commit()
+    conn.close()
+    try:
+        device_row = storage.load_device(dev)
+        report = sla.device_uptime_report(device_row, period_start, period_end)
+        check('Q12 a period that is entirely maintenance (zero measured time) is flagged insufficientData=True',
+              report['insufficientData'] is True, report)
+        check('Q13 insufficientData periods still report uptimePct=100.0 for backward compatibility (consumers must check the flag)',
+              report['uptimePct'] == 100.0, report)
+
+        conn = storage.get_db()
+        conn.execute("DELETE FROM maintenance_log WHERE device_id=?", (dev,))
+        conn.commit()
+        conn.close()
+        report2 = sla.device_uptime_report(device_row, period_start, period_end)
+        check('Q14 a period with real measured time and no incidents is a genuine 100% (insufficientData=False)',
+              report2['insufficientData'] is False and report2['uptimePct'] == 100.0, report2)
+    finally:
+        conn = storage.get_db()
+        conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+        conn.execute("DELETE FROM maintenance_log WHERE device_id=?", (dev,))
+        conn.execute("DELETE FROM incidents WHERE device_id=?", (dev,))
+        conn.commit()
+        conn.close()
+
+
 def main():
     for fn in (
         test_mac_from_oid_suffix, test_collect_mac_vlan_table,
@@ -1185,6 +1440,10 @@ def main():
         test_classify_snmp_error, test_snmp_get_returns_tuple_on_unreachable,
         test_sflow_classic_sample_captures_version_and_direction, test_sflow_expanded_sample_offset_fixed,
         test_netflow_v5_captures_version_and_direction, test_flow_parse_error_tracking_and_status_merge,
+        test_db_concurrent_writes_no_lock_errors, test_metrics_aggregation_idempotent_on_rerun,
+        test_scheduler_job_survives_disk_full_write_failure, test_backup_integrity_check_rejects_corrupt_file,
+        test_backup_failure_triggers_incident_and_health_log, test_restore_verifies_separate_copy_before_touching_live_db,
+        test_sla_insufficient_data_distinguished_from_healthy,
     ):
         try:
             fn()

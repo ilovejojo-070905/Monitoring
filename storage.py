@@ -2823,17 +2823,55 @@ def restore_database(backup_dir, filename):
     finally:
         check_conn.close()
 
-    safety_backup_path = backup_database(backup_dir)
-
-    src = sqlite3.connect(backup_path)
+    # 신규 기능(2026-10-17, "별도 경로 복원 절차를 검증한다"): 이전엔 백업
+    # 파일 자체만 integrity_check하고, 바로 운영 DB_PATH 위에 sqlite3
+    # backup() API로 덮어썼음 -- 그 복사 자체가 중간에 실패하면(디스크
+    # 공간 부족, 강제 종료 등) 운영 DB가 반쪽만 덮어써진 상태로 남을 수
+    # 있었음. 이제 먼저 별도의 임시 경로에 "실제로 복원"해보고, 그
+    # 결과물을 다시 integrity_check해서(백업 파일 자체는 멀쩡해도 복사
+    # 과정에서 문제가 생기는 경우까지 잡기 위해) 검증까지 통과한 뒤에만
+    # 운영 DB에 적용한다 -- 지금 이 테스트에서 쓰는 "별도 복사본으로
+    # 검증" 방식을 실제 운영 restore 절차 자체에도 반영.
+    tmp_restore_path = DB_PATH + '.restore_verify.tmp'
+    if os.path.exists(tmp_restore_path):
+        os.remove(tmp_restore_path)
+    verify_src = sqlite3.connect(backup_path)
     try:
-        dest = sqlite3.connect(DB_PATH)
+        verify_dest = sqlite3.connect(tmp_restore_path)
         try:
-            src.backup(dest)
+            verify_src.backup(verify_dest)
+            verify_result = verify_dest.execute('PRAGMA integrity_check').fetchone()[0]
+            if verify_result != 'ok':
+                raise sqlite3.DatabaseError(f'restored copy integrity_check failed: {verify_result}')
         finally:
-            dest.close()
+            verify_dest.close()
+    except Exception:
+        if os.path.exists(tmp_restore_path):
+            try:
+                os.remove(tmp_restore_path)
+            except OSError:
+                pass
+        raise
     finally:
-        src.close()
+        verify_src.close()
+    try:
+        safety_backup_path = backup_database(backup_dir)
+
+        src = sqlite3.connect(backup_path)
+        try:
+            dest = sqlite3.connect(DB_PATH)
+            try:
+                src.backup(dest)
+            finally:
+                dest.close()
+        finally:
+            src.close()
+    finally:
+        if os.path.exists(tmp_restore_path):
+            try:
+                os.remove(tmp_restore_path)
+            except OSError:
+                pass
 
     warning = None
     conn = get_db()
