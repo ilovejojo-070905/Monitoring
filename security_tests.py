@@ -36,7 +36,9 @@ import urllib3
 # adds it to the Windows cert store, which `requests` doesn't consult), so
 # verify=False is used throughout -- the normal way to point a local test
 # script at a self-signed/local-CA HTTPS endpoint without wiring in a
-# separate trust bundle for it.
+# separate trust bundle for it. Testing against a plain dev server instead of
+# the real Caddy? ops\devtest-https.ps1 puts a throwaway HTTPS front-end on
+# any dev backend port in one command.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else 'https://localhost:8443'
 ADMIN_USER = os.environ.get('INFRASIGHT_TEST_ADMIN_USER')

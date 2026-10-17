@@ -61,7 +61,9 @@ except ImportError:
 # Windows cert store via `mkcert -install` doesn't help, since `requests`
 # doesn't consult the OS store) -- verify=False below is the normal way to
 # point this kind of local test script at a self-signed/local-CA HTTPS
-# endpoint without wiring in a separate trust bundle for it.
+# endpoint without wiring in a separate trust bundle for it. Testing against
+# a plain dev server instead of the real Caddy? ops\devtest-https.ps1 puts a
+# throwaway HTTPS front-end on any dev backend port in one command.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else 'https://localhost:8443'
 ADMIN_USER = os.environ.get('INFRASIGHT_TEST_ADMIN_USER')
