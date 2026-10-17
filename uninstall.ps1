@@ -178,7 +178,16 @@ foreach ($name in $ruleNames) {
 Write-Step '[5/7] 원격 접속(SSH/Telnet) 구성 해제'
 $regKeyPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.infrasight.remote'
 if (Test-Path $regKeyPath) {
-    Remove-Item $regKeyPath -Force -ErrorAction SilentlyContinue
+    # 버그 수정(2026-10-17, 실제 운영 서버 제거 테스트로 실측 발견): 단 1회
+    # Remove-Item이 조용히 아무 효과 없이 끝난 사례가 있었음(같은 명령을
+    # 바로 다시 실행하면 즉시 성공 -- 그 순간 다른 프로세스가 키 핸들을
+    # 쥐고 있었을 가능성 추정). 짧게 한 번 더 재시도하면 이런 일시적
+    # 상황에도 안전해진다.
+    for ($i = 1; $i -le 3; $i++) {
+        Remove-Item $regKeyPath -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path $regKeyPath)) { break }
+        Start-Sleep -Milliseconds 300
+    }
     if (-not (Test-Path $regKeyPath)) {
         Write-Ok 'Native Messaging Host 레지스트리 등록 해제됨'
     } else {
