@@ -51,6 +51,9 @@ from collector.state import LAST_REPORT
 from collector import sflow_parser, netflow_parser
 import agent
 import struct
+import validation
+import network_bulk_import
+import server
 
 results = []
 
@@ -1419,6 +1422,141 @@ def test_sla_insufficient_data_distinguished_from_healthy():
         conn.close()
 
 
+# ======================================================================
+# R. 보안 심화 검토 (API 역할검증/공개API/비밀정보/토큰/감사로그/인증서/업로드)
+# ======================================================================
+
+def _make_test_cert(path, days_valid, ip_sans=None, dns_sans=('localhost',)):
+    """합성 인증서 생성(cryptography 라이브러리로 직접) -- 실제 만료를
+    며칠 앞둔 인증서를 기다릴 방법이 없으므로 합성 데이터로만 검증."""
+    import datetime
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'unittest')])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    san_entries = [x509.DNSName(d) for d in dns_sans]
+    if ip_sans:
+        import ipaddress
+        san_entries += [x509.IPAddress(ipaddress.ip_address(ip)) for ip in ip_sans]
+    cert = (x509.CertificateBuilder()
+            .subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=days_valid))
+            .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
+            .sign(key, hashes.SHA256()))
+    with open(path, 'wb') as f:
+        f.write(cert.public_bytes(encoding=serialization.Encoding.PEM))
+
+
+def test_cert_check_detects_expiry_and_ip_mismatch():
+    from collector import cert_check
+    test_dir = tempfile.mkdtemp(prefix='infrasight_unittest_cert_')
+    orig_path = cert_check._CERT_PATH
+    orig_add_incident = storage.add_incident
+    incidents = []
+    storage.add_incident = lambda severity, source, category, message, **kw: incidents.append((severity, message))
+    try:
+        # 1) 거의 다 됨(5일 남음, CRIT 기준 7일 이하) + 현재 LAN IP도 SAN에 포함
+        cert_check._CERT_PATH = os.path.join(test_dir, 'soon.crt')
+        _make_test_cert(cert_check._CERT_PATH, days_valid=5, ip_sans=[storage.get_lan_ip()])
+        incidents.clear()
+        cert_check.check_certificate()
+        check('R1 certificate expiring in 5 days raises a crit incident',
+              any(sev == 'crit' and '만료' in msg for sev, msg in incidents), incidents)
+
+        # 2) 한참 남음(400일) + 현재 LAN IP 없음(IP 불일치) -> warn만
+        cert_check._CERT_PATH = os.path.join(test_dir, 'far.crt')
+        _make_test_cert(cert_check._CERT_PATH, days_valid=400, ip_sans=['10.99.99.99'])
+        incidents.clear()
+        cert_check.check_certificate()
+        check('R2 far-future expiry raises no expiry incident', not any('만료' in msg for _, msg in incidents), incidents)
+        check('R3 LAN IP not in cert SAN raises a warn incident about IP mismatch',
+              any(sev == 'warn' and 'LAN IP' in msg for sev, msg in incidents), incidents)
+
+        # 3) 인증서 파일 자체가 없음 -> crit
+        cert_check._CERT_PATH = os.path.join(test_dir, 'missing.crt')
+        incidents.clear()
+        cert_check.check_certificate()
+        check('R4 missing certificate file raises a crit incident',
+              any(sev == 'crit' and '없습니다' in msg for sev, msg in incidents), incidents)
+    finally:
+        cert_check._CERT_PATH = orig_path
+        storage.add_incident = orig_add_incident
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def test_sanitize_excel_cell_blocks_formula_injection():
+    check('R5 leading = gets a protective leading quote', validation.sanitize_excel_cell('=cmd|calc') == "'=cmd|calc")
+    check('R6 leading + gets a protective leading quote', validation.sanitize_excel_cell('+1+1') == "'+1+1")
+    check('R7 leading - gets a protective leading quote', validation.sanitize_excel_cell('-2+3') == "'-2+3")
+    check('R8 leading @ gets a protective leading quote', validation.sanitize_excel_cell('@SUM(1)') == "'@SUM(1)")
+    check('R9 a normal string passes through unchanged', validation.sanitize_excel_cell('정상 장비명') == '정상 장비명')
+    check('R10 non-string values pass through unchanged (numbers/None)', validation.sanitize_excel_cell(161) == 161 and validation.sanitize_excel_cell(None) is None)
+
+
+def test_escape_pdf_text_blocks_markup_injection():
+    check('R11 ampersand escaped', validation.escape_pdf_text('A&B') == 'A&amp;B')
+    check('R12 angle brackets escaped', validation.escape_pdf_text('<b>x</b>') == '&lt;b&gt;x&lt;/b&gt;')
+    check('R13 plain text unchanged', validation.escape_pdf_text('정상 메시지') == '정상 메시지')
+
+
+def test_agent_report_rejects_stale_replayed_requests():
+    # 버그 수정(2026-10-17, "에이전트 토큰의... 재전송 방지 여부"): 가로챈
+    # 토큰+페이로드를 나중에 그대로 다시 보내는 재전송 공격을, 요청에 실린
+    # ts(생성 시각)가 서버 시계 대비 너무 오래됐으면 거부하는 식으로 막는지
+    # 확인. Flask 테스트 클라이언트로 실제 라우트를 그대로 호출(서버 프로세스
+    # 안 띄움). 구버전 에이전트(ts 필드 자체가 없음)와의 하위 호환도 같이 확인.
+    dev = 'unittest_agent_replay_dev'
+    token = 'unittest_replay_token_abc123'
+    conn = storage.get_db()
+    conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+    now_ms = int(time.time() * 1000)
+    conn.execute("INSERT INTO devices(id,category,name,mode,ip,fields,created_at,token_hash,monitoring_enabled) "
+                 "VALUES (?,'server','ReplayTestDev','agent','','{}',?,?,1)", (dev, now_ms, storage.hash_token(token)))
+    conn.commit()
+    conn.close()
+    client = server.app.test_client()
+    try:
+        fresh = client.post('/api/agent/report', json={'token': token, 'cpu': 1, 'mem': 1, 'disk': 1, 'ts': int(time.time() * 1000)})
+        check('R15 a report with a fresh (current) ts is accepted', fresh.status_code == 200, (fresh.status_code, fresh.get_json()))
+
+        stale_ts = int(time.time() * 1000) - 10 * 60 * 1000  # 10분 전 -- 5분 허용치 초과
+        stale = client.post('/api/agent/report', json={'token': token, 'cpu': 1, 'mem': 1, 'disk': 1, 'ts': stale_ts})
+        check('R16 a report with a 10-minute-old ts (replay-shaped) is rejected with 400',
+              stale.status_code == 400 and stale.get_json().get('error') == 'stale_report', (stale.status_code, stale.get_json()))
+
+        no_ts = client.post('/api/agent/report', json={'token': token, 'cpu': 1, 'mem': 1, 'disk': 1})
+        check('R17 a report with no ts field at all (old pre-1.3.1 agent) is still accepted -- backward compatible',
+              no_ts.status_code == 200, (no_ts.status_code, no_ts.get_json()))
+    finally:
+        conn = storage.get_db()
+        conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+        conn.commit()
+        conn.close()
+
+
+def test_network_export_sanitizes_community_against_formula_injection():
+    # 실제 내보내기 경로(network_bulk_import.build_export_xlsx)가 community
+    # 필드(is_safe_name의 보호를 안 받는 유일한 자유 텍스트)까지 실제로
+    # 안전하게 처리하는지 엑셀 파일을 직접 만들어서 확인.
+    import io
+    import openpyxl
+    data, _ = network_bulk_import.build_export_xlsx([
+        {'name': 'TestSwitch', 'ip': '10.0.0.1', 'type': '', 'group': '', 'mode': 'snmp',
+         'community': '=1+1', 'snmpPort': 161, 'snmpVersion': 'v2c'},
+    ])
+    wb = openpyxl.load_workbook(io.BytesIO(data))
+    ws = wb.worksheets[0]
+    community_cell = ws.cell(row=2, column=6).value
+    check('R14 a malicious community string is neutralized in the exported xlsx (not a live formula)',
+          community_cell == "'=1+1", community_cell)
+
+
 def main():
     for fn in (
         test_mac_from_oid_suffix, test_collect_mac_vlan_table,
@@ -1444,6 +1582,9 @@ def main():
         test_scheduler_job_survives_disk_full_write_failure, test_backup_integrity_check_rejects_corrupt_file,
         test_backup_failure_triggers_incident_and_health_log, test_restore_verifies_separate_copy_before_touching_live_db,
         test_sla_insufficient_data_distinguished_from_healthy,
+        test_cert_check_detects_expiry_and_ip_mismatch, test_sanitize_excel_cell_blocks_formula_injection,
+        test_escape_pdf_text_blocks_markup_injection, test_network_export_sanitizes_community_against_formula_injection,
+        test_agent_report_rejects_stale_replayed_requests,
     ):
         try:
             fn()

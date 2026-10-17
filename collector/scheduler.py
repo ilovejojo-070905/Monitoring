@@ -23,6 +23,7 @@ from collector import maintenance
 from collector import escalation
 from collector import alert_retry
 from collector import report_delivery
+from collector import cert_check
 
 def _compute_max_workers():
     """Code review pass, finding #4: this was a flat, hardcoded 10
@@ -167,6 +168,14 @@ def _run_backup_job():
         storage.add_incident('warn', 'InfraSight', 'SYSTEM', f"DB 백업 실패: {e}")
 
 
+def _run_cert_check_job():
+    try:
+        cert_check.check_certificate()
+        health.record_tick_success()
+    except Exception as e:
+        health.record_tick_error(f"cert_check: {e}")
+
+
 def _run_weekly_report_job():
     try:
         report_delivery.run_due_schedules('weekly')
@@ -195,6 +204,12 @@ def start():
     # hours. Times are staggered so the backup doesn't run mid-aggregation.
     _scheduler.add_job(_run_retention_job, 'cron', hour=3, minute=10, id='metrics_retention', replace_existing=True)
     _scheduler.add_job(_run_backup_job, 'cron', hour=3, minute=0, id='db_backup', replace_existing=True)
+    # 신규(2026-10-17, "HTTPS 인증서 만료 및 갱신 실패를 감지한다") --
+    # 백업/보존 작업과 같은 매일 새벽 주기. next_run_time=now로 즉시 한 번
+    # 돌려서 재시작 직후에도 지금 상태를 바로 알 수 있게 한다(maintenance.
+    # tick/escalation.tick과 같은 이유).
+    _scheduler.add_job(_run_cert_check_job, 'cron', hour=3, minute=20, id='cert_check',
+                        replace_existing=True, next_run_time=datetime.now())
     # 4-3: flush flow_listener's in-memory NetFlow/sFlow aggregates to
     # storage once a minute -- this scheduler's thread pool, not a new one,
     # same reasoning as every other periodic job here.

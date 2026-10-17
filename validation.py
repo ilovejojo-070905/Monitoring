@@ -27,6 +27,39 @@ _EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 # and before being sent to Solapi, which expects digits-only.
 _KR_MOBILE_RE = re.compile(r'^01[016789]-?\d{3,4}-?\d{4}$')
 
+# 신규(2026-10-17, "파일 업로드, Excel 내보내기... 점검한다") -- CSV/Excel
+# Formula Injection(OWASP) 대응. device name/group은 이미 is_safe_name()이
+# =/+/@ 등을 막아서 애초에 저장이 안 되지만, SNMP community나 공지사항
+# title/body처럼 더 느슨하게 허용되는 다른 자유 텍스트 필드까지 전부
+# 안전하다고 가정하고 싶지 않아서 -- 실제로 스프레드시트 셀에 쓰는
+# 바로 그 자리에서 한 번 더 막는다(입력 검증에만 의존하지 않고 출력
+# 경계에서도 방어하는, 이 코드베이스가 SQL 파라미터 바인딩에서 이미
+# 쓰는 것과 같은 심층 방어 방식). 엑셀/리브레오피스는 셀 값이 =/+/-/@로
+# 시작하면 수식으로 해석하므로, 그 앞에 '를 붙이면 그냥 텍스트로 강제됨.
+_EXCEL_FORMULA_LEAD_CHARS = ('=', '+', '-', '@')
+
+
+def sanitize_excel_cell(value):
+    """문자열이 아니면(숫자/None 등) 그대로 반환 -- 수식으로 해석될 일이
+    없는 타입까지 전부 문자열로 바꿔버리면 숫자 컬럼의 정렬/서식이
+    깨진다."""
+    if not isinstance(value, str) or not value:
+        return value
+    if value[0] in _EXCEL_FORMULA_LEAD_CHARS:
+        return "'" + value
+    return value
+
+
+def escape_pdf_text(value):
+    """reportlab의 Paragraph는 문자열을 작은 XML/HTML 비슷한 마크업으로
+    그대로 해석하고 자동으로 이스케이프하지 않는다 -- 장비명/장애 메시지에
+    들어있는 '<'/'&'가 Paragraph의 파서를 깨뜨리거나(보고서 생성 자체가
+    실패), 의도치 않은 가짜 마크업(굵게/색상 태그)을 PDF에 주입할 수
+    있다. Paragraph에 넘기기 전에 마크업이 실제로 쓰는 문자만 이스케이프."""
+    if not isinstance(value, str):
+        return value
+    return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
 
 def is_valid_ipv4(s):
     m = _IPV4_RE.match(s or '')

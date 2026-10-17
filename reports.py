@@ -36,6 +36,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 import storage
+import validation
 from collector import sla
 
 _FONT_REGISTERED = False
@@ -172,7 +173,7 @@ def build_pdf(report_type, start_ms, end_ms, device_id=None, group=None):
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=18 * mm, bottomMargin=16 * mm, leftMargin=14 * mm, rightMargin=14 * mm)
     elements = [
         Paragraph(f'InfraSight {title}', title_style), Spacer(1, 3 * mm),
-        Paragraph(period_desc, meta_style), Paragraph(filter_desc, meta_style),
+        Paragraph(period_desc, meta_style), Paragraph(validation.escape_pdf_text(filter_desc), meta_style),
         Paragraph(f"생성 시각: {_fmt_ms(int(time.time() * 1000))}", meta_style),
         Spacer(1, 6 * mm),
     ]
@@ -189,7 +190,9 @@ def build_pdf(report_type, start_ms, end_ms, device_id=None, group=None):
             extra = widths[wide_idx] * (n - 1) * 0.5 / n
             for i in range(n):
                 widths[i] = widths[i] - extra if i != wide_idx else widths[i] + extra * (n - 1)
-        table_data = [columns] + [[Paragraph(str(c), meta_style) for c in row] for row in rows]
+        # XML 마크업 주입 대응(validation.escape_pdf_text 주석 참고) -- reportlab의
+        # Paragraph는 문자열을 그대로 마크업으로 해석하고 자동 이스케이프하지 않는다.
+        table_data = [columns] + [[Paragraph(validation.escape_pdf_text(str(c)), meta_style) for c in row] for row in rows]
         t = Table(table_data, repeatRows=1, colWidths=[w * mm for w in widths])
         t.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, -1), 'Korean'),
@@ -215,7 +218,7 @@ def build_excel(report_type, start_ms, end_ms, device_id=None, group=None):
     ws['A1'] = f'InfraSight {title}'
     ws['A1'].font = Font(bold=True, size=14)
     ws['A2'] = f"기간: {_fmt_ms(start_ms)} ~ {_fmt_ms(end_ms)}"
-    ws['A3'] = _filter_desc(device_id, group)
+    ws['A3'] = validation.sanitize_excel_cell(_filter_desc(device_id, group))
     ws['A4'] = f"생성 시각: {_fmt_ms(int(time.time() * 1000))}"
     header_row = 6
     for ci, col in enumerate(columns, start=1):
@@ -225,7 +228,9 @@ def build_excel(report_type, start_ms, end_ms, device_id=None, group=None):
         cell.alignment = Alignment(horizontal='center')
     for ri, row in enumerate(rows, start=header_row + 1):
         for ci, val in enumerate(row, start=1):
-            ws.cell(row=ri, column=ci, value=val)
+            # CSV/Excel Formula Injection(OWASP) 대응 -- validation.
+            # sanitize_excel_cell 주석 참고.
+            ws.cell(row=ri, column=ci, value=validation.sanitize_excel_cell(val))
     for ci, col in enumerate(columns, start=1):
         max_len = max([len(str(col))] + [len(str(row[ci - 1])) for row in rows]) if rows else len(str(col))
         ws.column_dimensions[get_column_letter(ci)].width = min(max(max_len + 2, 10), 60)

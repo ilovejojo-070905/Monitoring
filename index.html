@@ -3771,6 +3771,11 @@ function renderSecuritySkeleton(){
       <div id="token-list"></div>
       <div id="token-usage-panel" style="display:none;margin-top:12px"></div>
     </div>
+    <div class="card" id="audit-log-card" style="display:none">
+      <div class="card-head"><div><h3>감사 로그</h3><span class="sub">모든 사용자의 로그인/장비/설정/백업·복원 등 작업 기록 (ADMIN 전용). 인증정보(비밀번호/토큰/SNMP community 등)는 어떤 항목에도 기록되지 않습니다.</span></div></div>
+      <div id="audit-log-body"></div>
+      <div style="text-align:center;margin-top:10px"><button type="button" class="btn" id="audit-log-more-btn" style="display:none">더 보기</button></div>
+    </div>
   `;
   wireSecurityHandlers();
 }
@@ -3967,6 +3972,8 @@ function showNewToken(token){
     <div style="font-size:11px;color:var(--text-dim)">이 창을 벗어나면 다시 볼 수 없습니다. 분실 시 재발급하세요.</div>`;
 }
 function wireSecurityHandlers(){
+  const auditMoreBtn = $('#audit-log-more-btn');
+  if(auditMoreBtn) auditMoreBtn.addEventListener('click', ()=> renderAuditLog(true));
   $('#token-create-form').addEventListener('submit', async (e)=>{
     e.preventDefault();
     const errEl = $('#token-error');
@@ -3991,6 +3998,41 @@ function renderSecurity(){
   securityLoaded = true;
   renderTotpBody();
   renderTokenList();
+  // 감사 로그 카드는 스켈레톤 단계(initSkeletons(), 로그인 전 -- CURRENT_ROLE이
+  // 아직 null)에선 항상 숨겨져 있다가, 로그인 후 실제 role을 아는 이 시점에만
+  // 켠다 -- renderNetworkSkeleton의 CURRENT_ROLE 관련 주석과 같은 패턴.
+  const auditCard = $('#audit-log-card');
+  if(CURRENT_ROLE==='ADMIN'){
+    if(auditCard) auditCard.style.display = '';
+    renderAuditLog();
+  }
+}
+let auditLogOldestId = null;
+async function renderAuditLog(append){
+  const body = $('#audit-log-body');
+  const moreBtn = $('#audit-log-more-btn');
+  if(!body) return;
+  const qs = append && auditLogOldestId ? `?beforeId=${auditLogOldestId}` : '';
+  const r = await apiFetch(`/api/audit-log${qs}`);
+  if(!r.ok){ if(!append) body.innerHTML = '<div class="empty-note">불러오기 실패</div>'; return; }
+  const j = await r.json();
+  const entries = j.entries || [];
+  if(!append && !entries.length){ body.innerHTML = '<div class="empty-note">기록이 없습니다</div>'; moreBtn.style.display='none'; return; }
+  const rowsHtml = entries.map(e=>`
+    <tr>
+      <td style="font-size:11px;white-space:nowrap">${fmtWhen(e.ts)}</td>
+      <td class="mono">${escapeHtml(e.username||'-')}</td>
+      <td class="mono">${escapeHtml(e.action)}</td>
+      <td class="mono" style="font-size:11px">${escapeHtml(e.target||'-')}</td>
+      <td style="font-size:11px">${escapeHtml(e.details||'-')}</td>
+      <td class="mono" style="font-size:11px">${escapeHtml(e.source_ip||'-')}</td>
+    </tr>`).join('');
+  const tableHtml = `<div class="table-wrap"><table class="data reg-device-table">
+    <thead><tr><th>시각</th><th>사용자</th><th>작업</th><th>대상</th><th>상세</th><th>IP</th></tr></thead>
+    <tbody>${rowsHtml}</tbody></table></div>`;
+  if(append){ body.insertAdjacentHTML('beforeend', tableHtml); } else { body.innerHTML = tableHtml; }
+  if(entries.length) auditLogOldestId = entries[entries.length-1].id;
+  moreBtn.style.display = entries.length >= 200 ? '' : 'none';
 }
 
 /* ================= 3-1 가동률 / SLA ================= */

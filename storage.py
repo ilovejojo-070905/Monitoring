@@ -922,7 +922,7 @@ def update_agent_info(device_id, version, os_info, started_at, reported_ip, last
 # can flag a device whose agentVersion (reported live, see above) doesn't
 # match -- the version-comparison groundwork an eventual auto-update feature
 # would need, without this pass implementing any actual update mechanism.
-AGENT_VERSION = '1.3.0'
+AGENT_VERSION = '1.3.1'
 
 
 # Mirrors agent_collector.ONLINE_WINDOW_SEC / WARN_WINDOW_SEC. Duplicated
@@ -1877,6 +1877,36 @@ def unlock_user(username):
     conn.execute('UPDATE users SET failed_attempts=0, locked_until=NULL WHERE username=?', (username,))
     conn.commit()
     conn.close()
+
+
+def load_audit_log(limit=200, before_id=None, action=None, username=None):
+    """신규 기능(2026-10-17, "감사 로그에... 기록하고 조회 권한을
+    제한한다"): write_audit는 처음부터 있었지만 이걸 다시 읽어오는 경로가
+    단 하나도 없었음 -- DB 파일을 직접 열거나 logs/security.log를 텍스트로
+    읽는 것 말고는 "누가 언제 뭘 했는지"를 확인할 방법이 web UI/API
+    어디에도 없었다. 이 함수를 쓰는 라우트(server.py)는 ADMIN 전용으로
+    게이트한다 -- 다른 모든 사용자의 행적이 담긴 기록이라 OPERATOR보다도
+    더 민감함.
+    before_id: 커서 기반 페이지네이션(이 id보다 작은 것만) -- 한번에 다
+    긁어오지 않고 "더 보기"로 과거까지 거슬러 올라갈 수 있게."""
+    limit = max(1, min(limit, 500))
+    conn = get_db()
+    q = 'SELECT * FROM audit_log WHERE 1=1'
+    params = []
+    if before_id is not None:
+        q += ' AND id < ?'
+        params.append(before_id)
+    if action:
+        q += ' AND action = ?'
+        params.append(action)
+    if username:
+        q += ' AND username = ?'
+        params.append(username)
+    q += ' ORDER BY id DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def write_audit(username, action, target=None, details=None, source_ip=None):

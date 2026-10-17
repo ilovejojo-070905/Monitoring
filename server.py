@@ -2152,6 +2152,9 @@ def public_status_page():
     return resp
 
 
+AGENT_REPORT_MAX_CLOCK_SKEW_MS = 5 * 60 * 1000  # 5분
+
+
 @app.post('/api/agent/report')
 def api_agent_report():
     body = request.get_json(force=True)
@@ -2159,6 +2162,19 @@ def api_agent_report():
     device_row = storage.find_device_by_token(token)
     if not device_row:
         return jsonify({'error': 'unknown token'}), 404
+    # 신규(2026-10-17, "재전송 방지"): 1.3.1+ 에이전트는 이 보고를 만든
+    # 시각(ts)을 같이 보낸다 -- 가로챈 토큰+페이로드를 나중에 그대로 다시
+    # 보내는 재전송 공격을, 서버 시계 대비 너무 오래되거나 너무 미래인
+    # 요청을 거부하는 식으로 막는다. 구버전 에이전트(ts 필드 없음)는 이
+    # 검사를 그냥 건너뛰어 하위 호환 유지 -- 강제 업그레이드 없이 점진적
+    # 적용. 정상적인 시계 오차(NTP 미동기화 등)도 고려해 5분으로 넉넉하게.
+    ts = body.get('ts')
+    if ts is not None:
+        skew = abs(int(time.time() * 1000) - int(ts))
+        if skew > AGENT_REPORT_MAX_CLOCK_SKEW_MS:
+            storage.write_audit(None, 'AGENT_REPORT_STALE_REJECTED', target=device_row['id'],
+                                 details=f'skew={skew}ms', source_ip=request.remote_addr)
+            return jsonify({'error': 'stale_report'}), 400
     with state.LOCK:
         entity = state.ensure_entity(device_row)
     # Bug fix: record_report acquires state.LOCK itself now (the code review
@@ -2765,6 +2781,21 @@ def api_list_backups():
     return jsonify({'backups': storage.list_backups(backup_dir)})
 
 
+@app.get('/api/audit-log')
+@require_role('ADMIN')
+def api_audit_log():
+    # 신규(2026-10-17, "감사 로그에... 조회 권한을 제한한다") -- write_audit는
+    # 처음부터 있었지만 이걸 읽어오는 라우트가 하나도 없었음(DB 파일을
+    # 직접 열거나 logs/security.log를 텍스트로 읽는 것 말고는 "누가
+    # 뭘 했는지" 확인할 방법이 없었음). 다른 모든 사용자(OPERATOR/VIEWER
+    # 포함)의 행적이 담겨 있어 ADMIN 전용으로 제한 -- 백업/복원과 같은 등급.
+    limit = validation.clamp_int(request.args.get('limit'), 1, 500, 200)
+    before_id = request.args.get('beforeId', type=int)
+    action = request.args.get('action') or None
+    username = request.args.get('username') or None
+    return jsonify({'entries': storage.load_audit_log(limit=limit, before_id=before_id, action=action, username=username)})
+
+
 @app.post('/api/system/restore')
 @require_role('ADMIN')
 def api_restore_backup():
@@ -2845,6 +2876,12 @@ def api_agent_info():
 
 @app.get('/download/agent')
 def download_agent():
+    # 역할 검증 없음(의도적, /download/installer|config/<token>과 같은
+    # 이유) -- 이 범용 다운로드는 특정 장비의 토큰을 전혀 담지 않은, 그
+    # 자체로는 아무 비밀정보도 아닌 실행파일/소스 하나다. 새 PC에 처음
+    # 에이전트를 받을 때는 그 PC에 아직 로그인 세션이 없는 게 정상이라,
+    # 여기 로그인을 요구하면 "그 PC에서 브라우저로 관리자 로그인부터
+    # 하라"는 불필요한 단계가 추가될 뿐이다.
     if os.path.exists(_agent_exe_path()):
         return send_from_directory(os.path.join(BASE_DIR, 'dist'), 'InfraSightAgent.exe', as_attachment=True)
     return send_from_directory(BASE_DIR, 'agent.py', as_attachment=True)

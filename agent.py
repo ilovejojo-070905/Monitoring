@@ -54,7 +54,7 @@ else:
 # foundation an eventual auto-update feature would compare against; nothing
 # here downloads or applies updates yet, by design (see the directive this
 # was built from).
-AGENT_VERSION = '1.3.0'
+AGENT_VERSION = '1.3.1'
 
 _START_TIME = time.time()
 _LAST_ERROR = None  # most recent local exception message, if any (sample() or the report request itself)
@@ -723,6 +723,12 @@ def sample(last_net, last_net_t, last_nics, last_disk_io):
         # cycle that itself succeeded.
         'version': AGENT_VERSION, 'os': platform.platform(), 'startedAt': int(_START_TIME * 1000),
         'lastError': _LAST_ERROR,
+        # 신규(2026-10-17, "재전송 방지") -- 이 보고가 만들어진 시각(이
+        # 에이전트 PC 기준). 서버가 이 값과 자기 시계를 비교해서, 가로챈
+        # 토큰+페이로드를 나중에 그대로 다시 보내는 재전송 공격을 몇 분
+        # 이상 지난 요청은 거부하는 식으로 막는다 -- 구버전 에이전트(이
+        # 필드가 없음)는 그 검사를 그냥 건너뛰므로 하위 호환됨.
+        'ts': int(time.time() * 1000),
     }
     return payload, net, now, current_nics, current_disk_io
 

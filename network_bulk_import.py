@@ -12,6 +12,8 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+import validation
+
 TEMPLATE_HEADERS = ['장비명*', 'IP*', '유형', '그룹', '모드 (ping 또는 snmp)', 'SNMP Community', 'SNMP 포트', 'SNMP 버전 (v1 또는 v2c)']
 TEMPLATE_EXAMPLE_ROWS = [
     ['3층 스위치', '192.168.0.10', 'L2 Switch', '3층', 'snmp', 'public', 161, 'v2c'],
@@ -145,9 +147,14 @@ def build_export_xlsx(devices):
     ws.append(TEMPLATE_HEADERS)
     _style_header_row(ws, len(TEMPLATE_HEADERS))
     for d in devices:
+        # CSV/Excel Formula Injection(OWASP) 대응 -- validation.py의
+        # sanitize_excel_cell 주석 참고. name/group은 is_safe_name()이 이미
+        # =/+/@로 시작하는 걸 막지만, community는 그런 제약이 없어서 여기서
+        # 한 번 더 막는다.
         ws.append([
-            d['name'], d['ip'], d.get('type') or '', d.get('group') or '',
-            d['mode'], d.get('community') or '', d.get('snmpPort') or '', d.get('snmpVersion') or '',
+            validation.sanitize_excel_cell(d['name']), d['ip'],
+            validation.sanitize_excel_cell(d.get('type') or ''), validation.sanitize_excel_cell(d.get('group') or ''),
+            d['mode'], validation.sanitize_excel_cell(d.get('community') or ''), d.get('snmpPort') or '', d.get('snmpVersion') or '',
         ])
 
     buf = io.BytesIO()
