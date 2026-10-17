@@ -35,6 +35,7 @@ $LockFile    = Join-Path $RunDir 'supervisor.lock'
 $StopMarker  = Join-Path $RunDir 'stop.marker'
 $LogFile     = Join-Path $LogDir 'supervisor.log'
 $StatusFile  = Join-Path $RunDir 'status.json'
+$RestartHistoryFile = Join-Path $RunDir 'restart-history.json'
 
 $PollSeconds        = 5
 $CrashWindowSeconds = 120   # count crashes within this rolling window...
@@ -46,6 +47,39 @@ New-Item -ItemType Directory -Force -Path $RunDir, $LogDir | Out-Null
 function Write-Log([string]$Level, [string]$Message) {
     $line = "{0} [{1}] {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
     Add-Content -Path $LogFile -Value $line -Encoding utf8
+}
+
+# 신규(2026-10-17, "Supervisor의 재시작 횟수와 실패 원인을 기록한다"):
+# 이전엔 재시작 "횟수"가 $crashTimes/$backoffUntil라는 변수 두 개뿐이고,
+# 그마저 supervisor.ps1 자신이 재시작되면(재부팅 등) 그냥 사라졌다 --
+# 누적 횟수가 아니라 "지금 이 supervisor 프로세스가 떠 있는 동안"만
+# 유효한 값이었음. 실패 "원인"도 supervisor.log 텍스트 줄로만 남아서,
+# 프로그램으로 조회하거나 화면에 보여줄 방법이 없었다. run\
+# restart-history.json에 누적 횟수+최근 사유를 영구히(supervisor
+# 재시작을 거쳐도) 남기고, status.json을 통해 매번 같이 내보낸다.
+function Load-RestartHistory {
+    if (Test-Path $RestartHistoryFile) {
+        try {
+            $loaded = Get-Content $RestartHistoryFile -Raw | ConvertFrom-Json
+            if ($loaded.backend -and $loaded.caddy) { return $loaded }
+        } catch {}
+    }
+    return [pscustomobject]@{
+        backend = [pscustomobject]@{ totalRestarts = 0; lastReason = $null; lastAt = $null }
+        caddy   = [pscustomobject]@{ totalRestarts = 0; lastReason = $null; lastAt = $null }
+    }
+}
+$script:restartHistory = Load-RestartHistory
+
+function Save-RestartHistory {
+    try { $script:restartHistory | ConvertTo-Json -Depth 5 | Set-Content -Path $RestartHistoryFile -Encoding utf8 } catch {}
+}
+
+function Register-Restart([string]$name, [string]$reason) {
+    $script:restartHistory.$name.totalRestarts = [int]$script:restartHistory.$name.totalRestarts + 1
+    $script:restartHistory.$name.lastReason = $reason
+    $script:restartHistory.$name.lastAt = (Get-Date).ToString('s')
+    Save-RestartHistory
 }
 
 # ---------- duplicate-run guard ----------
@@ -138,7 +172,14 @@ $healthFailCount = 0
 function Test-BackendHealthy {
     try {
         $resp = Invoke-RestMethod -Uri 'https://localhost:8443/api/system/health-public' -TimeoutSec 5 -ErrorAction Stop
-        return ($resp.web -eq 'up' -and $resp.database -eq 'up' -and $resp.collector -eq 'up')
+        # 신규(2026-10-17, "Flask, 스케줄러, 수집기, 알림 엔진... 상태를
+        # 구분한다"): scheduler/alerts도 같이 확인 -- 이전엔 collector만
+        # 봐서, 장비 polling은 멀쩡한데 알림 엔진(에스컬레이션/재시도 큐)
+        # 이나 배치 작업(백업/보존/인증서 확인)만 교착된 경우는 전혀 못
+        # 잡았다. 둘 다 같은 Flask 프로세스 안에서 도는 백그라운드
+        # 작업이라, collector 먹통과 똑같이 프로세스 재시작으로 풀린다.
+        return ($resp.web -eq 'up' -and $resp.database -eq 'up' -and $resp.collector -eq 'up' `
+                -and $resp.scheduler -eq 'up' -and $resp.alerts -eq 'up')
     } catch {
         return $false
     }
@@ -191,10 +232,20 @@ function Write-Status {
     $status = [ordered]@{
         supervisorPid = $PID
         updatedAt     = (Get-Date).ToString('s')
-        backend       = [ordered]@{ pid = $backend.Id; alive = (Test-Alive $backend) }
-        caddy         = [ordered]@{ pid = $caddy.Id; alive = (Test-Alive $caddy) }
+        backend       = [ordered]@{
+            pid = $backend.Id; alive = (Test-Alive $backend)
+            totalRestarts = $script:restartHistory.backend.totalRestarts
+            lastRestartReason = $script:restartHistory.backend.lastReason
+            lastRestartAt = $script:restartHistory.backend.lastAt
+        }
+        caddy         = [ordered]@{
+            pid = $caddy.Id; alive = (Test-Alive $caddy)
+            totalRestarts = $script:restartHistory.caddy.totalRestarts
+            lastRestartReason = $script:restartHistory.caddy.lastReason
+            lastRestartAt = $script:restartHistory.caddy.lastAt
+        }
     }
-    $status | ConvertTo-Json | Set-Content -Path $StatusFile -Encoding utf8
+    $status | ConvertTo-Json -Depth 5 | Set-Content -Path $StatusFile -Encoding utf8
 }
 
 try {
@@ -220,6 +271,7 @@ try {
         if (-not (Test-Alive $backend)) {
             Write-Log 'WARN' "Backend가 비정상 종료된 것을 감지했습니다 (이전 PID $($backend.Id))."
             Register-Crash 'backend'
+            Register-Restart 'backend' '비정상 종료 감지 (프로세스가 스스로 꺼짐)'
             if (Test-ShouldRestart 'backend') { $backend = Start-Backend }
         } elseif (-not (Test-Path $StopMarker)) {
             $sinceStart = ((Get-Date) - $backendStartedAt).TotalSeconds
@@ -233,6 +285,7 @@ try {
                     Write-Log 'WARN' "Backend 상태 확인 실패 ($healthFailCount/$HealthFailLimit) -- 프로세스는 살아있지만 응답이 없거나 비정상입니다."
                     if ($healthFailCount -ge $HealthFailLimit) {
                         Write-Log 'ERROR' "Backend가 먹통 상태로 판단되어 강제로 재시작합니다 (PID $($backend.Id))."
+                        Register-Restart 'backend' '먹통(hang) 감지 -- 프로세스는 살아있었지만 health-public 응답 없음/비정상이 반복됨'
                         Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
                         $healthFailCount = 0
                     }
@@ -243,6 +296,7 @@ try {
         if (-not (Test-Alive $caddy)) {
             Write-Log 'WARN' "Caddy가 비정상 종료된 것을 감지했습니다 (이전 PID $($caddy.Id))."
             Register-Crash 'caddy'
+            Register-Restart 'caddy' '비정상 종료 감지 (프로세스가 스스로 꺼짐)'
             if (Test-ShouldRestart 'caddy') { $caddy = Start-Caddy }
         }
 

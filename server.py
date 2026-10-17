@@ -903,7 +903,16 @@ def api_system_health_public():
     if _public_rate_limited(request.remote_addr):
         return jsonify({'error': 'rate_limited'}), 429
     h = health.get_health()
-    return jsonify({'web': h['web'], 'database': h['database'], 'collector': h['collector']})
+    # 신규(2026-10-17, "마지막 정상 실행 시각과 작업 지연을 확인한다"):
+    # scheduler/alerts도 같이 노출 -- supervisor.ps1의 먹통 감지가 이
+    # 둘(배치 작업/알림 엔진)의 교착까지 알아채고 재시작할 수 있도록
+    # (이전엔 collector만 봐서, 장비 polling은 멀쩡한데 알림 엔진만
+    # 멈춘 경우는 전혀 못 잡았음). caddy/disk는 여기 안 넣는다 --
+    # 이 둘은 Flask 프로세스를 재시작해도 해결이 안 되는 문제라
+    # (Caddy는 별도 프로세스, 디스크는 재시작과 무관) 자동 재시작
+    # 판단에 섞으면 의미 없는 재시작만 반복될 수 있음.
+    return jsonify({'web': h['web'], 'database': h['database'], 'collector': h['collector'],
+                     'scheduler': h['scheduler'], 'alerts': h['alerts']})
 
 
 @app.post('/api/discovery/scan')

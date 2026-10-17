@@ -30,6 +30,13 @@ if (Test-Path $StatusFile) {
         $cdOk = $s.caddy.alive
         Write-Host ("Backend   : {0} (PID {1}){2}" -f $(if($beOk){'실행 중'}else{'중지됨'}), $s.backend.pid, $tag) -ForegroundColor $(if($beOk){'Green'}else{'Red'})
         Write-Host ("Caddy     : {0} (PID {1}){2}" -f $(if($cdOk){'실행 중'}else{'중지됨'}), $s.caddy.pid, $tag) -ForegroundColor $(if($cdOk){'Green'}else{'Red'})
+        # 신규(2026-10-17, "Supervisor의 재시작 횟수와 실패 원인을 기록한다")
+        if ($s.backend.totalRestarts -gt 0) {
+            Write-Host ("  └ 누적 재시작 {0}회 (최근: {1}, {2})" -f $s.backend.totalRestarts, $s.backend.lastRestartReason, $s.backend.lastRestartAt) -ForegroundColor DarkYellow
+        }
+        if ($s.caddy.totalRestarts -gt 0) {
+            Write-Host ("  └ 누적 재시작 {0}회 (최근: {1}, {2})" -f $s.caddy.totalRestarts, $s.caddy.lastRestartReason, $s.caddy.lastRestartAt) -ForegroundColor DarkYellow
+        }
     } catch {
         Write-Host "status.json을 읽는 데 실패했습니다: $_" -ForegroundColor Yellow
     }

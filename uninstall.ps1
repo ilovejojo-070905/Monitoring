@@ -7,7 +7,10 @@ InfraSight 제거 스크립트
   - 방화벽 인바운드 규칙 제거 (install.ps1이 연 것과 동일한 4개)
   - 원격 접속(SSH/Telnet) Native Messaging Host 등록 해제 + 관련 파일 삭제
   - (확인 후) 설치 폴더 전체 삭제 -- 데이터베이스(등록 장비/알림 이력/계정)
-    포함이라 되돌릴 수 없음. 기본적으로 지우기 전에 DB만 바탕화면에 백업한다.
+    포함이라 되돌릴 수 없음. 기본적으로 지우기 전에 현재 DB/키와, backups\
+    폴더(매일 자동 생성되는 과거 백업 이력)를 전부 바탕화면에 복사해둔다 --
+    "운영 데이터"(현재 DB)와 "백업"(backups\ 이력)을 각각 별도 스위치로
+    독립적으로 제어할 수 있다(아래 사용법 참고).
 
 이 스크립트가 **건드리지 않는** 것 (다른 프로그램이 같이 쓸 수 있어서):
   - winget으로 설치된 Git / Python / Caddy / mkcert / PuTTY 자체
@@ -19,12 +22,22 @@ InfraSight 제거 스크립트
 사용법:
     powershell -ExecutionPolicy Bypass -File uninstall.ps1
     powershell -ExecutionPolicy Bypass -File uninstall.ps1 -InstallDir "D:\InfraSight"
-    powershell -ExecutionPolicy Bypass -File uninstall.ps1 -NoBackup   # DB 백업 생략
-    powershell -ExecutionPolicy Bypass -File uninstall.ps1 -Force      # 확인 문구 입력 없이 바로 삭제 (주의)
+    powershell -ExecutionPolicy Bypass -File uninstall.ps1 -NoBackup            # 현재 DB/키 백업 생략
+    powershell -ExecutionPolicy Bypass -File uninstall.ps1 -DeleteBackupHistory # backups\ 과거 이력도 보존하지 않고 같이 삭제
+    powershell -ExecutionPolicy Bypass -File uninstall.ps1 -Force               # 확인 문구 입력 없이 바로 삭제 (주의)
 #>
 param(
     [string]$InstallDir,
     [switch]$NoBackup,
+    # 신규(2026-10-17, "제거 과정에서 운영 데이터와 백업의 삭제 여부를
+    # 명확하게 제어한다"): 이전엔 backups\ 폴더(scheduler.py가 매일 새벽
+    # 만드는 자동 백업 이력)가 "운영 데이터"(현재 DB)와 분리해서 제어할
+    # 방법이 전혀 없이, -NoBackup 여부와 무관하게 항상 설치 폴더 전체
+    # 삭제에 묻혀 같이 사라졌다(어디에도 복사되지 않음) -- 이 스크립트
+    # 자신의 예전 주석조차 "DB만 바탕화면에 백업한다"고 스스로 인정하고
+    # 있었음. 기본값은 "보존"(현재 DB와 같은 안전한 기본값) -- 완전히
+    # 지우려면 이 스위치를 명시적으로 켜야 한다.
+    [switch]$DeleteBackupHistory,
     [switch]$Force
 )
 
@@ -49,8 +62,9 @@ if (-not (Test-Admin)) {
     Write-Host "관리자 권한이 필요합니다 (예약 작업 해제 · 방화벽 규칙 제거). UAC 승인 창을 확인해주세요..." -ForegroundColor Yellow
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
     if ($InstallDir) { $argList += @('-InstallDir', $InstallDir) }
-    if ($NoBackup)   { $argList += '-NoBackup' }
-    if ($Force)      { $argList += '-Force' }
+    if ($NoBackup)    { $argList += '-NoBackup' }
+    if ($DeleteBackupHistory) { $argList += '-DeleteBackupHistory' }
+    if ($Force)       { $argList += '-Force' }
     try {
         Start-Process powershell -Verb RunAs -ArgumentList $argList -Wait
     } catch {
@@ -185,7 +199,7 @@ foreach ($sub in @('native-host', 'extension')) {
 Write-Warn2  'Chrome에 직접 로드해둔 확장 프로그램은 chrome://extensions에서 따로 제거해주세요 (이 스크립트가 어디 있는지 알 수 없음).'
 
 # --------------------------------------------------------- [6] 백업 --
-Write-Step '[6/7] 삭제 전 데이터베이스 + 암호화 키 백업'
+Write-Step '[6/7] 삭제 전 데이터 백업'
 # infrasight.db 백업만으로는 부족하다 -- 장비 SSH/SNMP 접속 정보 같은
 # credentials 테이블 값은 DB 안에 평문이 아니라, DB와는 별도 파일인
 # .infrasight_credentials_key(Fernet 키)로 암호화되어 있다
@@ -200,14 +214,24 @@ $backupTargets = @(
     (Join-Path $InstallDir '.infrasight_credentials_key'),
     (Join-Path $InstallDir '.infrasight_secret_key')
 )
+# 버그 수정(2026-10-17, "운영 데이터와 백업의 삭제 여부를 명확하게
+# 제어한다"): backups\(scheduler.py의 _run_backup_job이 매일 새벽
+# 만들어 30일간 보관하는 자동 백업 이력)는 이전엔 위 "현재 DB" 백업과는
+# 완전히 무관하게, -NoBackup 여부와도 상관없이 설치 폴더 전체 삭제에
+# 그냥 같이 묻혀 사라졌다 -- 복사도, 경고 메시지 하나도 없이. "운영
+# 데이터"(현재 DB, 위 backupTargets)와 "백업"(과거 이력, backups\)을
+# 각각 독립된 스위치로 제어: -NoBackup은 현재 DB/키만, -DeleteBackupHistory
+# 는 backups\만 건너뛴다 -- 기본값은 둘 다 "보존"(바탕화면에 복사).
+$backupHistoryDir = Join-Path $InstallDir 'backups'
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+# 바탕화면에 곧바로 "infrasight-backup-<시각>" 폴더를 만들면, 제거를
+# 여러 번 반복할 때마다(테스트 등) 바탕화면에 폴더가 계속 쌓인다 --
+# 실측으로 지적받음. 한 단계 아래 "InfraSight-Backups" 폴더 하나만
+# 바탕화면에 두고, 그 안에 시각별 하위 폴더를 모아서 바탕화면 자체는
+# 항상 폴더 1개로 유지한다.
+$backupDir = Join-Path ([Environment]::GetFolderPath('Desktop')) "InfraSight-Backups\$stamp"
+
 if (-not $NoBackup) {
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    # 바탕화면에 곧바로 "infrasight-backup-<시각>" 폴더를 만들면, 제거를
-    # 여러 번 반복할 때마다(테스트 등) 바탕화면에 폴더가 계속 쌓인다 --
-    # 실측으로 지적받음. 한 단계 아래 "InfraSight-Backups" 폴더 하나만
-    # 바탕화면에 두고, 그 안에 시각별 하위 폴더를 모아서 바탕화면 자체는
-    # 항상 폴더 1개로 유지한다.
-    $backupDir = Join-Path ([Environment]::GetFolderPath('Desktop')) "InfraSight-Backups\$stamp"
     $anyBackedUp = $false
     foreach ($f in $backupTargets) {
         if (Test-Path $f) {
@@ -217,13 +241,34 @@ if (-not $NoBackup) {
         }
     }
     if ($anyBackedUp) {
-        Write-Ok "바탕화면\InfraSight-Backups\$stamp\ 에 백업됨 (DB + 암호화 키)"
-        Write-Warn2 '재설치 후 기존 데이터를 그대로 쓰려면, 새로 설치된 폴더에 이 백업 폴더 안의 파일들을 전부 덮어써주세요 (첫 로그인 전에).'
+        Write-Ok "바탕화면\InfraSight-Backups\$stamp\ 에 백업됨 (현재 DB + 암호화 키)"
     } else {
-        Write-Warn2 '백업할 파일을 찾지 못했습니다 (그래도 계속 진행합니다).'
+        Write-Warn2 '백업할 현재 DB/키 파일을 찾지 못했습니다 (그래도 계속 진행합니다).'
     }
 } else {
-    Write-Warn2 '-NoBackup 지정됨 -- 백업을 건너뜁니다.'
+    Write-Warn2 '-NoBackup 지정됨 -- 현재 DB/키 백업을 건너뜁니다.'
+}
+
+if (-not $DeleteBackupHistory) {
+    if (Test-Path $backupHistoryDir) {
+        $historyFileCount = (Get-ChildItem $backupHistoryDir -File -ErrorAction SilentlyContinue | Measure-Object).Count
+        if ($historyFileCount -gt 0) {
+            $destHistoryDir = Join-Path $backupDir 'backups'
+            New-Item -ItemType Directory -Force -Path $destHistoryDir | Out-Null
+            Copy-Item (Join-Path $backupHistoryDir '*') $destHistoryDir -Recurse -ErrorAction SilentlyContinue
+            Write-Ok "바탕화면\InfraSight-Backups\$stamp\backups\ 에 백업 이력 보존됨 (파일 $historyFileCount 개)"
+        } else {
+            Write-Warn2 'backups\ 폴더가 비어있어 보존할 이력이 없습니다.'
+        }
+    } else {
+        Write-Warn2 'backups\ 폴더를 찾지 못했습니다 (자동 백업이 한 번도 실행되지 않았을 수 있습니다).'
+    }
+} else {
+    Write-Warn2 '-DeleteBackupHistory 지정됨 -- backups\ 과거 백업 이력을 보존하지 않고 같이 삭제합니다.'
+}
+
+if ((-not $NoBackup) -or (-not $DeleteBackupHistory)) {
+    Write-Warn2 '재설치 후 기존 데이터를 그대로 쓰려면, 새로 설치된 폴더에 이 백업 폴더 안의 파일들을 전부 덮어써주세요 (첫 로그인 전에).'
 }
 
 # ----------------------------------------------- [7] 설치 폴더 삭제 --

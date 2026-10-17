@@ -89,7 +89,7 @@ def _run_job(device_id):
         elif device_row['mode'] == 'snmp':
             snmp_collector.sample_snmp(entity, device_row)
             metrics.record_entity_metrics(device_id, entity)
-        health.record_tick_success()
+        health.record_tick_success('collector')
         # Alert design section [4]/[5]: a device that was mid-outage due to a
         # collector-internal error (not a clean reachability failure) just
         # collected successfully again -- close out that alert the same way
@@ -103,7 +103,7 @@ def _run_job(device_id):
                 f"{device_row['name']} 수집 오류 복구", device_id=device_id, event_type='COLLECTION_ERROR',
                 maintenance=storage.in_maintenance(device_row))
     except Exception as e:
-        health.record_tick_error(f"{device_id}: {e}")
+        health.record_tick_error('collector', f"{device_id}: {e}")
         # Distinct from a clean "no response" result (that's the sampler's
         # own job, above): this is the collector *itself* blowing up --
         # a bug, a crashed library, etc. -- which storage.compute_
@@ -146,6 +146,12 @@ def remove_device_job(device_id):
         pass
 
 
+# 신규(2026-10-17, "Flask, 스케줄러, 수집기, 알림 엔진, DB, Caddy, 디스크
+# 상태를 구분한다"): 이 밑의 일/주/월 단위 배치 작업들은 전부 'scheduler'
+# 서브시스템으로 기록한다 -- 이전엔 health.record_tick_success()/error()를
+# 인자 없이 호출해서, 2초마다 도는 장비 polling(collector 서브시스템)과
+# 같은 슬롯에 몰려 있었다. 그래서 백업이 며칠째 실패해도 polling만
+# 계속 성공하면 전체 상태가 "정상"으로 보이던 사각지대가 있었음.
 def _run_retention_job():
     try:
         storage.run_metrics_retention()
@@ -153,9 +159,9 @@ def _run_retention_job():
         storage.run_flow_retention()
         storage.run_discovery_retention()
         storage.run_api_token_usage_retention()
-        health.record_tick_success()
+        health.record_tick_success('scheduler')
     except Exception as e:
-        health.record_tick_error(f"retention: {e}")
+        health.record_tick_error('scheduler', f"retention: {e}")
 
 
 def _run_backup_job():
@@ -163,33 +169,69 @@ def _run_backup_job():
     backup_dir = os.path.join(storage.BASE_DIR, 'backups')
     try:
         storage.backup_database(backup_dir, keep_days=storage.BACKUP_RETENTION_DAYS)
+        # 버그 수정: 성공했을 때 health에 전혀 기록을 안 남겼었음(실패만
+        # 기록) -- "마지막 백업 성공 시각"을 알 방법이 없었던 것도 그래서.
+        health.record_tick_success('scheduler')
     except Exception as e:
-        health.record_tick_error(f"backup: {e}")
+        health.record_tick_error('scheduler', f"backup: {e}")
         storage.add_incident('warn', 'InfraSight', 'SYSTEM', f"DB 백업 실패: {e}")
 
 
 def _run_cert_check_job():
     try:
         cert_check.check_certificate()
-        health.record_tick_success()
+        health.record_tick_success('scheduler')
     except Exception as e:
-        health.record_tick_error(f"cert_check: {e}")
+        health.record_tick_error('scheduler', f"cert_check: {e}")
 
 
 def _run_weekly_report_job():
     try:
         report_delivery.run_due_schedules('weekly')
-        health.record_tick_success()
+        health.record_tick_success('scheduler')
     except Exception as e:
-        health.record_tick_error(f"weekly_report: {e}")
+        health.record_tick_error('scheduler', f"weekly_report: {e}")
 
 
 def _run_monthly_report_job():
     try:
         report_delivery.run_due_schedules('monthly')
-        health.record_tick_success()
+        health.record_tick_success('scheduler')
     except Exception as e:
-        health.record_tick_error(f"monthly_report: {e}")
+        health.record_tick_error('scheduler', f"monthly_report: {e}")
+
+
+# 신규(2026-10-17): escalation.tick/alert_retry.tick/maintenance.tick은
+# 이전에 APScheduler 작업으로 직접 등록돼서(아래 add_job에 함수 자체를
+# 바로 넘김), 그 안에서 예외가 나면 APScheduler 자체 로그에만 남고
+# InfraSight의 health에는 전혀 안 드러났다 -- 즉 "알림 엔진"(에스컬레이션
+# +재시도 큐)이 완전히 멈춰도 /api/system/health는 모르는 상태였음. 다른
+# 배치 작업들과 같은 try/except+health.record_tick_* 패턴으로 감싼다.
+# escalation/alert_retry는 'alerts'(알림 엔진), maintenance는 그 자체가
+# 알림을 보내는 게 아니라 "지금 점검 중인지" 판정만 하는 주기 작업이라
+# 'scheduler'로 분류한다.
+def _run_escalation_tick():
+    try:
+        escalation.tick()
+        health.record_tick_success('alerts')
+    except Exception as e:
+        health.record_tick_error('alerts', f"escalation: {e}")
+
+
+def _run_alert_retry_tick():
+    try:
+        alert_retry.tick()
+        health.record_tick_success('alerts')
+    except Exception as e:
+        health.record_tick_error('alerts', f"alert_retry: {e}")
+
+
+def _run_maintenance_tick():
+    try:
+        maintenance.tick()
+        health.record_tick_success('scheduler')
+    except Exception as e:
+        health.record_tick_error('scheduler', f"maintenance: {e}")
 
 
 def start():
@@ -218,17 +260,17 @@ def start():
     # immediate first run (next_run_time=now) so a window that should already
     # be active takes effect right after a restart instead of waiting a full
     # minute -- same reasoning as add_device_job's own next_run_time.
-    _scheduler.add_job(maintenance.tick, 'interval', seconds=60, id='maintenance_tick',
+    _scheduler.add_job(_run_maintenance_tick, 'interval', seconds=60, id='maintenance_tick',
                         replace_existing=True, next_run_time=datetime.now())
     # 2-5: same cadence/pattern as maintenance.tick -- checks every open
     # incident against the configured escalation chain each run.
-    _scheduler.add_job(escalation.tick, 'interval', seconds=60, id='escalation_tick',
+    _scheduler.add_job(_run_escalation_tick, 'interval', seconds=60, id='escalation_tick',
                         replace_existing=True, next_run_time=datetime.now())
     # 알림 재시도 큐 (버그 수정, 2026-10-16) -- 같은 60초 주기/즉시 첫 실행
     # 패턴. pending_alert_retries에 쌓인, 처음 시도가 실패한 알림들을
     # 백오프를 두고 재시도한다 (storage.py의 enqueue_alert_retry/
     # _dispatch_one_channel 쪽 주석 참고).
-    _scheduler.add_job(alert_retry.tick, 'interval', seconds=60, id='alert_retry_tick',
+    _scheduler.add_job(_run_alert_retry_tick, 'interval', seconds=60, id='alert_retry_tick',
                         replace_existing=True, next_run_time=datetime.now())
     # 3-3: 주간 보고서는 매주 월요일, 월간 보고서는 매월 1일 아침에 생성+발송.
     # collector/report_delivery.period_for_frequency()가 "오늘 자정까지의

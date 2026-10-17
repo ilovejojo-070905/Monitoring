@@ -1332,9 +1332,12 @@ def test_backup_failure_triggers_incident_and_health_log():
     try:
         scheduler._run_backup_job()
         health_now = health.get_health()
-        check('Q7 backup failure is logged via health.get_health()',
-              health_now.get('collectorLastError') is not None and 'disk full' in health_now['collectorLastError']['message'],
-              health_now.get('collectorLastError'))
+        # 2026-10-17 health.py 서브시스템 분리 이후: 백업은 'scheduler'
+        # 서브시스템이라 schedulerLastError에 남는다(collectorLastError가
+        # 아님 -- 그쪽은 장비별 polling 전용).
+        check('Q7 backup failure is logged via health.get_health() (scheduler subsystem)',
+              health_now.get('schedulerLastError') is not None and 'disk full' in health_now['schedulerLastError']['message'],
+              health_now.get('schedulerLastError'))
         conn = storage.get_db()
         row = conn.execute("SELECT * FROM incidents WHERE source='InfraSight' AND message LIKE 'DB 백업 실패%' ORDER BY id DESC LIMIT 1").fetchone()
         conn.close()
@@ -1557,6 +1560,94 @@ def test_network_export_sanitizes_community_against_formula_injection():
           community_cell == "'=1+1", community_cell)
 
 
+# ======================================================================
+# S. 운영 신뢰성 2차 (health.py 서브시스템 분리, 디스크 확인)
+# ======================================================================
+
+def test_health_subsystems_do_not_cross_contaminate():
+    # 버그 수정(2026-10-17, "Flask, 스케줄러, 수집기, 알림 엔진, DB, Caddy,
+    # 디스크 상태를 구분한다"): 이전엔 record_tick_success()/error()가
+    # 서브시스템 구분 없이 전역 슬롯 하나만 썼다 -- 그래서 'scheduler'가
+    # 실패해도 'collector'가 바로 뒤이어 성공을 기록하면 둘 다 섞여서
+    # "성공"으로 보였다. 이제 서로 완전히 독립적인지 확인.
+    from collector import health
+    orig = health._subsystems
+    health._subsystems = {}
+    try:
+        health.record_tick_success('collector')
+        health.record_tick_error('scheduler', 'scheduler boom')
+        h = health.get_health()
+        check('S1 collector success is not masked by a scheduler failure', h['collector'] == 'up', h)
+        check('S2 scheduler failure is visible independently', h['scheduler'] == 'down' and 'boom' in h['schedulerLastError']['message'], h)
+        check('S3 alerts subsystem (never ticked in this test) correctly shows down, not a stale "up"', h['alerts'] == 'down', h)
+
+        health.record_tick_success('alerts')
+        h2 = health.get_health()
+        check('S4 alerts success does not retroactively fix the still-broken scheduler', h2['scheduler'] == 'down', h2)
+        check('S5 alerts now shows up independently of the others', h2['alerts'] == 'up', h2)
+    finally:
+        health._subsystems = orig
+
+
+def test_health_record_tick_error_backward_compatible_single_arg():
+    # 기존 호출부(과거 코드, 혹시 남아있다면)가 record_tick_error(message)
+    # 하나만 넘겨도 여전히 동작하는지(= 'collector'로 간주) 확인.
+    from collector import health
+    orig = health._subsystems
+    health._subsystems = {}
+    try:
+        health.record_tick_error('legacy single-arg message')
+        h = health.get_health()
+        check('S6 single-arg record_tick_error() is treated as the collector subsystem (backward compatible)',
+              h['collector'] == 'down' and 'legacy single-arg message' in h['collectorLastError']['message'], h)
+    finally:
+        health._subsystems = orig
+
+
+def test_health_disk_check_reports_real_free_space():
+    from collector import health
+    status, free_gb = health._check_disk()
+    check('S7 disk check returns a real, positive free-space figure for this machine',
+          status in ('ok', 'warn', 'crit') and free_gb is not None and free_gb > 0, (status, free_gb))
+    h = health.get_health()
+    check('S8 disk status is surfaced through get_health()', h.get('disk') in ('ok', 'warn', 'crit'), h.get('disk'))
+
+
+def test_escalation_and_alert_retry_ticks_report_to_alerts_subsystem():
+    # 버그 수정(2026-10-17): escalation.tick/alert_retry.tick이 이전엔
+    # APScheduler 작업으로 직접 등록돼서 health에 전혀 안 보고했다 --
+    # 그 안에서 예외가 나도 "알림 엔진" 상태가 전혀 안 드러났음. 새
+    # 래퍼(_run_escalation_tick/_run_alert_retry_tick)가 실제로
+    # 'alerts' 서브시스템에 보고하는지 확인.
+    from collector import scheduler, health, escalation, alert_retry
+    orig_subsystems = health._subsystems
+    health._subsystems = {}
+    orig_esc_tick = escalation.tick
+    orig_retry_tick = alert_retry.tick
+    try:
+        escalation.tick = lambda: None
+        scheduler._run_escalation_tick()
+        h = health.get_health()
+        check('S9 _run_escalation_tick reports success to the alerts subsystem', h['alerts'] == 'up', h)
+
+        health._subsystems = {}
+        alert_retry.tick = lambda: None
+        scheduler._run_alert_retry_tick()
+        h2 = health.get_health()
+        check('S10 _run_alert_retry_tick reports success to the alerts subsystem', h2['alerts'] == 'up', h2)
+
+        health._subsystems = {}
+        escalation.tick = lambda: (_ for _ in ()).throw(RuntimeError('escalation exploded'))
+        scheduler._run_escalation_tick()
+        h3 = health.get_health()
+        check('S11 an exception inside escalation.tick is caught and reported, not left silently unlogged',
+              h3['alerts'] == 'down' and 'escalation exploded' in h3['alertsLastError']['message'], h3)
+    finally:
+        escalation.tick = orig_esc_tick
+        alert_retry.tick = orig_retry_tick
+        health._subsystems = orig_subsystems
+
+
 def main():
     for fn in (
         test_mac_from_oid_suffix, test_collect_mac_vlan_table,
@@ -1585,6 +1676,8 @@ def main():
         test_cert_check_detects_expiry_and_ip_mismatch, test_sanitize_excel_cell_blocks_formula_injection,
         test_escape_pdf_text_blocks_markup_injection, test_network_export_sanitizes_community_against_formula_injection,
         test_agent_report_rejects_stale_replayed_requests,
+        test_health_subsystems_do_not_cross_contaminate, test_health_record_tick_error_backward_compatible_single_arg,
+        test_health_disk_check_reports_real_free_space, test_escalation_and_alert_retry_ticks_report_to_alerts_subsystem,
     ):
         try:
             fn()
