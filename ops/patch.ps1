@@ -64,16 +64,32 @@ function Protect-SensitiveFiles {
     )
     foreach ($target in $targets) {
         if (-not (Test-Path $target)) { continue }
-        try {
-            & icacls $target /inheritance:d | Out-Null
-            & icacls $target /remove:g "NT AUTHORITY\Authenticated Users" | Out-Null
-            if ((Get-Item $target) -is [System.IO.DirectoryInfo]) {
-                & icacls $target /grant "${env:USERNAME}:(OI)(CI)(M)" | Out-Null
-            } else {
-                & icacls $target /grant "${env:USERNAME}:(M)" | Out-Null
+        # 버그 수정(2026-10-17, 운영 서버에 실제 패치 적용 중 실측 발견):
+        # 이미 강화되어 있는(Authenticated Users가 이미 없는) 파일에도
+        # 매번 icacls /inheritance:d 등을 그냥 시도했음 -- ACL을
+        # "바꾸는" 명령 자체는(설령 결과적으로 아무것도 안 바뀌는
+        # no-op이라도) WRITE_DAC 권한이 있어야 호출할 수 있는데, 이
+        # 스크립트는 일부러 관리자 권한 없이 돈다(파일 맨 위 주석).
+        # 그래서 "이미 끝난 상태에 또 손대려다 거부당함" -> icacls
+        # 자신이 콘솔에 바로 "Access is denied"를 찍는(이건 .NET 예외가
+        # 아니라 icacls 자체의 출력이라 try/catch로도 못 잡힘) 소음이
+        # 매 패치마다 반복됐다 -- 기능상 문제는 없었지만(이미 올바른
+        # 상태였으니) Patch.exe를 돌리는 사람 입장에서는 뭔가 깨진 것
+        # 처럼 보였음. 이미 강화돼 있으면(Authenticated Users 부재)
+        # 아예 시도조차 안 하도록 먼저 확인.
+        $currentAcl = & icacls $target 2>$null
+        if ($currentAcl -match 'Authenticated Users') {
+            try {
+                & icacls $target /inheritance:d | Out-Null
+                & icacls $target /remove:g "NT AUTHORITY\Authenticated Users" | Out-Null
+                if ((Get-Item $target) -is [System.IO.DirectoryInfo]) {
+                    & icacls $target /grant "${env:USERNAME}:(OI)(CI)(M)" | Out-Null
+                } else {
+                    & icacls $target /grant "${env:USERNAME}:(M)" | Out-Null
+                }
+            } catch {
+                Write-Warn2 "$target 파일 권한 강화에 실패했습니다(관리자 권한으로 다시 실행하면 적용됩니다; 기능에는 영향 없음): $_"
             }
-        } catch {
-            Write-Warn2 "$target 파일 권한 강화에 실패했습니다(기능에는 영향 없음): $_"
         }
     }
 }
