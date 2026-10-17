@@ -19,7 +19,15 @@ Usage:
 #>
 
 param(
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'InfraSight')
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'InfraSight'),
+    # 기본값은 실제 운영 경로 그대로 -- 일반 사용자는 이 값을 몰라도 되고,
+    # 동작도 전혀 안 바뀐다. 회귀 테스트(ops\patch_full_rollback_test.ps1)가
+    # 격리된 디스포저블 Caddy 포트를 가리키도록 오버라이드할 수 있게 하기
+    # 위한 용도로만 추가 -- 전에는 Test-PatchedHealthy에 포트가 그대로
+    # 하드코딩돼 있어서, 패치 전체 흐름(특히 헬스체크 실패->자동 롤백 분기)을
+    # 실제 운영 포트가 아닌 별도 디스포저블 설치로 끝까지 재현할 방법이
+    # 전혀 없었다.
+    [string]$HealthCheckUrl = 'https://localhost:8443/api/system/health-public'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -171,7 +179,7 @@ function Test-PatchedHealthy {
     param([int]$MaxAttempts = 10, [int]$DelaySeconds = 3)
     for ($i = 1; $i -le $MaxAttempts; $i++) {
         try {
-            $resp = Invoke-RestMethod -Uri 'https://localhost:8443/api/system/health-public' -TimeoutSec 5 -ErrorAction Stop
+            $resp = Invoke-RestMethod -Uri $HealthCheckUrl -TimeoutSec 5 -ErrorAction Stop
             if ($resp.web -eq 'up' -and $resp.database -eq 'up' -and $resp.collector -eq 'up' `
                 -and $resp.scheduler -eq 'up' -and $resp.alerts -eq 'up') {
                 return $true
