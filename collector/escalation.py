@@ -41,7 +41,9 @@ def _notify_tier(incident, tier, smtp_cfg):
 def tick():
     if storage.get_setting('escalation_enabled') != '1':
         return
-    tiers = sorted([t for t in storage.load_escalation_tiers() if t.get('enabled')], key=lambda t: t['tier_order'])
+    all_tiers = storage.load_escalation_tiers()  # 비활성 포함 -- 이미 알린 티어의 timeout_minutes를 나중에도 조회해야 함
+    tiers = sorted([t for t in all_tiers if t.get('enabled')], key=lambda t: t['tier_order'])
+    tiers_by_order = {t['tier_order']: t for t in all_tiers}
     if not tiers:
         return
     min_severity = storage.get_setting('escalation_min_severity', 'crit')
@@ -67,18 +69,30 @@ def tick():
         state = storage.get_escalation_state(incident['id'])
         if state and state.get('completed'):
             continue
-        notified_so_far = state['current_tier'] if state else 0
-        if notified_so_far == 0:
-            _notify_tier(incident, tiers[0], smtp_cfg)
-            storage.upsert_escalation_state(incident['id'], 1, now_ms, len(tiers) <= 1)
+        # 버그 수정(2026-10-17): last_notified_order는 "몇 번째로 알렸는지"
+        # 순번이 아니라 실제로 알린 티어의 tier_order 값이다 -- 중간 티어가
+        # 꺼졌다 켜져도(담당자 교체 등) 어긋나지 않으려면 활성 목록에서의
+        # "위치"가 아니라 이 안정적인 값으로 "다음은 tier_order가 이보다
+        # 큰 것 중 가장 작은 활성 티어"를 매번 다시 찾아야 한다.
+        last_notified_order = state['current_tier'] if state else 0
+        pending = [t for t in tiers if t['tier_order'] > last_notified_order]
+        if not pending:
+            storage.upsert_escalation_state(incident['id'], last_notified_order,
+                                             state['last_notified_at'] if state else now_ms, True)
             continue
-        if notified_so_far >= len(tiers):
-            storage.upsert_escalation_state(incident['id'], notified_so_far, state['last_notified_at'], True)
-            continue
-        current_tier = tiers[notified_so_far - 1]
-        elapsed_min = (now_ms - state['last_notified_at']) / 60000.0
-        if elapsed_min >= current_tier['timeout_minutes']:
-            next_tier = tiers[notified_so_far]
+        next_tier = pending[0]
+        if last_notified_order == 0:
             _notify_tier(incident, next_tier, smtp_cfg)
-            new_count = notified_so_far + 1
-            storage.upsert_escalation_state(incident['id'], new_count, now_ms, new_count >= len(tiers))
+            storage.upsert_escalation_state(incident['id'], next_tier['tier_order'], now_ms, len(pending) <= 1)
+            continue
+        # 마지막으로 알린 티어 자체는 그 사이 비활성화됐을 수도 있으니
+        # all_tiers(비활성 포함)에서 조회 -- timeout_minutes는 "그 담당자를
+        # 알린 시점에 기다려야 했던 시간"으로 여전히 유효한 참고값. 그마저
+        # 삭제됐으면(설정 자체가 없어짐) 더 기다릴 근거가 없으므로 즉시
+        # 다음 티어로 넘어간다(0분 대기로 취급).
+        last_tier_cfg = tiers_by_order.get(last_notified_order)
+        timeout_minutes = last_tier_cfg['timeout_minutes'] if last_tier_cfg else 0
+        elapsed_min = (now_ms - state['last_notified_at']) / 60000.0
+        if elapsed_min >= timeout_minutes:
+            _notify_tier(incident, next_tier, smtp_cfg)
+            storage.upsert_escalation_state(incident['id'], next_tier['tier_order'], now_ms, len(pending) <= 1)

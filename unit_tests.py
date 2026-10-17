@@ -592,10 +592,14 @@ def test_sample_snmp_flags_low_confidence_traffic():
         check('J10 first tick: no prior sample -> no trafficLowConfidence flag yet',
               'trafficLowConfidence' not in entity, entity.get('trafficLowConfidence'))
 
-        # 2틱: 60초가 지났는데(기본 2초 틱의 30배) 카운터는 정상적으로
+        # 2틱: 60초 넘게 지났는데(기본 2초 틱의 30배) 카운터는 정상적으로
         # 증가만 함 -- 카운터 자체는 'ok'지만 측정 간격이 너무 길어서
-        # lowConfidence가 떠야 한다(비정상 카운터 변화 검증 항목).
-        entity['_snmpPrev']['t'] -= 60.0
+        # lowConfidence가 떠야 한다(비정상 카운터 변화 검증 항목). 정확히
+        # 60.0이 아니라 60.5를 빼는 이유: 두 time.time() 호출 사이 실제
+        # 경과 시간이 OS 클럭 해상도 때문에 0으로 반올림될 수 있어서,
+        # 정확히 60.0으로 빼면 dt가 경계값(== 60, "신뢰 가능" 쪽)에
+        # 걸려 테스트가 간헐적으로 실패했었음(실측으로 확인).
+        entity['_snmpPrev']['t'] -= 60.5
         canned['in_oct'] = {'1': '2500000'}
         canned['out_oct'] = {'1': '1200000'}
         sc.sample_snmp(entity, device_row)
@@ -650,6 +654,48 @@ def test_server_category_module_filter():
 # ======================================================================
 # E. Incident lifecycle (storage.py add_incident/ack_incident)
 # ======================================================================
+
+def test_related_network_failure_correlation():
+    # 신규 기능(2026-10-17, "상위 네트워크 장비 장애와 하위 장비 장애의
+    # 연관성을 분석할 수 있도록 한다"): 스위치(net)가 지금 연속 실패 중
+    # 이고, 그 스위치와 device_links로 바로 연결된 서버가 REACHABILITY
+    # 장애를 새로 발생시키면, 메시지에 그 스위치가 언급돼야 한다.
+    # 연결 안 된(또는 연결됐지만 지금 멀쩡한) 스위치는 언급되면 안 된다.
+    switch_down = 'unittest_corr_switch_down'
+    switch_up = 'unittest_corr_switch_up'
+    server = 'unittest_corr_server'
+    conn = storage.get_db()
+    for d in (switch_down, switch_up, server):
+        conn.execute("DELETE FROM devices WHERE id=?", (d,))
+    conn.execute("DELETE FROM device_links WHERE from_device_id=? OR to_device_id=?", (server, server))
+    conn.execute("DELETE FROM incidents WHERE device_id=?", (server,))
+    now_ms = int(time.time() * 1000)
+    conn.execute("INSERT INTO devices(id,category,name,mode,ip,fields,created_at,consecutive_failures) "
+                 "VALUES (?,'net','DownSwitch','ping','127.0.0.60','{}',?,5)", (switch_down, now_ms))
+    conn.execute("INSERT INTO devices(id,category,name,mode,ip,fields,created_at,consecutive_failures) "
+                 "VALUES (?,'net','UpSwitch','ping','127.0.0.61','{}',?,0)", (switch_up, now_ms))
+    conn.execute("INSERT INTO devices(id,category,name,mode,ip,fields,created_at,consecutive_failures) "
+                 "VALUES (?,'server','TestServer','ping','127.0.0.62','{}',?,0)", (server, now_ms))
+    conn.commit()
+    storage.replace_lldp_links(server, [(switch_down, '1', 'Gi0/1'), (switch_up, '2', 'Gi0/2')])
+    conn.close()
+    try:
+        storage.add_incident('crit', 'TestServer', 'TEST', '응답 없음', device_id=server, event_type='REACHABILITY', _no_alert=True)
+        conn = storage.get_db()
+        row = conn.execute("SELECT * FROM incidents WHERE device_id=? ORDER BY id DESC LIMIT 1", (server,)).fetchone()
+        conn.close()
+        check('M1 new REACHABILITY incident message mentions the directly-linked, currently-failing network device',
+              'DownSwitch' in row['message'], row['message'])
+        check('M2 message does NOT mention the linked-but-healthy switch', 'UpSwitch' not in row['message'], row['message'])
+    finally:
+        conn = storage.get_db()
+        for d in (switch_down, switch_up, server):
+            conn.execute("DELETE FROM devices WHERE id=?", (d,))
+        conn.execute("DELETE FROM device_links WHERE from_device_id=? OR to_device_id=?", (server, server))
+        conn.execute("DELETE FROM incidents WHERE device_id=?", (server,))
+        conn.commit()
+        conn.close()
+
 
 def test_ack_then_recovery():
     dev, event = 'unittest_ack_dev', 'TEST_EVENT'
@@ -778,6 +824,74 @@ def test_maintenance_suppresses_and_renotifies():
             storage.delete_escalation_tier(tier_id)
         storage.set_escalation_settings(orig_settings['enabled'], orig_settings['minSeverity'])
         conn = storage.get_db()
+        conn.execute("DELETE FROM incidents WHERE device_id=?", (dev,))
+        conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+        conn.commit()
+        conn.close()
+
+
+def test_escalation_tier_order_stable_across_enable_disable():
+    # 버그 수정(2026-10-17, "에스컬레이션 중복 발송 및 담당자 변경 상황을
+    # 검증한다"): escalation_state.current_tier가 "몇 번째로 알렸는지"
+    # 순번 카운트였을 때는, 2차를 알린 뒤 비활성화하고 다시 활성화하면(담당자
+    # 교체/이탈 후 복귀의 흔한 형태) 카운트와 활성 목록의 "위치"가 어긋나서
+    # 3차를 또 알리는(중복 발송) 결과가 재현됐음. tier_order 값 자체를
+    # 저장하도록 고친 뒤에는 어떤 순서로 켜고 꺼도 각 티어가 정확히 한 번만
+    # 알림을 받아야 한다.
+    dev = 'unittest_esc_order_dev'
+    event = 'TEST_ESC_ORDER_EVENT'
+    conn = storage.get_db()
+    conn.execute("DELETE FROM incidents WHERE device_id=?", (dev,))
+    conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+    now_ms = int(time.time() * 1000)
+    conn.execute("INSERT INTO devices(id,category,name,mode,ip,fields,created_at,maintenance_enabled,monitoring_enabled) "
+                 "VALUES (?,'server','EscOrderDev','ping','127.0.0.53','{}',?,0,1)", (dev, now_ms))
+    conn.commit()
+    conn.close()
+
+    orig_settings = storage.get_escalation_settings_public()
+    tier_ids = []
+    incident_id = None
+    try:
+        storage.add_incident('crit', 'EscOrderDev', 'TEST', 'down', device_id=dev, event_type=event, _no_alert=True)
+        conn = storage.get_db()
+        row = conn.execute("SELECT id FROM incidents WHERE device_id=?", (dev,)).fetchone()
+        conn.close()
+        incident_id = row['id']
+
+        storage.set_escalation_settings(True, 'warn')
+        tier_ids.append(storage.create_escalation_tier('1차', 't1@example.com', 0))
+        tier2_id = storage.create_escalation_tier('2차', 't2@example.com', 0)
+        tier_ids.append(tier2_id)
+        tier_ids.append(storage.create_escalation_tier('3차', 't3@example.com', 0))
+
+        escalation.tick()  # 1차 알림
+
+        storage.update_escalation_tier(tier2_id, enabled=False)  # 2차 담당자 이탈 흉내 -- 차례가 오기 전에 미리 꺼둠
+        escalation.tick()  # 1차 timeout 지남, 2차는 지금 비활성 -> 3차로 바로 넘어가야 함
+
+        storage.update_escalation_tier(tier2_id, enabled=True)  # 2차 복귀/재배치
+        escalation.tick()  # 3차가 마지막이라 이미 완료 -> 아무도 또 알리면 안 됨
+
+        conn = storage.get_db()
+        counts = {r['tier_order']: r['c'] for r in conn.execute(
+            "SELECT tier_order, COUNT(*) c FROM escalation_log WHERE incident_id=? GROUP BY tier_order", (incident_id,)).fetchall()}
+        conn.close()
+        check('L1 tier 1 notified exactly once', counts.get(1) == 1, counts)
+        check('L2 tier 2 notified zero times (was disabled exactly when its turn came, never retroactively notified)',
+              counts.get(2, 0) == 0, counts)
+        check('L3 tier 3 notified exactly once -- NOT duplicated by tier 2 later being re-enabled', counts.get(3) == 1, counts)
+        state = storage.get_escalation_state(incident_id)
+        check('L4 escalation state correctly marks completed once the highest tier_order has been notified',
+              state is not None and state['completed'] == 1, state)
+    finally:
+        for tid in tier_ids:
+            storage.delete_escalation_tier(tid)
+        storage.set_escalation_settings(orig_settings['enabled'], orig_settings['minSeverity'])
+        conn = storage.get_db()
+        if incident_id:
+            conn.execute("DELETE FROM escalation_log WHERE incident_id=?", (incident_id,))
+            conn.execute("DELETE FROM escalation_state WHERE incident_id=?", (incident_id,))
         conn.execute("DELETE FROM incidents WHERE device_id=?", (dev,))
         conn.execute("DELETE FROM devices WHERE id=?", (dev,))
         conn.commit()
@@ -1063,8 +1177,10 @@ def main():
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
         test_sample_snmp_flags_low_confidence_traffic,
+        test_related_network_failure_correlation,
         test_ack_then_recovery, test_ack_then_escalate_reopens, test_agent_mode_escalation,
-        test_maintenance_suppresses_and_renotifies, test_alert_retry_queue,
+        test_maintenance_suppresses_and_renotifies, test_escalation_tier_order_stable_across_enable_disable,
+        test_alert_retry_queue,
         test_agent_token_not_in_argv,
         test_classify_snmp_error, test_snmp_get_returns_tuple_on_unreachable,
         test_sflow_classic_sample_captures_version_and_direction, test_sflow_expanded_sample_offset_fixed,

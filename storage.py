@@ -476,6 +476,19 @@ def init_db():
         enabled INTEGER DEFAULT 1,
         created_at INTEGER NOT NULL
     )''')
+    # 버그 수정(2026-10-17, "에스컬레이션 중복 발송 및 담당자 변경 상황을
+    # 검증한다"): current_tier는 원래 "지금까지 몇 명 알렸는지"라는 순번
+    # 카운트였는데, escalation.py의 tick()이 그 카운트를 매번 새로 읽어온
+    # enabled 티어 목록에 "위치로"(tiers[count-1]) 대입해서 다음 담당자를
+    # 찾았다. 그래서 알린 뒤에 중간 티어가 꺼졌다가(비활성화) 다시
+    # 켜지면(재활성화, 담당자 교체/복귀의 흔한 형태) 카운트와 실제 목록의
+    # 위치가 어긋나서 -- 이미 알린 티어를 또 알리거나(중복 발송), 아직
+    # 못 알린 티어를 건너뛸 수 있었음(실제로 이 틀로 재현 확인). 그래서
+    # 이제 current_tier는 순번이 아니라 "실제로 마지막으로 알린 티어의
+    # tier_order 값"(0=아직 아무도 안 알림)을 저장한다 -- tier_order는
+    # 생성 시 한 번 고정되고 활성/비활성 여부와 무관하게 안 바뀌므로, 중간
+    # 티어가 몇 번을 꺼졌다 켜져도 "tier_order가 이 값보다 큰 것 중 가장
+    # 작은 것"으로 다음 대상을 고르면 항상 정확하다.
     conn.execute('''CREATE TABLE IF NOT EXISTS escalation_state(
         incident_id INTEGER PRIMARY KEY,
         current_tier INTEGER NOT NULL DEFAULT 0,
@@ -960,6 +973,29 @@ def compute_collection_state(device_row, warn_at=1, crit_at=2):
     return 'crit' if failures >= crit_at else 'warn' if failures >= warn_at else 'good'
 
 
+def _find_related_network_failure(conn, device_id):
+    """신규 기능(2026-10-17, "상위 네트워크 장비 장애와 하위 장비 장애의
+    연관성을 분석할 수 있도록 한다"): device_id와 device_links로 바로
+    연결된 'net' 카테고리 장비 중 지금 연속 실패 중인(consecutive_
+    failures>0) 것들을 돌려준다. device_id 자신이 'net'이어도 제외하지
+    않음(스위치 체인에서 한쪽이 다른 쪽 장애의 영향을 받는 경우도
+    유효한 상관관계이기 때문). 호출자(add_incident)가 이미 열어둔
+    connection을 그대로 받는다 -- 같은 트랜잭션 중에 새 connection을 또
+    여는 걸 피하기 위함."""
+    links = conn.execute(
+        "SELECT from_device_id, to_device_id FROM device_links WHERE from_device_id=? OR to_device_id=?",
+        (device_id, device_id)).fetchall()
+    neighbor_ids = {l['to_device_id'] if l['from_device_id'] == device_id else l['from_device_id'] for l in links}
+    neighbor_ids.discard(device_id)
+    if not neighbor_ids:
+        return None
+    placeholders = ','.join('?' * len(neighbor_ids))
+    rows = conn.execute(
+        f"SELECT id, name FROM devices WHERE id IN ({placeholders}) AND category='net' AND consecutive_failures > 0",
+        tuple(neighbor_ids)).fetchall()
+    return [dict(r) for r in rows] or None
+
+
 def add_incident(severity, source, category, message, device_id=None, event_type=None, _no_alert=False, maintenance=False):
     """Records an event.
 
@@ -1015,8 +1051,23 @@ def add_incident(severity, source, category, message, device_id=None, event_type
             existing = conn.execute(
                 "SELECT id, severity, status FROM incidents WHERE device_id=? AND event_type=? AND status IN ('open','ack') ORDER BY id DESC LIMIT 1",
                 (device_id, event_type)).fetchone()
+            is_new_or_escalated = (existing['severity'] != severity) if existing else True
+            # 신규 기능(2026-10-17, "상위 네트워크 장비 장애와 하위 장비
+            # 장애의 연관성을 분석할 수 있도록 한다"): 새로 열리거나
+            # 악화되는 REACHABILITY 장애에만(반복되는 occurrence_count
+            # 증가만으로는 매 poll tick마다 DB 조회가 추가되는 과부하라서
+            # 제외) 토폴로지상 바로 연결된 'net' 장비 중 지금 같이 연속
+            # 실패 중인 게 있는지 확인해서 메시지에 덧붙인다 -- 완전한
+            # "유일한 경로" 인과관계 분석은 이 프로젝트의 토폴로지가 고정
+            # 트리를 보장하지 않아 할 수 없고, 대신 "바로 옆 네트워크 장비도
+            # 지금 같이 안 보임"이라는 더 보수적이지만 틀릴 위험이 적은
+            # 상관관계만 표시한다(see _find_related_network_failure).
+            if is_new_or_escalated and event_type == 'REACHABILITY':
+                related = _find_related_network_failure(conn, device_id)
+                if related:
+                    names = ', '.join(r['name'] for r in related)
+                    message = f"{message} (연결된 네트워크 장비 '{names}'도 현재 응답 없음 -- 상위 장비 장애의 영향일 수 있습니다)"
             if existing:
-                is_new_or_escalated = existing['severity'] != severity
                 # An ack'd incident that gets worse (severity actually
                 # changes) is re-flagged as 'open' -- whoever acked it did so
                 # for the old severity, not this new one.
@@ -1025,7 +1076,6 @@ def add_incident(severity, source, category, message, device_id=None, event_type
                     'UPDATE incidents SET severity=?, message=?, last_occurred_at=?, occurrence_count=occurrence_count+1, during_maintenance=?, status=? WHERE id=?',
                     (severity, message, now, 1 if maintenance else 0, new_status, existing['id']))
             else:
-                is_new_or_escalated = True
                 conn.execute(
                     'INSERT INTO incidents(ts,severity,source,category,message,status,device_id,event_type,'
                     'first_occurred_at,last_occurred_at,occurrence_count,during_maintenance) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)',
