@@ -1,0 +1,27 @@
+name: unit tests
+
+# unit_tests.py is the one test file that needs no running server (no Caddy,
+# no HTTPS, no admin account) -- it imports storage.py/collector/*.py/agent.py
+# directly and exercises them in-process, so it's the only one of the three
+# test files (functional_tests.py/security_tests.py need a live instance)
+# that's actually practical to run on every push/PR.
+#
+# windows-latest, not ubuntu-latest: requirements.txt pins pywin32 (Windows
+# Event Log access), which has no install on Linux -- this app is Windows-only
+# by design (icacls, scheduled tasks, services), so CI should match that.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python unit_tests.py
