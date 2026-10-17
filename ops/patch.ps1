@@ -48,6 +48,36 @@ function Invoke-Native([scriptblock]$Command) {
     try { & $Command } finally { $ErrorActionPreference = $prevEAP }
 }
 
+# install.ps1의 Protect-SensitiveFiles와 동일(그 함수 쪽 주석에 전체 배경).
+# 여기 다시 두는 이유: 이 설치가 그 보안 강화(2026-10-17)보다 먼저
+# 설치됐다면 infrasight.db/backups/암호화 키가 여전히 느슨한 상속 ACL
+# (Authenticated Users: 수정)을 가진 채로 남아있을 수 있어서, 패치 때도
+# 같은 강화를 다시 적용해야 한다 -- 이미 적용돼 있으면(Authenticated
+# Users가 이미 없음) icacls가 그냥 조용히 아무 변화 없이 끝나므로 매번
+# 패치마다 돌려도 안전(멱등).
+function Protect-SensitiveFiles {
+    param([string]$InstallDir)
+    $targets = @(
+        (Join-Path $InstallDir 'backups'),
+        (Join-Path $InstallDir 'infrasight.db'),
+        (Join-Path $InstallDir '.infrasight_credentials_key')
+    )
+    foreach ($target in $targets) {
+        if (-not (Test-Path $target)) { continue }
+        try {
+            & icacls $target /inheritance:d | Out-Null
+            & icacls $target /remove:g "NT AUTHORITY\Authenticated Users" | Out-Null
+            if ((Get-Item $target) -is [System.IO.DirectoryInfo]) {
+                & icacls $target /grant "${env:USERNAME}:(OI)(CI)(M)" | Out-Null
+            } else {
+                & icacls $target /grant "${env:USERNAME}:(M)" | Out-Null
+            }
+        } catch {
+            Write-Warn2 "$target 파일 권한 강화에 실패했습니다(기능에는 영향 없음): $_"
+        }
+    }
+}
+
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host ' InfraSight 패치 적용' -ForegroundColor Cyan
 Write-Host " 설치 위치: $InstallDir"
@@ -97,6 +127,8 @@ Write-Ok "최신 커밋으로 갱신됨: $headNow"
 
 Write-Step '[2/3] 파이썬 패키지 확인 (requirements.txt)'
 Invoke-Native { & $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt') }
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'backups') | Out-Null
+Protect-SensitiveFiles -InstallDir $InstallDir
 Write-Ok '확인 완료'
 
 Write-Step '[3/3] 실행 중인 프로세스 재시작'

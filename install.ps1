@@ -45,6 +45,46 @@ function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow }
 
+# 버그 수정(2026-10-17, 보안감사 Phase A #16/#35): infrasight.db/backups/
+# 암호화 키 파일이 전부 "Authenticated Users: 수정" 상속 ACL로 생성돼서,
+# 이 PC에 로그인 가능한 다른 어떤 계정도 백업 파일과 암호화 키 파일을
+# 같이 복사해 SNMP/SMTP 자격증명을 오프라인으로 풀어볼 수 있었다(필드별
+# Fernet 암호화 자체는 멀쩡하지만, 키가 바로 옆에 똑같이 노출돼 있으면
+# 그 암호화가 사실상 의미가 없음). 그 길을 막되, 서비스 자체는 계속
+# 돌아가야 한다 -- ops\register-task.ps1이 등록하는 작업은 일부러
+# -RunLevel Limited로 돈다(그 스크립트 자신의 주석 참고: install.ps1의
+# 하위 단계로도 실행되므로 UAC 상승이 필요하면 그 자리에서 멈춰버림).
+# Limited 토큰은 이 사용자가 Administrators 그룹에 속해 있어도 그 그룹의
+# 권한을 실제로는 못 쓴다(실측으로 확인: Authenticated Users만 빼고
+# BUILTIN\Administrators(F)만 남겨놨더니 바로 "attempt to write a
+# readonly database"로 서비스가 멈췄음) -- 그래서 이 설치를 실행하는
+# 사용자 계정 자신에게 그룹을 거치지 않고 직접 Modify를 줘야 한다.
+# 실패해도(예: 이 사용자가 그 파일의 소유자가 아니어서 ACL을 못 바꾸는
+# 드문 경우) 설치 자체를 중단시키지 않는다 -- 이건 심화 방어이고, 핵심
+# 기능(수집/알림)과는 무관하므로.
+function Protect-SensitiveFiles {
+    param([string]$InstallDir)
+    $targets = @(
+        (Join-Path $InstallDir 'backups'),
+        (Join-Path $InstallDir 'infrasight.db'),
+        (Join-Path $InstallDir '.infrasight_credentials_key')
+    )
+    foreach ($target in $targets) {
+        if (-not (Test-Path $target)) { continue }
+        try {
+            & icacls $target /inheritance:d | Out-Null
+            & icacls $target /remove:g "NT AUTHORITY\Authenticated Users" | Out-Null
+            if ((Get-Item $target) -is [System.IO.DirectoryInfo]) {
+                & icacls $target /grant "${env:USERNAME}:(OI)(CI)(M)" | Out-Null
+            } else {
+                & icacls $target /grant "${env:USERNAME}:(M)" | Out-Null
+            }
+        } catch {
+            Write-Warn2 "$target 파일 권한 강화에 실패했습니다(기능에는 영향 없음): $_"
+        }
+    }
+}
+
 # git/winget/mkcert/pip all routinely write normal progress or status text
 # to STDERR (e.g. git fetch's own "From https://..." line) -- with
 # $ErrorActionPreference='Stop' in effect, PowerShell can treat that stderr
@@ -315,6 +355,12 @@ Push-Location $InstallDir
 # 드러났음.
 if ($LASTEXITCODE -ne 0) { Pop-Location; throw "데이터베이스 초기화 실패 (종료 코드 $LASTEXITCODE)" }
 Pop-Location
+# backups\는 평소엔 첫 백업이 실제로 돌 때(scheduler.py의 일일 작업,
+# 또는 수동 "지금 백업") storage.backup_database가 처음 만든다 -- 그때
+# 가서야 생기면 이 설치 시점 권한 강화를 못 받고 상위 폴더 기본 ACL을
+# 그대로 상속받으므로, 여기서 미리 만들어 바로 강화한다.
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'backups') | Out-Null
+Protect-SensitiveFiles -InstallDir $InstallDir
 Write-Ok '완료'
 
 # ------------------------------------------------------- [7] 관리자 계정 --
