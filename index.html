@@ -5994,7 +5994,7 @@ function drawPingDevice(e, catLabel){
     ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
     ${trafficCard ? `<div style="${pingGrid2}">${trafficCard}</div>` : ''}
     ${ifaceCard ? `
-    <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:10px">
+    <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:10px;align-items:start">
       <div style="display:flex;flex-direction:column;gap:10px;min-width:0">${envCard}${responseTimeCard}</div>
       ${ifaceCard}
     </div>` : `
