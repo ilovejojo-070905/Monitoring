@@ -2886,6 +2886,24 @@ def index():
     return resp
 
 
+# static_folder=None means nothing under BASE_DIR is browsable by default
+# (see the comment near its definition) -- this is the same explicit-whitelist
+# pattern as index()/agent.py/etc, just for the static background images used
+# by the UI. No auth required: the login screen itself (bg-login.jpg) needs to
+# render before login, and the sidebar/topology images are visible to any
+# logged-in viewer regardless of role.
+_UI_ASSET_WHITELIST = {'bg-login.jpg', 'bg-sidebar.jpg', 'bg-topology.jpg'}
+
+
+@app.get('/assets/<path:filename>')
+def ui_asset(filename):
+    if filename not in _UI_ASSET_WHITELIST:
+        return ('', 404)
+    resp = send_from_directory(os.path.join(BASE_DIR, 'assets'), filename)
+    resp.headers['Cache-Control'] = 'public, max-age=604800'
+    return resp
+
+
 def _agent_exe_path():
     return os.path.join(BASE_DIR, 'dist', 'InfraSightAgent.exe')
 

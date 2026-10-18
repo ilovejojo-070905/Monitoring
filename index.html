@@ -94,7 +94,7 @@
     min-height:100%;
   }
   .sidebar{
-    grid-area:sidebar;background:var(--sidebar-bg);border-right:1px solid var(--sidebar-border);
+    grid-area:sidebar;background:url('/assets/bg-sidebar.jpg') center/cover no-repeat,var(--sidebar-bg);border-right:1px solid var(--sidebar-border);
     display:flex;flex-direction:column;padding:18px 12px;gap:4px;position:sticky;top:0;height:100vh;
     overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--sidebar-border) transparent;
   }
@@ -282,7 +282,8 @@
   .topo-wrap{flex:1;min-height:0;overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);background:
     radial-gradient(circle at 20% 20%,rgba(124,92,255,.10),transparent 40%),
     radial-gradient(circle at 80% 70%,rgba(0,230,168,.08),transparent 45%),
-    radial-gradient(circle at 50% 100%,rgba(255,62,201,.07),transparent 50%),var(--bg-elevated);}
+    radial-gradient(circle at 50% 100%,rgba(255,62,201,.07),transparent 50%),
+    url('/assets/bg-topology.jpg') center/cover no-repeat,var(--bg-elevated);}
   /* transform:translateZ(0) forces this onto its own compositor layer
      permanently, instead of only getting promoted (and only then rasterized
      at full sharpness) the moment something inside it -- a node's hover
@@ -458,7 +459,7 @@
   }
 </style>
 
-<div id="loginOverlay" style="position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;background:rgba(4,6,14,.72);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);">
+<div id="loginOverlay" style="position:fixed;inset:0;z-index:200;display:none;align-items:center;justify-content:center;background:linear-gradient(rgba(4,6,14,.72),rgba(4,6,14,.72)),url('/assets/bg-login.jpg') center/cover no-repeat;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);">
   <form id="loginForm" style="width:340px;max-width:90vw;background:var(--surface);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid var(--border);border-radius:var(--radius);padding:32px;display:flex;flex-direction:column;gap:14px;box-shadow:0 30px 80px rgba(0,0,0,.5),var(--glow-accent);">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
       <div style="width:36px;height:36px;border-radius:10px;background:var(--accent-gradient);box-shadow:var(--glow-accent),0 0 0 1px rgba(255,255,255,.12) inset;display:flex;align-items:center;justify-content:center;flex:none;">
