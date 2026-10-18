@@ -150,6 +150,34 @@ foreach ($root in $browserRegRoots) {
 Write-Ok "원격 접속 Native Messaging Host 등록 완료 (Chrome + Edge, LAN IP: $lanIp)"
 Write-Diag '레지스트리 등록 완료(Chrome+Edge) -- 정상 종료'
 
+# 실제 원인 발견(2026-10-18, 같은 PC에서 실측): HKCU 등록만으로는 Chrome은
+# 정상 동작했지만 Edge는 host.json이 경로까지 전부 정확한데도 계속
+# "Specified native messaging host not found"였다 -- 레지스트리 키/확장
+# 프로그램 로드/완전 재시작까지 전부 다시 확인해도 재현됐다. Chromium의
+# native messaging host 조회는 "NativeMessagingUserLevelHosts" 정책(관리자가
+# 안 건드리면 각 브라우저 자체 기본값을 따름)에 따라 사용자 단위(HKCU)
+# 등록을 아예 무시하고 기기 단위(HKLM)만 보기도 하는데, 이 PC에는 그런
+# 정책이 명시적으로 설정돼 있지 않았다(레지스트리에 해당 정책 키 자체가
+# 없음) -- 즉 Edge 자체의 내장 기본값이 Chrome과 다르다는 뜻으로 보인다.
+# HKLM 등록은 관리자 권한이 있을 때만(최초 설치의 관리자 권한 설치
+# 흐름에서는 항상 있음, 패치 때는 보통 없음) 가능하므로, 실패해도 전체
+# 설치를 막지 않게 조용히 건너뛴다 -- HKCU 등록은 이미 끝났으니 Chrome은
+# 이것 없이도 계속 정상 동작한다.
+try {
+    foreach ($root in @(
+        'HKLM:\Software\Google\Chrome\NativeMessagingHosts',
+        'HKLM:\Software\Microsoft\Edge\NativeMessagingHosts'
+    )) {
+        $regKeyPath = Join-Path $root 'com.infrasight.remote'
+        New-Item -Path $regKeyPath -Force -ErrorAction Stop | Out-Null
+        Set-ItemProperty -Path $regKeyPath -Name '(default)' -Value (Join-Path $hostDir 'host.json') -ErrorAction Stop
+    }
+    Write-Ok '기기 단위(HKLM) Native Messaging Host 등록도 완료 (일부 Edge 환경에서 사용자 단위 등록만으로는 인식 못 하는 문제 대비)'
+    Write-Diag 'HKLM 등록 완료'
+} catch {
+    Write-Diag "HKLM 등록 건너뜀(관리자 권한 없음 -- 정상, patch 흐름에서는 원래 없음): $_"
+}
+
 # host.ps1의 Resolve-Putty와 같은 위치들을 확인한다 (install.ps1 쪽에서
 # winget으로 이미 설치했으면 보통 바로 찾아지지만, 그 전에 수동으로 PuTTY를
 # 이미 깔아둔 PC는 다른 위치일 수 있다).
