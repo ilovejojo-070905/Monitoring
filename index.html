@@ -420,9 +420,9 @@
   .iface-modal-body{padding:18px 20px 26px;display:flex;flex-direction:column;gap:16px}
   .drawer-body{padding:18px 20px 40px;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
   .kv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  .kv{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px}
+  .kv{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;min-width:0}
   .kv span{font-size:12.5px;color:var(--text-faint)}
-  .kv b{font-family:var(--font-mono);font-size:17px}
+  .kv b{font-family:var(--font-mono);font-size:17px;overflow-wrap:break-word;word-break:break-word;max-width:100%}
 
   /* ---------- incidents ---------- */
   .sev-strip{width:3px;border-radius:3px;display:inline-block;height:16px;vertical-align:middle;margin-right:8px;box-shadow:0 0 6px currentColor}
