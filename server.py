@@ -1018,7 +1018,12 @@ def _agent_install_info(fields, lan_ip, token):
         return {
             'agentOs': 'linux',
             'agentDownloadUrl': '/download/agent-source',
-            'agentCommand': f"pip install psutil && python3 agent.py --server http://{lan_ip}:{PORT} --token {token} --install-startup",
+            # 'pip'(심볼릭 링크)가 아니라 'python3 -m pip'를 쓰는 이유: 많은
+            # Linux 배포판이 python3-pip 패키지만 설치해도 'pip' 명령 자체는
+            # 안 깔려 있거나(최소 설치 이미지 등), 있어도 다른 파이썬을
+            # 가리킬 수 있음 -- 이미 이 명령 자체가 명시적으로 python3를
+            # 쓰므로, pip도 반드시 같은 인터프리터에 설치되도록 일관되게.
+            'agentCommand': f"python3 -m pip install psutil && python3 agent.py --server http://{lan_ip}:{PORT} --token {token} --install-startup",
         }
     return {
         'agentOs': 'windows',

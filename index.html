@@ -2993,7 +2993,7 @@ function renderRegisterSkeleton(){
           </div>
 
           <div id="agent-command-box-linux" class="card" style="display:none;margin-top:16px;background:var(--surface-2);border-style:dashed">
-            <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px">등록 완료. agent.py를 받아서 <b>해당 Linux 서버</b>에서 아래 명령어로 실행하세요 (최초 1회 <code class="mono">pip install psutil</code> 필요 -- 아래 명령어에 포함되어 있습니다).</div>
+            <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px">등록 완료. agent.py를 받아서 <b>해당 Linux 서버</b>에서 아래 명령어로 실행하세요 (최초 1회 <code class="mono">python3 -m pip install psutil</code> 필요 -- 아래 명령어에 포함되어 있습니다).</div>
             <a id="agent-source-link" href="#" target="_blank" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">⬇ agent.py 다운로드</a>
             <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
               <code id="agent-command-text-linux" class="mono" style="flex:1;background:var(--surface-2);padding:8px 10px;border-radius:6px;font-size:11.5px;overflow-x:auto;white-space:nowrap;display:block"></code>
