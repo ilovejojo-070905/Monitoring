@@ -179,24 +179,58 @@ def relocate_and_relaunch_if_needed(server, token):
     server/token there with save_config() before spawning the copy gets it
     the exact same result (the relaunched copy's own load_config() picks it
     straight up, no args needed) without ever putting the token on a command
-    line anyone else on the box can read."""
-    if not IS_WINDOWS or not getattr(sys, 'frozen', False):
-        return False
-    target_dir = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'InfraSightAgent')
-    target = os.path.join(target_dir, 'InfraSightAgent.exe')
-    current = os.path.abspath(sys.executable)
+    line anyone else on the box can read.
+
+    Linux mirror (2026-10-18, "터미널을 계속 띄워두지 않아도 되게"): the
+    one-click InfraSightAgent.py run straight from wherever it was
+    downloaded stays attached to whatever terminal/SSH session launched
+    it -- closing that session kills the monitoring loop, and until now
+    the only way around that was asking the user to remember
+    `nohup ... &` by hand, which defeats the point of a one-click
+    installer. Same idea as the Windows side: copy to the same stable
+    per-user folder config_path() already uses, then launch that copy in
+    a brand new OS session with stdio discarded -- `start_new_session=True`
+    is Python's cross-platform name for what's really setsid() here, which
+    detaches the child from the controlling terminal entirely (the same
+    detachment a cron @reboot job already gets for free, just available
+    immediately instead of only after the next reboot)."""
+    if getattr(sys, 'frozen', False):
+        if not IS_WINDOWS:
+            return False  # this project never produces a non-Windows frozen build
+        target_dir = os.path.join(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~'), 'InfraSightAgent')
+        target = os.path.join(target_dir, 'InfraSightAgent.exe')
+        current = os.path.abspath(sys.executable)
+        if os.path.normcase(current) == os.path.normcase(target):
+            return False
+        _stop_other_running_instances()
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            shutil.copy2(current, target)
+            if server and token:
+                save_config({'server': server, 'token': token})
+            subprocess.Popen([target], creationflags=subprocess.CREATE_NO_WINDOW)
+            return True
+        except Exception as e:
+            print('[agent] 파일을 표준 위치로 복사하지 못해 현재 위치에서 계속 실행합니다:', e)
+            return False
+    if IS_WINDOWS:
+        return False  # a non-frozen .py run on Windows (dev/testing) has nothing to relocate
+    target_dir = os.path.join(os.path.expanduser('~/.config'), 'InfraSightAgent')
+    target = os.path.join(target_dir, 'InfraSightAgent.py')
+    current = os.path.abspath(__file__)
     if os.path.normcase(current) == os.path.normcase(target):
         return False
-    _stop_other_running_instances()
     try:
         os.makedirs(target_dir, exist_ok=True)
         shutil.copy2(current, target)
         if server and token:
             save_config({'server': server, 'token': token})
-        subprocess.Popen([target], creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.Popen([sys.executable, target], start_new_session=True,
+                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f'[agent] 백그라운드로 전환했습니다 (이 터미널을 닫아도 계속 실행됩니다): {target}')
         return True
     except Exception as e:
-        print('[agent] 파일을 표준 위치로 복사하지 못해 현재 위치에서 계속 실행합니다:', e)
+        print('[agent] 파일을 표준 위치로 복사하지 못해 현재 위치(포그라운드)에서 계속 실행합니다:', e)
         return False
 
 
@@ -838,6 +872,18 @@ def main():
     if server and token:
         hide_console_window()
 
+    # 버그 수정(2026-10-18, Linux 원클릭 백그라운드 설치 구현 중 실측으로
+    # 발견): is_fresh_embedded 쪽 자동 시작 등록은 재배치 시도 *전에* 먼저
+    # 해야 한다 -- 재배치가 성공하면 바로 아래에서 곧장 return하고, 그렇게
+    # 재배치된 "자식" 프로세스 쪽에서는 config.json이 이미 (재배치 과정에서
+    # save_config로) 저장돼 있어 is_fresh_embedded가 다시 False로 계산되므로,
+    # 원래 이 블록이 있던 자리(재배치 분기 다음)로는 부모/자식 어느 쪽에서도
+    # 실제로 도달하지 못했다 -- 즉 원클릭 설치의 가장 흔한 경로(재배치 성공)
+    # 에서 자동 시작이 단 한 번도 등록되지 않고 있었다. server/token은 이미
+    # 위에서 다 정해진 뒤이므로 여기서 먼저 호출해도 안전하다.
+    if is_fresh_embedded and server and token:
+        install_startup()
+
     if is_fresh_embedded and relocate_and_relaunch_if_needed(server, token):
         return  # the relocated copy takes over from here; this process is done
 
@@ -855,7 +901,9 @@ def main():
     if args.server or args.token or from_prompt or is_fresh_embedded:
         save_config({'server': server, 'token': token})
 
-    if args.install_startup or is_fresh_embedded:
+    # is_fresh_embedded 쪽은 위에서 이미 처리됐으니(재배치 성공/실패 어느
+    # 쪽이든) 여기서 또 부르면 중복 호출 -- not is_fresh_embedded로 막는다.
+    if args.install_startup and not is_fresh_embedded:
         install_startup()
 
     if args.setup_only:
