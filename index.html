@@ -2992,6 +2992,16 @@ function renderRegisterSkeleton(){
             </details>
           </div>
 
+          <div id="agent-command-box-linux" class="card" style="display:none;margin-top:16px;background:var(--surface-2);border-style:dashed">
+            <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px">등록 완료. agent.py를 받아서 <b>해당 Linux 서버</b>에서 아래 명령어로 실행하세요 (최초 1회 <code class="mono">pip install psutil</code> 필요 -- 아래 명령어에 포함되어 있습니다).</div>
+            <a id="agent-source-link" href="#" target="_blank" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">⬇ agent.py 다운로드</a>
+            <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+              <code id="agent-command-text-linux" class="mono" style="flex:1;background:var(--surface-2);padding:8px 10px;border-radius:6px;font-size:11.5px;overflow-x:auto;white-space:nowrap;display:block"></code>
+              <button type="button" class="btn" id="agent-copy-btn-linux">복사</button>
+            </div>
+            <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;line-height:1.5">agent.py를 다운로드한 폴더에서 위 명령어를 실행하세요. <code class="mono">--install-startup</code>은 재부팅 시 자동 시작을 현재 사용자의 crontab(@reboot)에 등록합니다 -- cron이 설치되어 있어야 합니다.</p>
+          </div>
+
           <div class="form-actions">
             <span id="reg-error" style="color:var(--crit);font-size:11.5px"></span>
             <button type="submit" class="btn primary" id="reg-submit-btn">장비 등록</button>
@@ -3002,7 +3012,7 @@ function renderRegisterSkeleton(){
       <div class="card">
         <div class="card-head"><h3>등록 안내</h3></div>
         <div style="display:flex;flex-direction:column;gap:10px;font-size:12px;color:var(--text-dim)">
-          <p>· <b>Agent</b>는 해당 PC에 프로그램(InfraSightAgent.exe)을 받아 한 번만 실행하면 CPU·메모리·디스크·네트워크·프로세스를 실측 전송합니다. 이후 Windows 로그인 시 자동 실행됩니다.</p>
+          <p>· <b>Agent</b>는 해당 PC에 프로그램을 받아 한 번만 실행하면 CPU·메모리·디스크·네트워크·프로세스를 실측 전송합니다. Windows는 InfraSightAgent.exe(로그인 시 자동 실행), Linux는 agent.py를 python3로 실행(재부팅 시 자동 실행은 crontab)합니다 -- 아래 "OS" 선택에 따라 등록 후 맞는 안내가 표시됩니다.</p>
           <p>· <b>Ping</b>은 별도 설치 없이 IP 도달성과 응답시간만 확인합니다 (공유기·NAS·DB서버 등에 적합).</p>
           <p>· <b>SNMP</b>는 스위치·라우터·UPS·NAS 등 SNMP 에이전트가 켜진 장비에서 장치 정보·지연시간을 확인하고, 지원 시 인터페이스 트래픽·CPU·배터리까지 실측합니다. 장비의 SNMP 설정에서 Community 문자열을 미리 확인하세요.</p>
           <p>· 등록된 장비는 서버에 저장되어 다른 브라우저에서 접속해도 동일하게 표시됩니다.</p>
@@ -3154,6 +3164,10 @@ function renderRegisterSkeleton(){
   }));
   $('#agent-copy-btn').addEventListener('click', ()=>{
     const text = $('#agent-command-text').textContent;
+    try{ navigator.clipboard.writeText(text); }catch(e){}
+  });
+  $('#agent-copy-btn-linux').addEventListener('click', ()=>{
+    const text = $('#agent-command-text-linux').textContent;
     try{ navigator.clipboard.writeText(text); }catch(e){}
   });
   ['f-ip','f-snmp-version','f-snmp-port','f-snmp-community','f-snmp-v3-username',
@@ -3479,6 +3493,7 @@ function renderRegisterSkeleton(){
     // (and re-showing) every time you come back, even for an unrelated
     // later visit.
     $('#agent-command-box').style.display = 'none';
+    $('#agent-command-box-linux').style.display = 'none';
   }
   $('#edit-cancel-btn').addEventListener('click', exitEditMode);
   $('#reg-edit-overlay').addEventListener('click', exitEditMode);
@@ -3571,6 +3586,7 @@ function renderRegisterSkeleton(){
     updateSnmpFieldVisibility();
     markSnmpUntested();
     $('#agent-command-box').style.display = 'none';
+    $('#agent-command-box-linux').style.display = 'none';
     $('#reg-form-card').classList.add('modal-mode');
     $('#reg-edit-overlay').classList.add('show');
   };
@@ -3691,15 +3707,22 @@ function renderRegisterSkeleton(){
       } else {
         const result = await registerDevice(regCategory, effMode, name, ip, fields);
         await afterDeviceChange();
-        if(result.agentCommand){
+        if(result.agentCommand && result.agentOs === 'linux'){
+          $('#agent-command-text-linux').textContent = result.agentCommand;
+          if(result.agentDownloadUrl) $('#agent-source-link').href = result.agentDownloadUrl;
+          $('#agent-command-box-linux').style.display = '';
+          $('#agent-command-box').style.display = 'none';
+        } else if(result.agentCommand){
           $('#agent-command-text').textContent = result.agentCommand;
           if(result.agentDownloadUrl) $('#agent-download-link').href = result.agentDownloadUrl;
           if(result.agentInstallerUrl) $('#agent-installer-link').href = result.agentInstallerUrl;
           if(result.agentConfigUrl) $('#agent-config-link').href = result.agentConfigUrl;
           $('#agent-command-box').style.display = '';
+          $('#agent-command-box-linux').style.display = 'none';
         } else {
           e.target.reset();
           $('#agent-command-box').style.display = 'none';
+          $('#agent-command-box-linux').style.display = 'none';
           updateFormVisibility();
           markSnmpUntested();
         }
@@ -6066,14 +6089,17 @@ function drawAgentPending(e, catLabel){
         const r = await apiFetch(`/api/devices/${e.id}/token/reissue`, {method:'POST'});
         const j = await r.json();
         if(!r.ok) throw new Error(j.error || '재발급 실패');
+        const isLinux = j.agentOs === 'linux';
         const html = `
           <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:6px">
-            아래 명령어를 <b>${escapeHtml(e.name)}</b> PC의 PowerShell(또는 명령 프롬프트)에서 실행하세요 -- 기존에 설치돼 있었다면 자동으로 새 토큰으로 갱신됩니다:
+            아래 명령어를 <b>${escapeHtml(e.name)}</b> ${isLinux ? '서버의 터미널' : 'PC의 PowerShell(또는 명령 프롬프트)'}에서 실행하세요 -- 기존에 설치돼 있었다면 자동으로 새 토큰으로 갱신됩니다:
           </div>
           <div class="mono" style="background:var(--surface-2);padding:10px;border-radius:8px;font-size:11.5px;word-break:break-all;user-select:all">${escapeHtml(j.agentCommand)}</div>
           <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-            <a href="${j.agentInstallerUrl}" class="btn" style="text-decoration:none">⬇ 이 장비 전용 설치 파일(exe)</a>
-            <a href="${j.agentConfigUrl}" class="btn" style="text-decoration:none">⬇ 설정 파일만(.cfg)</a>
+            ${isLinux
+              ? `<a href="${j.agentDownloadUrl}" class="btn" style="text-decoration:none">⬇ agent.py 다운로드</a>`
+              : `<a href="${j.agentInstallerUrl}" class="btn" style="text-decoration:none">⬇ 이 장비 전용 설치 파일(exe)</a>
+                 <a href="${j.agentConfigUrl}" class="btn" style="text-decoration:none">⬇ 설정 파일만(.cfg)</a>`}
           </div>
         `;
         agentReissueCache[e.id] = html;

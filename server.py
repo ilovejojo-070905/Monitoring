@@ -997,6 +997,38 @@ def api_test_snmp():
     return jsonify({'ok': True, 'message': f'"{ip}"에서 SNMP 응답을 확인했습니다 ({successes}/{attempts}회 성공).'})
 
 
+def _agent_install_info(fields, lan_ip, token):
+    """Agent-mode 등록/토큰재발급 응답에 들어가는 다운로드 링크+설치 명령어를
+    장비의 OS(fields.os, 등록 폼의 "OS" 선택란)에 맞춰 돌려준다.
+
+    Windows/Linux 공통 문제: 예전엔 OS를 무엇으로 선택하든 항상 Windows
+    전용 InfraSightAgent.exe(PyInstaller로 빌드한 Windows PE 바이너리) 다운로드
+    링크와 "InfraSightAgent.exe --server ..." 명령어만 보여줬다 -- Linux를
+    선택해도 똑같은 안내가 나왔다는 뜻. agent.py 자체는 IS_WINDOWS 분기로
+    Windows/Linux 둘 다 실제로 동작하도록 이미 잘 만들어져 있었는데(자동
+    시작도 Linux는 crontab @reboot으로 구현돼 있음), 배포 파이프라인이
+    .exe 하나만 빌드하고 프론트엔드/백엔드 전부 그 사실을 확인한 적이
+    없었던 게 원인 -- Linux로 등록해도 실제로는 설치가 불가능했다.
+
+    os='linux'일 때는 .exe 대신 agent.py 원본 다운로드 링크 +
+    `python3 agent.py ...` 명령어를 돌려준다(exe 전용 기능인 원클릭
+    설치 파일/사이드카 설정 파일은 Linux엔 해당 사항 없어 생략)."""
+    os_field = (fields.get('os') or '').strip().lower()
+    if os_field == 'linux':
+        return {
+            'agentOs': 'linux',
+            'agentDownloadUrl': '/download/agent-source',
+            'agentCommand': f"pip install psutil && python3 agent.py --server http://{lan_ip}:{PORT} --token {token} --install-startup",
+        }
+    return {
+        'agentOs': 'windows',
+        'agentDownloadUrl': '/download/agent',
+        'agentInstallerUrl': f'/download/installer/{token}',
+        'agentConfigUrl': f'/download/config/{token}',
+        'agentCommand': f"InfraSightAgent.exe --server http://{lan_ip}:{PORT} --token {token} --install-startup",
+    }
+
+
 def _register_device_core(category, name, mode, ip, fields):
     """All the validation/connectivity-check/creation logic for registering
     one device, shared by the single-device route (api_register_device)
@@ -1169,13 +1201,12 @@ def _register_device_core(category, name, mode, ip, fields):
         # relative URL resolves against whatever origin the browser is
         # actually on -- https:8443 through Caddy, or http:5057 direct --
         # and Caddy forwards /download/* to this same backend either way.
-        resp['agentDownloadUrl'] = '/download/agent'
-        resp['agentInstallerUrl'] = f'/download/installer/{token}'
-        resp['agentConfigUrl'] = f'/download/config/{token}'
-        # Unaffected by the above: this is the address the agent *process*
-        # itself connects back to (a plain HTTP client, not a browser), so
-        # it must stay the direct backend host:port, not a relative path.
-        resp['agentCommand'] = f"InfraSightAgent.exe --server http://{lan_ip}:{PORT} --token {token} --install-startup"
+        # agentCommand's host:port is unaffected by the above: that's the
+        # address the agent *process* itself connects back to (a plain HTTP
+        # client, not a browser), so it must stay the direct backend
+        # host:port, not a relative path. OS-aware (Windows .exe vs Linux
+        # python3 agent.py) -- see _agent_install_info's own docstring.
+        resp.update(_agent_install_info(fields, lan_ip, token))
     return 200, resp
 
 
@@ -2267,15 +2298,12 @@ def api_reissue_token(device_id):
         state.LAST_REPORT.pop(device_id, None)  # old token's freshness no longer applies
     audit('AGENT_TOKEN_REISSUE', target=device_id)
     lan_ip = storage.get_lan_ip()
-    return jsonify({
-        'token': new_token,
-        # See the matching comment in api_register_device: relative so it
-        # resolves against whatever origin (https:8443 via Caddy, or
-        # http:5057 direct) the browser making this request is actually on.
-        'agentInstallerUrl': f'/download/installer/{new_token}',
-        'agentConfigUrl': f'/download/config/{new_token}',
-        'agentCommand': f"InfraSightAgent.exe --server http://{lan_ip}:{PORT} --token {new_token} --install-startup",
-    })
+    resp = {'token': new_token}
+    # See the matching comment in _agent_install_info: relative URLs resolve
+    # against whatever origin (https:8443 via Caddy, or http:5057 direct)
+    # the browser making this request is actually on. OS-aware.
+    resp.update(_agent_install_info(device_row['fields'], lan_ip, new_token))
+    return jsonify(resp)
 
 
 @app.post('/api/devices/<device_id>/token/revoke')
@@ -2893,6 +2921,15 @@ def download_agent():
     # 하라"는 불필요한 단계가 추가될 뿐이다.
     if os.path.exists(_agent_exe_path()):
         return send_from_directory(os.path.join(BASE_DIR, 'dist'), 'InfraSightAgent.exe', as_attachment=True)
+    return send_from_directory(BASE_DIR, 'agent.py', as_attachment=True)
+
+
+@app.get('/download/agent-source')
+def download_agent_source():
+    """Linux(또는 exe 없이 그냥 파이썬으로 바로 쓰고 싶은 경우)용 -- 항상
+    agent.py 원본을 그대로 내려준다. 위 /download/agent는 exe가 있으면
+    exe를 우선하므로(Windows용), Linux 등록 안내는 이 라우트를 가리킨다.
+    역할 검증 없음, 이유는 /download/agent와 동일."""
     return send_from_directory(BASE_DIR, 'agent.py', as_attachment=True)
 
 

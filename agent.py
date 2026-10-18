@@ -775,7 +775,7 @@ def main():
     ap.add_argument('--server', help='InfraSight server base URL, e.g. http://192.168.0.10:5057')
     ap.add_argument('--token', help='device token shown when you registered this device')
     ap.add_argument('--interval', type=float, default=3.0, help='report interval in seconds (default 3)')
-    ap.add_argument('--install-startup', action='store_true', help='Windows 로그온 시 자동 실행 등록')
+    ap.add_argument('--install-startup', action='store_true', help='로그인/재부팅 시 자동 실행 등록 (Windows: 시작프로그램, Linux: crontab @reboot)')
     ap.add_argument('--uninstall-startup', action='store_true', help='자동 실행 등록 해제')
     ap.add_argument('--setup-only', action='store_true', help='설정 저장(+자동시작 등록)만 하고 즉시 종료 (모니터링 루프 실행 안 함)')
     args = ap.parse_args()
