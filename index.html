@@ -2993,13 +2993,18 @@ function renderRegisterSkeleton(){
           </div>
 
           <div id="agent-command-box-linux" class="card" style="display:none;margin-top:16px;background:var(--surface-2);border-style:dashed">
-            <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px">등록 완료. agent.py를 받아서 <b>해당 Linux 서버</b>에서 아래 명령어로 실행하세요 (최초 1회 <code class="mono">python3 -m pip install psutil</code> 필요 -- 아래 명령어에 포함되어 있습니다).</div>
-            <a id="agent-source-link" href="#" target="_blank" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">⬇ agent.py 다운로드</a>
-            <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-              <code id="agent-command-text-linux" class="mono" style="flex:1;background:var(--surface-2);padding:8px 10px;border-radius:6px;font-size:11.5px;overflow-x:auto;white-space:nowrap;display:block"></code>
-              <button type="button" class="btn" id="agent-copy-btn-linux">복사</button>
-            </div>
-            <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;line-height:1.5">agent.py를 다운로드한 폴더에서 위 명령어를 실행하세요. <code class="mono">--install-startup</code>은 재부팅 시 자동 시작을 현재 사용자의 crontab(@reboot)에 등록합니다 -- cron이 설치되어 있어야 합니다.</p>
+            <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:10px">등록 완료. 아래 파일 <b>하나만</b> 받아서 <b>해당 Linux 서버</b>에서 <code class="mono">python3 -m pip install psutil && python3 InfraSightAgent.py</code>로 실행하면 입력 없이 바로 설치가 끝납니다(재부팅 시 자동 시작도 이 한 번의 실행으로 같이 등록됩니다).</div>
+            <a id="agent-installer-link-linux" href="#" target="_blank" class="btn primary" style="display:inline-block;text-decoration:none;font-size:13px;padding:10px 16px">⬇ InfraSightAgent.py 다운로드</a>
+            <p style="font-size:11px;color:var(--text-faint);margin:10px 0 0;line-height:1.5">cron이 설치되어 있어야 재부팅 후 자동 시작이 동작합니다(대부분의 배포판에 기본 포함).</p>
+            <details style="margin-top:12px">
+              <summary style="cursor:pointer;font-size:11px;color:var(--text-faint)">다른 방법: agent.py 원본 + 직접 명령어 실행</summary>
+              <div style="font-size:11px;color:var(--text-faint);margin:8px 0 8px">토큰이 내장되지 않은 순수 원본입니다 -- 아래 명령어로 서버 주소/토큰을 직접 넘겨주세요.</div>
+              <a id="agent-source-link" href="#" target="_blank" class="btn" style="display:inline-block;text-decoration:none;margin-bottom:8px">⬇ agent.py 원본</a>
+              <div style="display:flex;gap:8px;align-items:center">
+                <code id="agent-command-text-linux" class="mono" style="flex:1;background:var(--surface-2);padding:8px 10px;border-radius:6px;font-size:11.5px;overflow-x:auto;white-space:nowrap;display:block"></code>
+                <button type="button" class="btn" id="agent-copy-btn-linux">복사</button>
+              </div>
+            </details>
           </div>
 
           <div class="form-actions">
@@ -3710,6 +3715,7 @@ function renderRegisterSkeleton(){
         if(result.agentCommand && result.agentOs === 'linux'){
           $('#agent-command-text-linux').textContent = result.agentCommand;
           if(result.agentDownloadUrl) $('#agent-source-link').href = result.agentDownloadUrl;
+          if(result.agentInstallerUrl) $('#agent-installer-link-linux').href = result.agentInstallerUrl;
           $('#agent-command-box-linux').style.display = '';
           $('#agent-command-box').style.display = 'none';
         } else if(result.agentCommand){
@@ -6092,15 +6098,16 @@ function drawAgentPending(e, catLabel){
         const isLinux = j.agentOs === 'linux';
         const html = `
           <div style="font-size:11.5px;color:var(--text-dim);margin-bottom:6px">
-            아래 명령어를 <b>${escapeHtml(e.name)}</b> ${isLinux ? '서버의 터미널' : 'PC의 PowerShell(또는 명령 프롬프트)'}에서 실행하세요 -- 기존에 설치돼 있었다면 자동으로 새 토큰으로 갱신됩니다:
+            아래 파일 하나만 받아서 <b>${escapeHtml(e.name)}</b> ${isLinux ? '서버' : 'PC'}에서 실행하세요 -- 기존에 설치돼 있었다면 자동으로 새 토큰으로 갱신됩니다:
           </div>
-          <div class="mono" style="background:var(--surface-2);padding:10px;border-radius:8px;font-size:11.5px;word-break:break-all;user-select:all">${escapeHtml(j.agentCommand)}</div>
-          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
             ${isLinux
-              ? `<a href="${j.agentDownloadUrl}" class="btn" style="text-decoration:none">⬇ agent.py 다운로드</a>`
-              : `<a href="${j.agentInstallerUrl}" class="btn" style="text-decoration:none">⬇ 이 장비 전용 설치 파일(exe)</a>
+              ? `<a href="${j.agentInstallerUrl}" class="btn primary" style="text-decoration:none">⬇ InfraSightAgent.py (이 장비 전용)</a>`
+              : `<a href="${j.agentInstallerUrl}" class="btn primary" style="text-decoration:none">⬇ 이 장비 전용 설치 파일(exe)</a>
                  <a href="${j.agentConfigUrl}" class="btn" style="text-decoration:none">⬇ 설정 파일만(.cfg)</a>`}
           </div>
+          <div style="font-size:11px;color:var(--text-faint);margin-bottom:6px">${isLinux ? '실행: ' : '또는 명령어로 직접: '}</div>
+          <div class="mono" style="background:var(--surface-2);padding:10px;border-radius:8px;font-size:11.5px;word-break:break-all;user-select:all">${escapeHtml(isLinux ? 'python3 -m pip install psutil && python3 InfraSightAgent.py' : j.agentCommand)}</div>
         `;
         agentReissueCache[e.id] = html;
         const resultEl = $('#agent-reissue-result');

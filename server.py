@@ -1010,13 +1010,17 @@ def _agent_install_info(fields, lan_ip, token):
     .exe 하나만 빌드하고 프론트엔드/백엔드 전부 그 사실을 확인한 적이
     없었던 게 원인 -- Linux로 등록해도 실제로는 설치가 불가능했다.
 
-    os='linux'일 때는 .exe 대신 agent.py 원본 다운로드 링크 +
-    `python3 agent.py ...` 명령어를 돌려준다(exe 전용 기능인 원클릭
-    설치 파일/사이드카 설정 파일은 Linux엔 해당 사항 없어 생략)."""
+    os='linux'일 때는 Windows의 "InfraSightAgent.exe 원클릭 설치"와 같은
+    구조로 agentInstallerUrl(이 장비의 server/token이 내장된 agent.py,
+    /download/installer/<token>이 OS를 보고 자동으로 분기)을 내려준다
+    -- 받은 파일 하나만 실행하면 타이핑 없이 끝난다. agentDownloadUrl/
+    agentCommand는 "원본 그대로 + 직접 명령어 입력" 보조 경로로 계속
+    제공(사이드카 설정 파일만 예외 -- exe 전용 구조라 생략)."""
     os_field = (fields.get('os') or '').strip().lower()
     if os_field == 'linux':
         return {
             'agentOs': 'linux',
+            'agentInstallerUrl': f'/download/installer/{token}',
             'agentDownloadUrl': '/download/agent-source',
             # 'pip'(심볼릭 링크)가 아니라 'python3 -m pip'를 쓰는 이유: 많은
             # Linux 배포판이 python3-pip 패키지만 설치해도 'pip' 명령 자체는
@@ -2945,18 +2949,42 @@ def download_agent_source():
 # server URL + token -- no separate .bat wrapper, no curl step, no typed
 # command. agent.py looks for this marker in its own file on first run.
 _AGENT_CONFIG_MARKER = b'\n===INFRASIGHT_CONFIG===\n'
+# Keep in sync with agent.py's SCRIPT_CONFIG_MARKER -- the Linux equivalent,
+# a Python comment so the file stays valid source (see that constant's own
+# docstring for why raw appended bytes don't work the same way a compiled
+# exe does).
+_AGENT_SCRIPT_CONFIG_MARKER = '# ===INFRASIGHT_CONFIG==='
 
 
 @app.get('/download/installer/<token>')
 def download_installer(token):
+    """장비별 원클릭 설치 파일 -- Windows는 InfraSightAgent.exe(트레일링
+    바이트), Linux는 agent.py 소스(트레일링 Python 주석)에 이 장비의
+    server/token을 내장해서, 받은 파일 하나만 실행하면 입력 없이 바로
+    연결된다. OS는 장비 등록 시 고른 fields.os로 판단(_agent_install_info
+    와 동일 기준)."""
     device_row = storage.find_device_by_token(token)
     if not device_row:
         return jsonify({'error': 'invalid or expired token'}), 404
+    server_url = f"http://{storage.get_lan_ip()}:{PORT}"
+    payload = json.dumps({'server': server_url, 'token': token}).encode('utf-8')
+    os_field = (device_row['fields'].get('os') or '').strip().lower()
+    if os_field == 'linux':
+        agent_py_path = os.path.join(BASE_DIR, 'agent.py')
+        if not os.path.exists(agent_py_path):
+            return jsonify({'error': '에이전트 소스 파일이 서버에 없습니다. 관리자에게 문의하세요.'}), 500
+        with open(agent_py_path, 'rb') as f:
+            src_bytes = f.read()
+        # "# " 주석 접두사까지 포함해서 한 줄로 내장 -- agent.py의
+        # read_embedded_config()가 비-frozen 경로에서 이 마커 뒤 첫
+        # 비어있지 않은 줄을 찾아 '#' 접두사를 떼고 JSON으로 파싱한다.
+        trailer = ('\n' + _AGENT_SCRIPT_CONFIG_MARKER + '\n# ').encode('utf-8') + payload + b'\n'
+        resp = Response(src_bytes + trailer, mimetype='text/x-python')
+        resp.headers['Content-Disposition'] = 'attachment; filename="InfraSightAgent.py"'
+        return resp
     exe_path = _agent_exe_path()
     if not os.path.exists(exe_path):
         return jsonify({'error': '에이전트 실행 파일이 서버에 없습니다. 관리자에게 문의하세요.'}), 500
-    server_url = f"http://{storage.get_lan_ip()}:{PORT}"
-    payload = json.dumps({'server': server_url, 'token': token}).encode('utf-8')
     with open(exe_path, 'rb') as f:
         exe_bytes = f.read()
     resp = Response(exe_bytes + _AGENT_CONFIG_MARKER + payload, mimetype='application/octet-stream')

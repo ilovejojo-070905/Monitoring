@@ -68,17 +68,38 @@ _LAST_ERROR = None  # most recent local exception message, if any (sample() or t
 # for its own trailing config when frozen.
 EMBEDDED_CONFIG_MARKER = b'\n===INFRASIGHT_CONFIG===\n'
 
+# Linux has no compiled binary at all (PyInstaller can't cross-compile a
+# Windows-built exe into a Linux ELF, and this install only ever runs on
+# Windows) -- the one-click download there is this .py file itself with the
+# config appended. Unlike a PE image, Python PARSES the entire file before
+# running any of it, so raw bytes after the real source would be an instant
+# SyntaxError on the very first line of garbage -- appending them as a
+# Python comment instead keeps the file perfectly valid (the parser just
+# discards comments) while still being findable by re-reading our own
+# source text below.
+SCRIPT_CONFIG_MARKER = '# ===INFRASIGHT_CONFIG==='
+
 
 def read_embedded_config():
-    if not getattr(sys, 'frozen', False):
-        return None
     try:
-        with open(sys.executable, 'rb') as f:
-            data = f.read()
-        idx = data.rfind(EMBEDDED_CONFIG_MARKER)
+        if getattr(sys, 'frozen', False):
+            with open(sys.executable, 'rb') as f:
+                data = f.read()
+            idx = data.rfind(EMBEDDED_CONFIG_MARKER)
+            if idx == -1:
+                return None
+            return json.loads(data[idx + len(EMBEDDED_CONFIG_MARKER):].decode('utf-8'))
+        with open(os.path.abspath(__file__), 'r', encoding='utf-8') as f:
+            text = f.read()
+        idx = text.rfind(SCRIPT_CONFIG_MARKER)
         if idx == -1:
             return None
-        return json.loads(data[idx + len(EMBEDDED_CONFIG_MARKER):].decode('utf-8'))
+        for line in text[idx + len(SCRIPT_CONFIG_MARKER):].splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            return json.loads(line[1:].strip() if line.startswith('#') else line)
+        return None
     except Exception:
         return None
 
