@@ -130,13 +130,25 @@ $manifestText = $manifestTemplate.Replace('__LAN_IP__', $lanIp)
 [System.IO.File]::WriteAllText((Join-Path $extDir 'manifest.json'), $manifestText, (New-Object System.Text.UTF8Encoding $false))
 Write-Diag 'manifest.json 생성 완료'
 
-# Chrome Native Messaging Host 등록 (HKCU -- 관리자 권한 불필요, 이 로그인
-# 계정에서 Chrome이 조회하는 바로 그 위치).
-$regKeyPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.infrasight.remote'
-New-Item -Path $regKeyPath -Force | Out-Null
-Set-ItemProperty -Path $regKeyPath -Name '(default)' -Value (Join-Path $hostDir 'host.json')
-Write-Ok "원격 접속 Native Messaging Host 등록 완료 (LAN IP: $lanIp)"
-Write-Diag '레지스트리 등록 완료 -- 정상 종료'
+# Native Messaging Host 등록 (HKCU -- 관리자 권한 불필요). Chrome과 Edge는
+# 둘 다 Chromium 기반이지만 native messaging host를 조회하는 레지스트리
+# 경로는 서로 완전히 별개다("Software\Google\Chrome\..." vs
+# "Software\Microsoft\Edge\...") -- 한쪽에만 등록하면 다른 브라우저는
+# 그 호스트가 아예 없는 것으로 취급한다(실측: Chrome에서는 정상 동작,
+# Edge에서는 "Specified native messaging host not found" -- Chrome
+# 레지스트리에만 등록돼 있었기 때문). 사용자가 둘 중 어느 브라우저를
+# 쓰든 Telnet/SSH 버튼이 동작하도록 양쪽 다 등록한다.
+$browserRegRoots = @(
+    'HKCU:\Software\Google\Chrome\NativeMessagingHosts',
+    'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts'
+)
+foreach ($root in $browserRegRoots) {
+    $regKeyPath = Join-Path $root 'com.infrasight.remote'
+    New-Item -Path $regKeyPath -Force | Out-Null
+    Set-ItemProperty -Path $regKeyPath -Name '(default)' -Value (Join-Path $hostDir 'host.json')
+}
+Write-Ok "원격 접속 Native Messaging Host 등록 완료 (Chrome + Edge, LAN IP: $lanIp)"
+Write-Diag '레지스트리 등록 완료(Chrome+Edge) -- 정상 종료'
 
 # host.ps1의 Resolve-Putty와 같은 위치들을 확인한다 (install.ps1 쪽에서
 # winget으로 이미 설치했으면 보통 바로 찾아지지만, 그 전에 수동으로 PuTTY를
@@ -156,9 +168,10 @@ if (-not $puttyFound) {
 if (-not $extDirExisted) {
     Write-Host ''
     Write-Host '    [최초 1회 수동 설정] 네트워크 장비 목록의 SSH/Telnet 버튼을 쓰려면' -ForegroundColor Yellow
-    Write-Host '    Chrome 확장 프로그램을 한 번만 등록해야 합니다 (브라우저 보안 정책상' -ForegroundColor Yellow
-    Write-Host '    이 단계만큼은 자동화가 불가능합니다):' -ForegroundColor Yellow
-    Write-Host "      1. Chrome에서 chrome://extensions 열기"
+    Write-Host '    사용하는 브라우저에 확장 프로그램을 한 번만 등록해야 합니다 (브라우저' -ForegroundColor Yellow
+    Write-Host '    보안 정책상 이 단계만큼은 자동화가 불가능합니다. Chrome/Edge를 둘 다' -ForegroundColor Yellow
+    Write-Host '    쓴다면 아래를 각 브라우저에서 한 번씩 반복해주세요):' -ForegroundColor Yellow
+    Write-Host "      1. 주소창에 chrome://extensions (Edge는 edge://extensions) 입력"
     Write-Host "      2. 우측 상단 '개발자 모드' 켜기"
     Write-Host "      3. '압축해제된 확장 프로그램을 로드합니다' 클릭 -> 아래 폴더 선택:"
     Write-Host "         $extDir" -ForegroundColor Cyan
