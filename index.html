@@ -5947,7 +5947,7 @@ function drawPingDevice(e, catLabel){
 
   const ifaces = isSnmp && Array.isArray(e.interfaces) ? e.interfaces : [];
   const ifaceCard = ifaces.length ? `
-    <div class="card" style="min-width:0;height:420px;display:flex;flex-direction:column"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
+    <div class="card" style="min-width:0;height:428px;display:flex;flex-direction:column"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
       <div id="iface-list" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
         ${ifaces.map(f=>{
           const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
@@ -5970,7 +5970,7 @@ function drawPingDevice(e, catLabel){
   const envStateColor = s => s==='normal' ? 'var(--good)' : (s==='warning' ? 'var(--warn)' : (s==='critical'||s==='shutdown' ? 'var(--crit)' : 'var(--text-faint)'));
   const envStateLabel = s => ({normal:'정상', warning:'주의', critical:'위험', shutdown:'차단', notPresent:'미설치', unknown:'알수없음'})[s] || s;
   const envCard = hasEnv ? `
-    <div class="card" style="min-width:0;display:flex;flex-direction:column;flex:1;min-height:0"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
+    <div class="card" style="min-width:0;display:flex;flex-direction:column;height:195px"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
       <div style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto">
         ${(e.envTemps||[]).filter(t=>t.state!=='notPresent').map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(t.description||'온도 센서')}${t.valueC!=null ? ` · ${fmt0(t.valueC)}°C` : ''}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(t.state)};color:${envStateColor(t.state)}"><span class="dot" style="background:${envStateColor(t.state)}"></span>${envStateLabel(t.state)}</span></div>`).join('')}
         ${(e.envFans||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>팬 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
@@ -5995,7 +5995,7 @@ function drawPingDevice(e, catLabel){
     ${trafficCard ? `<div style="${pingGrid2}">${trafficCard}</div>` : ''}
     ${ifaceCard ? `
     <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:10px">
-      <div style="display:flex;flex-direction:column;gap:10px;min-width:0;height:420px">${envCard}${responseTimeCard}</div>
+      <div style="display:flex;flex-direction:column;gap:10px;min-width:0;height:428px">${envCard}${responseTimeCard}</div>
       ${ifaceCard}
     </div>` : `
     <div style="display:flex;flex-direction:column;gap:10px">${envCard}${responseTimeCard}</div>`}
