@@ -2303,7 +2303,25 @@ function updateSelectBar(prefix){
   bar.style.display = n>0 ? 'flex' : 'none';
   const c = $(`#${prefix}-select-count`); if(c) c.textContent = n;
 }
+// 버그 수정(2026-10-18, "삭제 버튼을 정확하게 클릭해야 해 옆으로 조금만
+// 비켜나도 상세창을 열게 되는 경우가 발생"): 체크박스 자체에는 이미
+// stopPropagation이 걸려 있었지만, 그건 클릭이 체크박스 "정확히 그
+// 위"일 때만 적용된다 -- 같은 셀(td.select-col) 안의 여백을 클릭하면
+// 이벤트 타깃이 체크박스가 아니라 td/tr이라 그대로 행 전체의 클릭
+// 핸들러(상세창 열기)까지 버블링됐다. 이제 셀 전체에서 stopPropagation
+// 하고, 체크박스가 아닌 여백을 클릭해도 체크박스를 토글해준다 --
+// 정확한 좌표를 노리지 않아도 되는 더 넓은 클릭 영역.
 function wireRowCheckboxes(tbodyId, prefix){
+  $$(`#${tbodyId} .select-col`).forEach(td=>{
+    td.addEventListener('click', e=>{
+      e.stopPropagation();
+      const cb = td.querySelector('.row-select');
+      if(cb && e.target !== cb){
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event('change'));
+      }
+    });
+  });
   $$(`#${tbodyId} .row-select`).forEach(cb=>{
     cb.addEventListener('click', e=> e.stopPropagation());
     cb.addEventListener('change', ()=>{
