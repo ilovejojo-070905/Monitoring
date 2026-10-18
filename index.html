@@ -313,7 +313,9 @@
   .topo-node .node-name{font-size:10.5px;font-weight:600;text-align:center;color:var(--chrome-text-dim);font-family:var(--font-mono);white-space:nowrap}
   .topo-node:hover .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
   .topo-node.sel .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
+  .topo-node.multi-sel .node-box{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft),var(--glow-accent)}
   .topo-node.dim{opacity:.32}
+  .topo-select-rect{position:absolute;border:1.5px dashed var(--accent);background:var(--accent-soft);pointer-events:none;z-index:6}
   .topo-tip{
     position:absolute;background:var(--bg-elevated);border:1px solid var(--border-strong);border-radius:var(--radius-sm);
     padding:9px 12px;font-size:11px;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:30;min-width:170px;
@@ -1219,6 +1221,10 @@ let topoDragging = false;
 let topoLinkMode = false;
 let topoLinkFrom = null;
 let topoAddPanelOpen = false;
+// 드래그 선택(빈 공간을 드래그해 여러 아이콘을 한번에 선택 -> 그 중 하나
+// 위에서 마우스 휠로 선택된 전체 크기를 같이 조절) + "전체 아이콘 크기"
+// 일괄 버튼. 2026-10-18, "아이콘 사이즈를 한개씩 변동하는게 불편함" 요청.
+let topoSelectedNodes = new Set();
 const ICON_LABELS = {router:'라우터', switch:'스위치', server:'서버', db:'데이터베이스', firewall:'방화벽', cloud:'클라우드', monitor:'모니터', ups:'UPS', alert:'경고', question:'기타'};
 const TOPO_DEFAULT_ICON_SIZE = 52;
 const TOPO_LAYOUT_KEY = 'infrasight_topo_layout';
@@ -1258,6 +1264,21 @@ async function hydrateTopoLayoutFromServer(){
 function loadTopoNodeSizes(){ try{ return JSON.parse(localStorage.getItem(TOPO_NODE_SIZES_KEY)||'{}'); }catch(e){ return {}; } }
 function saveTopoNodeSizes(sizes){ try{ localStorage.setItem(TOPO_NODE_SIZES_KEY, JSON.stringify(sizes)); }catch(e){} }
 function clampTopoNodeSize(v){ return Math.min(96, Math.max(28, v)); }
+// 공유 헬퍼: 지정한 노드 id들 전부에 같은 delta를 적용 -- 휠(단일 또는
+// 다중 선택), "전체 아이콘 ±" 버튼이 전부 이걸 재사용한다.
+function applyTopoSizeDelta(ids, delta){
+  const sizes = loadTopoNodeSizes();
+  ids.forEach(id=>{
+    const current = sizes[id] || TOPO_NODES.find(x=>x.id===id)?.size || TOPO_DEFAULT_ICON_SIZE;
+    const next = clampTopoNodeSize(current + delta);
+    sizes[id] = next;
+    const liveN = TOPO_NODES.find(x=>x.id===id);
+    if(liveN) liveN.size = next;
+    const nodeEl = document.querySelector(`.topo-node[data-node="${id}"]`);
+    if(nodeEl) nodeEl.style.setProperty('--topo-icon-size', next+'px');
+  });
+  saveTopoNodeSizes(sizes);
+}
 function loadTopoCustomNodes(){ try{ return JSON.parse(localStorage.getItem(TOPO_CUSTOM_NODES_KEY)||'[]'); }catch(e){ return []; } }
 function saveTopoCustomNodes(list){ try{ localStorage.setItem(TOPO_CUSTOM_NODES_KEY, JSON.stringify(list)); }catch(e){} }
 function loadTopoCustomLinks(){ try{ return JSON.parse(localStorage.getItem(TOPO_CUSTOM_LINKS_KEY)||'[]'); }catch(e){ return []; } }
@@ -1651,7 +1672,7 @@ function renderTopologySkeleton(){
       + `<line data-link-hit="${i}" x1="${na.x}" y1="${na.y}" x2="${nb.x}" y2="${nb.y}" stroke="transparent" stroke-width="16" style="cursor:${topoLinkMode?'pointer':'default'}"/>`;
   }).join('');
   const nodesHtml = TOPO_NODES.map(n=>`
-    <div class="topo-node${n.custom?' custom':''}" data-node="${n.id}" draggable="false" style="left:${n.x}px;top:${n.y}px;--topo-icon-size:${n.size||TOPO_DEFAULT_ICON_SIZE}px">
+    <div class="topo-node${n.custom?' custom':''}${topoSelectedNodes.has(n.id)?' multi-sel':''}" data-node="${n.id}" draggable="false" style="left:${n.x}px;top:${n.y}px;--topo-icon-size:${n.size||TOPO_DEFAULT_ICON_SIZE}px">
       <div class="node-box">${iconSvg(n.icon)}<span class="node-status" style="background:var(--good)"></span>${n.id!=='hub'&&CURRENT_ROLE_RANK>=1?`<button type="button" class="node-del" data-del-node="${n.id}" title="${n.custom?'삭제':'지도에서 숨기기 (장비 등록은 그대로 유지)'}">×</button>`:''}</div>
       <span class="node-name">${escapeHtml(n.label)}</span>
     </div>`).join('');
@@ -1669,12 +1690,17 @@ function renderTopologySkeleton(){
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div>
           <h3 style="color:var(--chrome-text);font-size:20px;position:relative;top:-9px">인프라 토플로지</h3>
-          <span class="sub" style="color:var(--chrome-text-faint)">${CURRENT_ROLE_RANK < 1 ? '조회 전용 — 배치 편집은 운영자 이상 권한이 필요합니다' : topoLinkMode ? '연결선 그리기 모드: 노드 두 개를 순서대로 클릭해 연결하고, 선을 클릭하면 삭제됩니다' : '노드를 드래그해 배치를 바꾸고, 노드 위에서 마우스 휠로 그 아이콘만 크기를 조절할 수 있습니다'}</span>
+          <span class="sub" style="color:var(--chrome-text-faint)">${CURRENT_ROLE_RANK < 1 ? '조회 전용 — 배치 편집은 운영자 이상 권한이 필요합니다' : topoLinkMode ? '연결선 그리기 모드: 노드 두 개를 순서대로 클릭해 연결하고, 선을 클릭하면 삭제됩니다' : topoSelectedNodes.size > 1 ? `${topoSelectedNodes.size}개 선택됨 — 선택한 아이콘 중 하나 위에서 마우스 휠로 전부 같이 크기 조절됩니다` : '노드를 드래그해 배치를 바꾸고, 빈 공간을 드래그하면 여러 아이콘을 한번에 선택할 수 있습니다. 노드 위에서 마우스 휠로 그 아이콘만(선택된 여러 개면 전부 같이) 크기를 조절할 수 있습니다'}</span>
         </div>
         ${CURRENT_ROLE_RANK >= 1 ? `
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;flex:none">
           <button type="button" class="btn${topoLinkMode?' primary':''}" id="topoLinkModeBtn" style="white-space:nowrap">${topoLinkMode?'연결선 그리기 종료':'연결선 그리기'}</button>
           <button type="button" class="btn" id="topoAddIconBtn" style="white-space:nowrap">아이콘 추가</button>
+          <span style="display:flex;align-items:center;gap:2px;border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px" title="전체 아이콘 크기">
+            <button type="button" class="btn" id="topoSizeAllDownBtn" style="white-space:nowrap;padding:6px 10px" title="전체 아이콘 축소">전체 −</button>
+            <button type="button" class="btn" id="topoSizeAllUpBtn" style="white-space:nowrap;padding:6px 10px" title="전체 아이콘 확대">전체 +</button>
+          </span>
+          ${topoSelectedNodes.size > 0 ? `<button type="button" class="btn" id="topoSelClearBtn" style="white-space:nowrap">선택 해제 (${topoSelectedNodes.size})</button>` : ''}
           <button type="button" class="btn" id="topoResetLayoutBtn" style="white-space:nowrap">배치 초기화</button>
           ${loadTopoHiddenNodes().length ? `<button type="button" class="btn" id="topoShowHiddenBtn" style="white-space:nowrap">숨긴 장비 ${loadTopoHiddenNodes().length}개 표시</button>` : ''}
         </div>` : ''}
@@ -1754,14 +1780,11 @@ function renderTopologySkeleton(){
     node.addEventListener('wheel', e=>{
       e.preventDefault();
       const id = node.dataset.node;
-      const sizes = loadTopoNodeSizes();
-      const current = sizes[id] || TOPO_NODES.find(x=>x.id===id)?.size || TOPO_DEFAULT_ICON_SIZE;
-      const next = clampTopoNodeSize(current + (e.deltaY < 0 ? 4 : -4));
-      sizes[id] = next;
-      saveTopoNodeSizes(sizes);
-      const liveN = TOPO_NODES.find(x=>x.id===id);
-      if(liveN) liveN.size = next;
-      node.style.setProperty('--topo-icon-size', next+'px');
+      const delta = e.deltaY < 0 ? 4 : -4;
+      // 이 노드가 드래그로 선택된 여러 개 중 하나라면 선택된 전체에 같은
+      // delta를 적용 -- 아니면 기존처럼 이 노드 하나만.
+      const ids = (topoSelectedNodes.size > 1 && topoSelectedNodes.has(id)) ? [...topoSelectedNodes] : [id];
+      applyTopoSizeDelta(ids, delta);
       $('#topoTip').classList.remove('show');
     }, {passive:false});
     node.addEventListener('click', ()=>{
@@ -1772,6 +1795,65 @@ function renderTopologySkeleton(){
     });
     if(topoLinkMode && node.dataset.node === topoLinkFrom) node.classList.add('sel');
   });
+  // 빈 공간 드래그 선택(2026-10-18, "마우스 드레그 해서 원하는 아이콘들만
+  // 변경 가능 하게"): .topo-node 자체의 mousedown(startTopoDrag, 위치
+  // 이동용)과 겹치지 않게, 클릭이 노드 위가 아니라 캔버스 빈 공간/연결선
+  // 위일 때만 시작한다. 드래그 없이 그냥 클릭만 하면(= moved 그대로
+  // false) 기존 선택을 해제 -- 빈 곳 클릭으로 선택 해제하는 흔한 관례.
+  if(canvasEl && CURRENT_ROLE_RANK >= 1){
+    canvasEl.addEventListener('mousedown', e=>{
+      if(e.button !== 0) return;
+      if(topoLinkMode) return;
+      if(e.target.closest('.topo-node')) return;
+      e.preventDefault();
+      const canvasBox = canvasEl.getBoundingClientRect();
+      const startX = e.clientX - canvasBox.left, startY = e.clientY - canvasBox.top;
+      let moved = false;
+      const rectEl = document.createElement('div');
+      rectEl.className = 'topo-select-rect';
+      canvasEl.appendChild(rectEl);
+      function computeRect(curX, curY){
+        return {
+          x: Math.min(startX, curX), y: Math.min(startY, curY),
+          w: Math.abs(curX - startX), h: Math.abs(curY - startY),
+        };
+      }
+      function nodesInRect(rect){
+        const ids = new Set();
+        TOPO_NODES.forEach(n=>{
+          if(n.x >= rect.x && n.x <= rect.x + rect.w && n.y >= rect.y && n.y <= rect.y + rect.h) ids.add(n.id);
+        });
+        return ids;
+      }
+      function onMove(ev){
+        const curX = ev.clientX - canvasBox.left, curY = ev.clientY - canvasBox.top;
+        if(!moved && (Math.abs(curX-startX) > 4 || Math.abs(curY-startY) > 4)) moved = true;
+        if(!moved) return;
+        const rect = computeRect(curX, curY);
+        rectEl.style.left = rect.x+'px'; rectEl.style.top = rect.y+'px';
+        rectEl.style.width = rect.w+'px'; rectEl.style.height = rect.h+'px';
+        const inRect = nodesInRect(rect);
+        $$('.topo-node', canvasEl).forEach(nodeEl=>{
+          nodeEl.classList.toggle('multi-sel', inRect.has(nodeEl.dataset.node));
+        });
+      }
+      function onUp(ev){
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        rectEl.remove();
+        if(moved){
+          const curX = ev.clientX - canvasBox.left, curY = ev.clientY - canvasBox.top;
+          topoSelectedNodes = nodesInRect(computeRect(curX, curY));
+        } else {
+          topoSelectedNodes.clear();
+        }
+        renderTopologySkeleton();
+        refreshTopology();
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
   $$('.node-del', el).forEach(btn=>{
     // mousedown is deliberately NOT stopped here (used to be): the button
     // sits right on the icon's corner, which is exactly where a drag
@@ -1866,6 +1948,16 @@ function renderTopologySkeleton(){
     saveTopoCustomNodes(list);
     topoAddPanelOpen = false;
     rebuildTopology();
+    renderTopologySkeleton();
+    refreshTopology();
+  });
+  const sizeAllDownBtn = $('#topoSizeAllDownBtn');
+  if(sizeAllDownBtn) sizeAllDownBtn.addEventListener('click', ()=> applyTopoSizeDelta(TOPO_NODES.map(n=>n.id), -4));
+  const sizeAllUpBtn = $('#topoSizeAllUpBtn');
+  if(sizeAllUpBtn) sizeAllUpBtn.addEventListener('click', ()=> applyTopoSizeDelta(TOPO_NODES.map(n=>n.id), 4));
+  const selClearBtn = $('#topoSelClearBtn');
+  if(selClearBtn) selClearBtn.addEventListener('click', ()=>{
+    topoSelectedNodes.clear();
     renderTopologySkeleton();
     refreshTopology();
   });
@@ -6183,6 +6275,9 @@ function switchView(name){
   // 장비 다중 선택도 같은 원칙 -- 실제로 다른 화면으로 이동할 때만 지운다
   // (같은 화면에 머무는 동안의 폴링 재렌더에는 영향받지 않아야 함).
   if(name!==currentView && typeof clearDeviceSelection==='function') clearDeviceSelection();
+  // 토폴로지 드래그 선택도 같은 원칙 -- 다른 화면으로 나갔다 돌아왔을 때
+  // 전 선택이 그대로 남아있으면 혼란스럽다.
+  if(name!==currentView && typeof topoSelectedNodes!=='undefined') topoSelectedNodes.clear();
   if(currentView==='register' && name!=='register'){
     if(editingDeviceId && !confirm('수정을 취소할까요?')) return;
     if(typeof window.exitRegisterEditMode==='function') window.exitRegisterEditMode();
