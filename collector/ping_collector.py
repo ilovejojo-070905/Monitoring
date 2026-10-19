@@ -116,3 +116,28 @@ def sample_ping(entity, device_row):
         storage.add_incident('info', device_row['name'], storage.category_label(device_row['category']),
                               f"{device_row['name']} 응답 정상 복구",
                               device_id=device_row['id'], event_type='REACHABILITY', maintenance=maint)
+
+
+REMOTE_PORT_RECHECK_SEC = 20
+
+
+def check_remote_ports(entity, ip):
+    """네트워크 장비 목록의 SSH/Telnet 버튼을 실제로 열려 있는 포트만
+    보이게 하려고(요청: "텔넷 포트만 열려 있으면 텔넷만 표시") 22/23번을
+    직접 TCP 연결해본다. 포트 상태는 거의 안 바뀌므로 매 틱(기본 2초)마다
+    다시 열지 않고 REMOTE_PORT_RECHECK_SEC마다만 갱신 -- sshOpen/telnetOpen은
+    밑줄로 시작하지 않는 일반 entity 필드라 sysDescr와 같은 경로로
+    serialize_device()의 base.update(entity)를 거쳐 그대로 /api/state에
+    실린다(서버 쪽 추가 배선 불필요)."""
+    if not ip:
+        return
+    now = time.time()
+    last = entity.get('_remotePortCheckedAt') or 0
+    if now - last < REMOTE_PORT_RECHECK_SEC:
+        return
+    ssh_open, _ = tcp_check(ip, 22, 0.5)
+    telnet_open, _ = tcp_check(ip, 23, 0.5)
+    with state.LOCK:
+        entity['sshOpen'] = ssh_open
+        entity['telnetOpen'] = telnet_open
+        entity['_remotePortCheckedAt'] = now

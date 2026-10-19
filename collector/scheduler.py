@@ -89,6 +89,12 @@ def _run_job(device_id):
         elif device_row['mode'] == 'snmp':
             snmp_collector.sample_snmp(entity, device_row)
             metrics.record_entity_metrics(device_id, entity)
+        # 네트워크 장비 목록의 SSH/Telnet 버튼을 실제 열린 포트만 보이게
+        # (요청 사항) -- ping/snmp 둘 중 어느 모드든 네트워크 장비면 같이
+        # 확인한다. 자체 쓰로틀(REMOTE_PORT_RECHECK_SEC)이 있어 매 틱마다
+        # 실제로 포트를 열어보진 않는다.
+        if device_row['category'] == 'net':
+            ping_collector.check_remote_ports(entity, device_row['ip'])
         health.record_tick_success('collector')
         # Alert design section [4]/[5]: a device that was mid-outage due to a
         # collector-internal error (not a clean reachability failure) just

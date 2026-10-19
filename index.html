@@ -2582,6 +2582,19 @@ function renderNetworkSkeleton(){
   wireSelectAll('net', 'net-tbody', renderNetwork);
   wireSortableHeaders('#view-network thead', 'net-tbody', netSort, renderNetwork);
 }
+// 요청("텔넷 포트만 열려 있으면 텔넷만 표시, ssh 만 열려 있으면 ssh만
+// 표시"): collector가 22/23번 포트를 직접 열어본 결과(n.sshOpen/
+// n.telnetOpen, collector/ping_collector.py의 check_remote_ports)를
+// 그대로 따라 실제 열린 포트의 버튼만 보여준다. 둘 다 닫혀 있으면
+// 버튼 자리에 "—"만 남긴다.
+function remoteButtonsHtml(n){
+  if(!n.ip) return '<span style="color:var(--text-faint)">—</span>';
+  const btns = [];
+  if(n.sshOpen) btns.push(`<button type="button" class="btn remote-list-btn" data-remote-proto="ssh" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:12px;padding:6px 14px">SSH</button>`);
+  if(n.telnetOpen) btns.push(`<button type="button" class="btn remote-list-btn" data-remote-proto="telnet" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:12px;padding:6px 14px">Telnet</button>`);
+  if(!btns.length) return '<span style="color:var(--text-faint)" title="SSH(22)/Telnet(23) 포트가 열려 있지 않습니다">—</span>';
+  return `<div style="display:flex;gap:4px;justify-content:center" onclick="event.stopPropagation()">${btns.join('')}</div>`;
+}
 function renderNetwork(){
   const q = ($('#net-search')?.value||'').toLowerCase();
   const netGroupSel = $('#net-group-filter');
@@ -2601,11 +2614,7 @@ function renderNetwork(){
       <td class="mono">${n.reachable && typeof n.trafficIn==='number' ? fmtMbps((n.trafficIn||0)+(n.trafficOut||0))+' Mbps' : '<span style="color:var(--text-faint)">—</span>'}</td>
       <td class="mono" style="color:${n.reachable?'var(--text-dim)':'var(--crit)'}">${n.reachable? fmt0(n.latencyMs||0)+' ms' : '응답없음'}</td>
       <td class="mono">${typeof n.uptime==='number' ? fmt1(n.uptime)+'d' : '—'}</td>
-      ${CURRENT_ROLE==='ADMIN' ? `<td>${n.ip ? `
-        <div style="display:flex;gap:4px;justify-content:center" onclick="event.stopPropagation()">
-          <button type="button" class="btn remote-list-btn" data-remote-proto="ssh" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:12px;padding:6px 14px">SSH</button>
-          <button type="button" class="btn remote-list-btn" data-remote-proto="telnet" data-ip="${escapeHtml(n.ip)}" data-name="${escapeHtml(n.name)}" style="font-size:12px;padding:6px 14px">Telnet</button>
-        </div>` : '<span style="color:var(--text-faint)">—</span>'}</td>` : ''}
+      ${CURRENT_ROLE==='ADMIN' ? `<td>${remoteButtonsHtml(n)}</td>` : ''}
     </tr>`).join('') || `<tr><td colspan="${CURRENT_ROLE==='ADMIN'?12:11}"><div class="empty-note">${NETS.length? '검색 결과가 없습니다' : '등록된 네트워크 장비가 없습니다. "장비 등록"에서 공유기·스위치·NAS의 IP를 등록해보세요.'}</div></td></tr>`;
   $$('#net-tbody tr[data-id]').forEach(tr=>{
     tr.addEventListener('click', ()=>{ selectedNetId = tr.dataset.id; renderNetwork(); openDrawerFor(tr.dataset.id); });
