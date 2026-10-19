@@ -51,11 +51,16 @@ class EmailChannel(AlertChannel):
                     pass
 
     def send(self, to_addr, subject, body):
+        """to_addr: a single address, or multiple comma-separated (the SMTP
+        alert_to setting supports several recipients this way -- see
+        validation.is_valid_email_list, which is what guarantees every
+        entry here is already a well-formed address by the time this runs)."""
+        to_addrs = [a.strip() for a in to_addr.split(',') if a.strip()]
         msg = MIMEText(body, _charset='utf-8')
         msg['Subject'] = subject
         msg['From'] = self.username
-        msg['To'] = to_addr
-        return self._send_message(msg, [to_addr])
+        msg['To'] = ', '.join(to_addrs)
+        return self._send_message(msg, to_addrs)
 
     def send_with_attachment(self, to_addrs, subject, body, attachment_bytes, attachment_filename, attachment_mimetype):
         """to_addrs: a list (3-3's report schedules can have multiple

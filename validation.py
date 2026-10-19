@@ -94,6 +94,20 @@ def is_valid_email(s):
     return bool(_EMAIL_RE.match(s or ''))
 
 
+MAX_ALERT_EMAIL_RECIPIENTS = 20
+
+
+def is_valid_email_list(s):
+    """s: comma-separated addresses, e.g. 'a@x.com, b@x.com' -- the SMTP
+    alert_to setting (수신 이메일) accepts multiple recipients this way.
+    Empty/whitespace-only entries from stray commas are ignored; every
+    non-empty entry must be a valid address, and at least one must remain."""
+    addrs = [a.strip() for a in (s or '').split(',') if a.strip()]
+    if not addrs or len(addrs) > MAX_ALERT_EMAIL_RECIPIENTS:
+        return False
+    return all(is_valid_email(a) for a in addrs)
+
+
 MAX_TAGS_PER_DEVICE = 10
 MAX_TAG_LEN = 30
 

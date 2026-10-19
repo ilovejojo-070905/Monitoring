@@ -2458,8 +2458,8 @@ def api_set_smtp_settings():
         return jsonify({'error': 'host 형식이 올바르지 않습니다'}), 400
     if not validation.is_valid_port(port):
         return jsonify({'error': 'port는 1~65535 사이의 숫자여야 합니다'}), 400
-    if not validation.is_valid_email(alert_to):
-        return jsonify({'error': '수신 이메일 형식이 올바르지 않습니다'}), 400
+    if not validation.is_valid_email_list(alert_to):
+        return jsonify({'error': f'수신 이메일 형식이 올바르지 않습니다 (쉼표로 구분해 최대 {validation.MAX_ALERT_EMAIL_RECIPIENTS}명)'}), 400
     if body.get('minSeverity') not in (None, 'warn', 'crit'):
         return jsonify({'error': 'minSeverity는 warn 또는 crit이어야 합니다'}), 400
     storage.set_smtp_config(

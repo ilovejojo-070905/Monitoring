@@ -4470,7 +4470,7 @@ function renderChannelsSkeleton(){
       <div class="field"><label>포트</label><input type="number" id="ch-smtp-port" placeholder="465"></div>
       <div class="field"><label>사용자명 (발신 계정)</label><input type="text" id="ch-smtp-username" placeholder="예: alert@yourcompany.com"></div>
       <div class="field"><label>비밀번호</label><input type="password" id="ch-smtp-password" placeholder="변경하려면 입력 (비워두면 기존 값 유지)"></div>
-      <div class="field"><label>수신 이메일</label><input type="text" id="ch-smtp-alertto" placeholder="비워두면 사용자명과 동일"></div>
+      <div class="field"><label>수신 이메일 (여러 명이면 쉼표로 구분)</label><input type="text" id="ch-smtp-alertto" placeholder="예: a@company.com, b@company.com (비워두면 사용자명과 동일)"></div>
       ${minSeveritySelectHtml('smtp')}
       <div class="field"><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="ch-smtp-usetls" style="width:auto"> TLS 사용</label></div>
     `, true, true)}
