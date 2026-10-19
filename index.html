@@ -2339,6 +2339,7 @@ function matchesEntitySearch(entity, q){
   if(entity.name.toLowerCase().includes(q)) return true;
   if((entity.ip||'').includes(q)) return true;
   if((entity.group||'').toLowerCase().includes(q)) return true;
+  if((entity.type||'').toLowerCase().includes(q)) return true;
   if((entity.tags||[]).some(t=>t.toLowerCase().includes(q))) return true;
   return false;
 }
@@ -2540,7 +2541,7 @@ function renderNetworkSkeleton(){
         ${statusFilterRow('net-filters', netFilter)}
         <select id="net-group-filter" class="group-filter-select"></select>
         <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="net-search" placeholder="장비명 / IP / 그룹 / 태그 검색"></div>
+          <input id="net-search" placeholder="장비명 / IP / 그룹 / 유형 검색"></div>
       </div>
       ${selectBarHtml('net')}
       <div class="table-wrap"><table class="data reg-device-table">
