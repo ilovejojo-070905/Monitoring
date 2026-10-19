@@ -16,8 +16,11 @@ that needs no arguments at all — just double-click the exe.
 
 Auto-start at Windows login (no admin rights needed):
     InfraSightAgent.exe --install-startup
-Remove auto-start:
+Remove auto-start only (keeps the agent installed):
     InfraSightAgent.exe --uninstall-startup
+Remove the agent completely (auto-start + running process + installed files):
+    InfraSightAgent.exe --uninstall
+    (Linux: python3 ~/.config/InfraSightAgent/InfraSightAgent.py --uninstall)
 
 Requirements when run as a .py script (not needed for the packaged .exe):
     pip install psutil pywin32
@@ -128,6 +131,28 @@ def read_sidecar_config():
         return None
 
 
+def _find_agent_processes():
+    """이미 실행 중인 다른 에이전트 프로세스 전부 -- 이 프로세스 자신은
+    제외. Windows는 exe 이름(InfraSightAgent.exe)으로 찾지만, Linux는
+    스크립트라 프로세스 이름 자체가 보통 python/python3이라 cmdline에
+    InfraSightAgent.py가 들어있는지로 찾는다."""
+    my_pid = os.getpid()
+    found = []
+    for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if p.info['pid'] == my_pid:
+                continue
+            if IS_WINDOWS:
+                if (p.info['name'] or '').lower() == 'infrasightagent.exe':
+                    found.append(p)
+            else:
+                if 'InfraSightAgent.py' in ' '.join(p.info['cmdline'] or []):
+                    found.append(p)
+        except Exception:
+            pass
+    return found
+
+
 def _stop_other_running_instances():
     """A stale copy already running from a previous install (old token)
     holds the target exe file locked on Windows, which silently breaks the
@@ -139,11 +164,8 @@ def _stop_other_running_instances():
     token -- see is_fresh_embedded in main()) does it automatically.
     Best-effort: any failure here just means the copy below may fail too,
     same as before this existed."""
-    my_pid = os.getpid()
-    for p in psutil.process_iter(['pid', 'name']):
+    for p in _find_agent_processes():
         try:
-            if p.info['pid'] == my_pid or (p.info['name'] or '').lower() != 'infrasightagent.exe':
-                continue
             p.terminate()
             p.wait(timeout=3)
         except Exception:
@@ -261,12 +283,20 @@ def hide_console_window():
         pass
 
 
+def _agent_install_dir():
+    """config.json이 사는 바로 그 폴더(복사본 exe/py도 relocate_and_
+    relaunch_if_needed이 같은 폴더에 둠) -- 디렉터리를 만들지 않고 경로만
+    계산한다. config_path()는 "쓰기 전에 폴더가 있는지" 보장해야 해서
+    os.makedirs를 호출하지만, uninstall_agent()처럼 "이미 있는지"만 보고
+    지우려는 쪽에서 그 side effect를 그대로 쓰면 방금 지운 빈 폴더를
+    매번 다시 만들어버려 "이미 제거됨"과 "방금 제거함"을 구분할 수 없게
+    된다."""
+    base = (os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')) if IS_WINDOWS else os.path.expanduser('~/.config')
+    return os.path.join(base, 'InfraSightAgent')
+
+
 def config_path():
-    if IS_WINDOWS:
-        base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
-    else:
-        base = os.path.expanduser('~/.config')
-    d = os.path.join(base, 'InfraSightAgent')
+    d = _agent_install_dir()
     os.makedirs(d, exist_ok=True)
     return os.path.join(d, 'config.json')
 
@@ -426,6 +456,47 @@ def uninstall_startup_linux():
         print('[agent] 자동 시작 등록 해제 완료')
     except Exception as e:
         print('[agent] 자동 시작 해제 실패:', e)
+
+
+def uninstall_agent():
+    """요청("윈도우든 리눅스든 설치된 Agent를 깔끔하게 삭제")에 대한
+    완전 제거 -- --uninstall-startup은 자동 시작 등록만 지우고 실행 중인
+    프로세스나 설치 폴더(복사본 exe/py + config.json, config_path()가
+    쓰는 바로 그 폴더)는 그대로 뒀는데, 이건 그 전부를 다룬다:
+    1) 자동 시작 해제(uninstall_startup, 플랫폼별 분기는 그 안에서 처리)
+    2) 실행 중인 다른 에이전트 프로세스 전부 종료(_stop_other_running_
+       instances, 이 프로세스 자신은 제외)
+    3) 설치 폴더 삭제
+
+    Windows에서 실행 중인 exe 자신은 파일이 잠겨 있어 바로 못 지운다
+    (지우려는 폴더 안의 그 exe로 지금 이 코드가 실행 중인 경우) -- 그
+    경우만 짧게 기다렸다 지우는 분리된 cmd 한 줄을 띄워 놓고(그 cmd는
+    이 프로세스가 끝난 뒤에 실행됨) 먼저 빠져나간다. 그 외의 모든
+    경우(비-frozen 스크립트, 다른 경로의 exe, Linux)는 바로 지운다."""
+    uninstall_startup()
+    install_dir = _agent_install_dir()
+    _stop_other_running_instances()
+    if IS_WINDOWS and getattr(sys, 'frozen', False):
+        my_path = os.path.abspath(sys.executable)
+        target = os.path.join(install_dir, 'InfraSightAgent.exe')
+        if os.path.normcase(my_path) == os.path.normcase(target):
+            try:
+                subprocess.Popen(
+                    ['cmd', '/c', f'timeout /t 2 /nobreak >nul & rmdir /s /q "{install_dir}"'],
+                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+                )
+                print(f'[agent] 제거 진행 중 -- 이 창이 닫히면 설치 폴더가 곧 삭제됩니다: {install_dir}')
+            except Exception as e:
+                print('[agent] 설치 폴더 삭제 예약 실패 -- 직접 지워주세요:', install_dir, e)
+            return
+    try:
+        if os.path.isdir(install_dir):
+            shutil.rmtree(install_dir)
+            print(f'[agent] 제거 완료: {install_dir}')
+        else:
+            print('[agent] 설치 폴더가 이미 없습니다 (자동 시작 해제만 적용됨).')
+    except Exception as e:
+        print('[agent] 설치 폴더 삭제 실패 -- 직접 지워주세요:', install_dir, e)
 
 
 def prompt_for_config():
@@ -832,8 +903,13 @@ def main():
     ap.add_argument('--interval', type=float, default=3.0, help='report interval in seconds (default 3)')
     ap.add_argument('--install-startup', action='store_true', help='로그인/재부팅 시 자동 실행 등록 (Windows: 시작프로그램, Linux: crontab @reboot)')
     ap.add_argument('--uninstall-startup', action='store_true', help='자동 실행 등록 해제')
+    ap.add_argument('--uninstall', action='store_true', help='에이전트 완전 제거 (자동 시작 해제 + 실행 중인 프로세스 종료 + 설치 폴더 삭제)')
     ap.add_argument('--setup-only', action='store_true', help='설정 저장(+자동시작 등록)만 하고 즉시 종료 (모니터링 루프 실행 안 함)')
     args = ap.parse_args()
+
+    if args.uninstall:
+        uninstall_agent()
+        return
 
     if args.uninstall_startup:
         uninstall_startup()
