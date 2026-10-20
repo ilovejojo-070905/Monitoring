@@ -1,0 +1,7 @@
+# uninstall-agent.sh (and any future .sh) is meant to run on Linux -- CRLF
+# line endings there break the shebang and the script outright. Without this,
+# Windows' core.autocrlf=true would convert it to CRLF on checkout on this
+# (or any other Windows) machine, including the production D:\InfraSight
+# checkout that patch.ps1 keeps in sync -- forcing LF here means the file on
+# disk stays correct regardless of which OS checked it out.
+*.sh text eol=lf

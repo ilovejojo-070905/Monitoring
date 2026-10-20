@@ -32,6 +32,14 @@ InfraSight 릴리스 빌드 (Setup.exe + Setup-GUI.exe + 자체 내장형 Patch.
   - InfraSight-Uninstall-GUI-*.exe : 같은 uninstall.ps1을 NSIS 마법사로 감싼
                                     그래픽 제거 프로그램. ops\uninstall-gui.nsi
                                     참고.
+  - InfraSightAgent-Uninstall-*.exe / InfraSightAgent-Uninstall-GUI-*.exe :
+                                    모니터링 대상 PC(InfraSight 서버가 아닌
+                                    다른 PC)에 설치된 에이전트만 따로 깔끔하게
+                                    제거하는 콘솔/그래픽 제거 프로그램.
+                                    uninstall-agent.ps1 / ops\uninstall-agent-
+                                    gui.nsi 참고 -- 관리자 권한도 설치 경로
+                                    선택도 필요 없다(에이전트는 항상
+                                    %LOCALAPPDATA%\InfraSightAgent 고정).
 
 Setup/Patch 둘 다 dist\InfraSightAgent.exe(장비 등록 시 다운로드하는 에이전트
 실행 파일)도 base64로 함께 내장한다 -- 이 파일은 용량 때문에 .gitignore
@@ -113,6 +121,7 @@ try {
     Invoke-ps2exe -inputFile $tempInstallPs1 -outputFile (Join-Path $outDir "InfraSight-Setup-$date-$sha.exe") -title 'InfraSight Setup' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile $tempPatchPs1 -outputFile (Join-Path $outDir "InfraSight-Patch-$date-$sha.exe") -title 'InfraSight Patch' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall.ps1') -outputFile (Join-Path $outDir "InfraSight-Uninstall-$date-$sha.exe") -title 'InfraSight Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
+    Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall-agent.ps1') -outputFile (Join-Path $outDir "InfraSightAgent-Uninstall-$date-$sha.exe") -title 'InfraSight Agent Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
 
     $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
     if (-not (Test-Path $makensis)) { $makensis = "$env:ProgramFiles\NSIS\makensis.exe" }
@@ -136,6 +145,12 @@ try {
             if ($LASTEXITCODE -ne 0) {
                 $buildFailures += 'GUI 제거 프로그램'
                 Write-Warning "GUI 제거 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다."
+            }
+
+            & $makensis "/DVERSION=$date-$sha" uninstall-agent-gui.nsi
+            if ($LASTEXITCODE -ne 0) {
+                $buildFailures += 'GUI 에이전트 제거 프로그램'
+                Write-Warning "GUI 에이전트 제거 프로그램(makensis) 빌드 실패 (종료 코드 $LASTEXITCODE) -- 나머지 빌드는 계속합니다."
             }
         } finally {
             Pop-Location
