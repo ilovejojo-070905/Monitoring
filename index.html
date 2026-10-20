@@ -2926,6 +2926,16 @@ function renderIncidents(){
 
 /* ================= REGISTER ================= */
 let regCategory = 'server', regMode = 'agent', editingDeviceId = null;
+// 요청("수정하던지 취소하던지 간에 장비 등록 화면으로 넘어가는데 이걸
+// 넘어가지 않게 해줘"): 수정 폼 자체가 #view-register 화면 안에 모달로
+// 떠 있는 구조라(startEditDevice 호출부 주석 참고) 드로어의 "수정" 버튼은
+// 그 화면이 안 보이면 모달도 안 보이니 어쩔 수 없이 switchView('register')
+// 로 화면을 옮긴 뒤 모달을 연다 -- 문제는 저장/취소 어느 쪽이든 그 뒤에
+// 다시 원래 화면으로 안 돌아가고 "장비 등록" 화면에 그대로 남아있던 것.
+// editBtn.onclick이 화면을 옮기기 *직전*의 currentView를 여기 기억해두고,
+// finishEditAndReturn()(취소/저장 완료 양쪽의 실제 종료 지점)에서 그
+// 화면으로 되돌아간다.
+let editReturnView = null;
 // SNMP connection-test gate (1-3. SNMPv3 등록 UI): a *new* SNMP device can't
 // be registered until a test against these exact field values has passed --
 // reset to false by any change to an SNMP-relevant input. Edits skip this
@@ -3635,8 +3645,19 @@ function renderRegisterSkeleton(){
     $('#agent-command-box').style.display = 'none';
     $('#agent-command-box-linux').style.display = 'none';
   }
-  $('#edit-cancel-btn').addEventListener('click', exitEditMode);
-  $('#reg-edit-overlay').addEventListener('click', exitEditMode);
+  // 취소/저장 완료, 둘 다 여기로 모인다 -- exitEditMode()로 폼부터 정리한
+  // 뒤, 드로어의 "수정" 버튼이 기억해 둔 editReturnView로 돌아간다. 다른
+  // 메뉴를 직접 클릭해 수정을 중단하는 경우(switchView의 자체 확인창
+  // 분기)는 그쪽에서 이미 목적지를 알고 있으므로 여기를 거치지 않고
+  // window.exitRegisterEditMode(=exitEditMode)만 그대로 쓴다.
+  function finishEditAndReturn(){
+    const target = editReturnView;
+    editReturnView = null;
+    exitEditMode();
+    if(target && target !== 'register') switchView(target);
+  }
+  $('#edit-cancel-btn').addEventListener('click', finishEditAndReturn);
+  $('#reg-edit-overlay').addEventListener('click', finishEditAndReturn);
   window.exitRegisterEditMode = exitEditMode;
   window.startEditDevice = function(entity, cat){
     editingDeviceId = entity.id;
@@ -3843,7 +3864,7 @@ function renderRegisterSkeleton(){
       if(editingDeviceId){
         await updateDevice(editingDeviceId, name, ip, fields);
         await afterDeviceChange();
-        exitEditMode();
+        finishEditAndReturn();
       } else {
         const result = await registerDevice(regCategory, effMode, name, ip, fields);
         await afterDeviceChange();
@@ -5848,7 +5869,11 @@ function openDrawerFor(id){
       // 수정 폼은 "장비 등록" 화면(#view-register) 안에 모달로 떠 있는 구조라,
       // 그 화면이 비활성 상태(display:none)인 동안에는 열어봐야 화면에 전혀
       // 보이지 않는다 -- 드로어는 어느 화면에서든 열릴 수 있으므로, 먼저 그
-      // 화면으로 전환한 뒤에 수정 모달을 띄운다.
+      // 화면으로 전환한 뒤에 수정 모달을 띄운다. 화면을 옮기기 직전의
+      // currentView를 기억해둬서(요청: "수정하던지 취소하던지 간에 장비
+      // 등록 화면으로 넘어가는데 이걸 넘어가지 않게 해줘"), 저장/취소 뒤
+      // finishEditAndReturn()이 원래 있던 화면으로 되돌려준다.
+      editReturnView = currentView;
       closeDrawer();
       switchView('register');
       window.startEditDevice(entity, cat);
