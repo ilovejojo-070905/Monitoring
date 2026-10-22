@@ -38,6 +38,23 @@ OID_CISCO_MEM_FREE = '1.3.6.1.4.1.9.9.48.1.1.1.6'
 OID_CISCO_NXOS_CPU = '1.3.6.1.4.1.9.9.305.1.1.1'
 OID_CISCO_NXOS_MEM_PCT = '1.3.6.1.4.1.9.9.305.1.1.2'
 
+# NX-OS 환경센서(2차 실측, 2026-10-22 -- 1차에서 CISCO-ENVMON-MIB/표준
+# ENTITY-SENSOR-MIB 둘 다 응답 없다고 확인된 뒤, 사용자가 "환경센서 안
+# 보임"으로 재문의해서 CISCO-ENTITY-FRU-CONTROL-MIB를 새로 테스트함):
+# cefcFanTrayStatus/cefcFRUPowerOperStatus 둘 다 실제 장비(Nexus 9504)에서
+# 응답 있음(각 3행, 전부 up(2)/on(2)). 온도는 이 MIB에 아예 없고, 다른 두
+# 후보도 여전히 응답 없어서 온도 센서는 계속 미구현(env_mib 핸들러가
+# envFanState/envSupplyState만 채우고 envTemp*는 비워둠, 추측 안 함).
+# 다른 모든 env 핸들러(_hp_icfsensor_env/_h3c_entity_env/_entity_sensor_env
+# 등)와 같은 원칙: 공식 MIB 문서상의 다른 상태 코드(down/failed/offAdmin
+# 등)는 실제로 본 적이 없어 "정상"인지 확신할 수 없으므로, 실측으로
+# 확인된 코드(up/on = '2') 하나만 '정상'으로 매핑하고 나머지는 전부
+# '모름'으로 떨어지게 한다.
+OID_CISCO_FRU_FAN_STATUS = '1.3.6.1.4.1.9.9.117.1.4.1.1.1'
+OID_CISCO_FRU_POWER_STATUS = '1.3.6.1.4.1.9.9.117.1.1.2.1.2'
+CISCO_FRU_FAN_STATUS_UP = '2'
+CISCO_FRU_POWER_STATUS_ON = '2'
+
 # HP/Aruba (classic ProCurve/ProVision switches), STATISTICS-MIB --
 # hpSwitchCpuStat / hpGlobalMemAllocBytes / hpGlobalMemFreeBytes. These are
 # TABLE columns like the Cisco ones above (not single scalar leaves), so
@@ -337,6 +354,8 @@ OID_MIB_INFO = {
     OID_H3C_OPER_STATUS: ('HH3C-ENTITY-EXT-MIB', False),
     OID_CISCO_NXOS_CPU: ('CISCO-SYSTEM-EXT-MIB', False),
     OID_CISCO_NXOS_MEM_PCT: ('CISCO-SYSTEM-EXT-MIB', False),
+    OID_CISCO_FRU_FAN_STATUS: ('CISCO-ENTITY-FRU-CONTROL-MIB', False),
+    OID_CISCO_FRU_POWER_STATUS: ('CISCO-ENTITY-FRU-CONTROL-MIB', False),
 }
 
 
@@ -410,10 +429,11 @@ PROFILES = {
         'mem_used_oid': None,
         'mem_free_oid': None,
         'mem_pct_oid': OID_CISCO_NXOS_MEM_PCT,
-        # 온도/팬 센서(CISCO-ENVMON-MIB) + 표준 ENTITY-SENSOR-MIB 둘 다 이
-        # 장비에서 응답 없음을 실측 확인 -- 'dell'과 같은 이유로 안전한
-        # 기본값이 없어 None (추측 안 함).
-        'env_mib': None,
+        # 온도(CISCO-ENVMON-MIB + 표준 ENTITY-SENSOR-MIB)는 이 장비에서 응답
+        # 없음을 2차 실측까지 확인 -- 온도 센서는 여전히 미구현(추측 안 함).
+        # 팬/전원은 CISCO-ENTITY-FRU-CONTROL-MIB로 2차 실측에서 응답 확인(OID_
+        # CISCO_FRU_* 위 주석 참고) -- 'cisco_fru' 핸들러가 그 둘만 채움.
+        'env_mib': 'cisco_fru',
     },
     'ups': {
         'name': 'ups',

@@ -491,6 +491,10 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
                 (result['envTempDescr'], result['envTempValue'], result['envTempState'],
                  result['envFanState'], result['envSupplyState']) = _entity_sensor_env(
                     sensor_type, sensor_scale, sensor_precision, sensor_value, sensor_status, phys_name)
+            elif env_mib == 'cisco_fru':
+                fru_fan = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_FRU_FAN_STATUS, timeout=timeout)
+                fru_power = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_FRU_POWER_STATUS, timeout=timeout)
+                result['envFanState'], result['envSupplyState'] = _cisco_fru_env(fru_fan, fru_power)
             try:
                 ent, _ent_err = await _snmp_get(engine, ip, auth_data, port,
                                        [OID_ENT_PHYSICAL_DESCR, OID_ENT_PHYSICAL_MODEL_NAME, OID_ENT_PHYSICAL_SERIAL_NUM],
@@ -719,6 +723,19 @@ def _entity_sensor_env(sensor_type, sensor_scale, sensor_precision, sensor_value
         elif t_s == snmp_profiles.ENT_SENSOR_TYPE_WATTS:
             supply_state[idx] = code
     return temp_descr, temp_value, temp_state, fan_state, supply_state
+
+
+def _cisco_fru_env(fan_raw, power_raw):
+    """CISCO-ENTITY-FRU-CONTROL-MIB, Cisco Nexus(NX-OS) -- 실제 Nexus 9504로
+    2차 실측 확인(cefcFanTrayStatus/cefcFRUPowerOperStatus, snmp_profiles.py의
+    OID_CISCO_FRU_* 주석 참고). 온도는 이 MIB에 없어 다루지 않음(cisco-nxos
+    프로필은 이 함수를 env_mib='cisco_fru'로만 호출, 온도 OID 자체가 아직
+    미해결). 다른 env 핸들러들과 같은 원칙: 실측으로 확인된 up/on(2)만
+    '1'(정상)로 매핑하고, 공식 문서상 다른 상태 코드(down/failed/offAdmin
+    등)는 실제로 본 적이 없어 전부 '9'(모름)로 떨어지게 함."""
+    fan_state = {idx: ('1' if str(v) == snmp_profiles.CISCO_FRU_FAN_STATUS_UP else '9') for idx, v in fan_raw.items()}
+    supply_state = {idx: ('1' if str(v) == snmp_profiles.CISCO_FRU_POWER_STATUS_ON else '9') for idx, v in power_raw.items()}
+    return fan_state, supply_state
 
 
 def _mac_from_oid_suffix(suffix):

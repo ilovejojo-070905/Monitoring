@@ -434,6 +434,19 @@ def test_entity_sensor_env():
     check('C10 entity_sensor: nonoperational(3) -> unknown, not normal', supply2 == {'7201': '9'}, str(supply2))
 
 
+def test_cisco_fru_env():
+    # 실제 Nexus 9504 실측값 그대로(2026-10-22, cefcFanTrayStatus/
+    # cefcFRUPowerOperStatus 전부 up/on=2).
+    fan_raw = {'534': '2', '535': '2', '536': '2'}
+    power_raw = {'22': '2', '23': '2', '43': '2'}
+    fan, supply = sc._cisco_fru_env(fan_raw, power_raw)
+    check('C11 cisco_fru: up(2)/on(2) maps to normal', fan == {'534': '1', '535': '1', '536': '1'} and
+          supply == {'22': '1', '23': '1', '43': '1'}, str((fan, supply)))
+    fan2, supply2 = sc._cisco_fru_env(dict(fan_raw, **{'534': '3'}), dict(power_raw, **{'22': '8'}))
+    check('C12 cisco_fru: unconfirmed status code (down/failed) never reads as normal',
+          fan2['534'] == '9' and supply2['22'] == '9', str((fan2, supply2)))
+
+
 # ======================================================================
 # D. Vendor OID profile resolution (collector/snmp_profiles.py)
 # ======================================================================
@@ -1666,7 +1679,7 @@ def main():
         test_lldp_bidirectional_confirmation, test_lldp_walk_distinguishes_failure_from_confirmed_empty,
         test_sample_snmp_lldp_gate_respects_confirmed_flag, test_topology_layout_persistence,
         test_device_delete_cleans_links,
-        test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env,
+        test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env, test_cisco_fru_env,
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
         test_sample_snmp_flags_low_confidence_traffic,
