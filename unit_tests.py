@@ -445,6 +445,15 @@ def test_vendor_profile_resolution():
     check('D2 classic ProCurve sysDescr resolves to hp (not aruba-cx)', classic['name'] == 'hp', classic['name'])
     comware = sp.resolve_profile(None, 'HP Comware Platform Software ... Hewlett-Packard Development Company, L.P.')
     check('D3 Comware sysDescr resolves to hp-comware (not hp)', comware['name'] == 'hp-comware', comware['name'])
+    # 실제 운영 중인 Nexus 9504에서 받은 sysDescr 그대로(2026-10-22 실측,
+    # nxos_oid_probe.py로 확인) -- "cisco"도 포함돼 있어 'nx-os' 분기가
+    # 'cisco' 분기보다 먼저 체크되는지가 핵심.
+    nxos = sp.resolve_profile(None, 'Cisco NX-OS(tm) n9000, Software (n9000-dk9), Version 7.0(3)I1(2), '
+                                     'RELEASE SOFTWARE Copyright (c) 2002-2013 by Cisco Systems, Inc. '
+                                     'Compiled 5/16/2015 10:00:00')
+    check('D4 Nexus(NX-OS) sysDescr resolves to cisco-nxos (not plain cisco)', nxos['name'] == 'cisco-nxos', nxos['name'])
+    plain_ios = sp.resolve_profile(None, 'Cisco IOS Software, C2960S Software, Version 15.2(2)E')
+    check('D5 plain IOS sysDescr (no nx-os/nexus) still resolves to cisco', plain_ios['name'] == 'cisco', plain_ios['name'])
 
 
 def test_mib_standard_vs_vendor_separation():

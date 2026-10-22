@@ -2288,7 +2288,12 @@ def api_set_vendor_profile(device_id):
         return jsonify({'error': 'device not found'}), 404
     body = request.get_json(force=True)
     profile = body.get('profile') or 'generic'
-    if profile not in ('generic', 'cisco', 'ups'):
+    # 기존엔 ('generic','cisco','ups') 하드코딩 목록이라 이후 추가된 hp/
+    # aruba-cx/dell/juniper/hp-comware/cisco-nxos가 전부 수동 등록 API로는
+    # 선택 불가능했음(새 프로필 추가할 때마다 여기도 같이 고쳐야 하는 걸
+    # 깜빡하기 쉬운 구조) -- snmp_profiles.PROFILES를 그대로 참조해서 새
+    # 프로필이 생기면 자동으로 여기도 같이 열리게 함.
+    if profile not in snmp_profiles.PROFILES:
         return jsonify({'error': 'unknown profile'}), 400
     storage.set_vendor_profile(device_id, profile)
     audit('SET_VENDOR_PROFILE', target=device_id, details=profile)

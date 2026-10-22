@@ -15,6 +15,29 @@ OID_CISCO_CPU_5MIN = '1.3.6.1.4.1.9.9.109.1.1.1.1.7'
 OID_CISCO_MEM_USED = '1.3.6.1.4.1.9.9.48.1.1.1.5'
 OID_CISCO_MEM_FREE = '1.3.6.1.4.1.9.9.48.1.1.1.6'
 
+# Cisco NX-OS (Nexus) -- 'cisco' 위 OID들은 IOS 기준이라 NX-OS에선 메모리가
+# 전혀 안 나온다는 실사용자 제보(2026-10-22, 실제 운영 중인 Nexus 9504,
+# sysDescr: "Cisco NX-OS(tm) n9000, ... Version 7.0(3)I1(2)")로 진단 스크립트
+# (nxos_oid_probe.py, 저장소 루트, git에는 안 올림)를 그 장비에 직접 돌려 확인함:
+#   - ciscoMemoryPoolUsed/Free(OID_CISCO_MEM_*): 응답 없음 (블랭크 원인 확정)
+#   - cpmCPUTotal5min(OID_CISCO_CPU_5MIN): 응답은 있었지만 모듈별 3행 테이블
+#     (22/23/43 -> 11/8/4%) -- 어느 행이 "그 장비의 CPU"인지 불명확하고, NX-OS
+#     전용 스칼라가 따로 있어 그걸 쓰는 게 더 안전함
+#   - CISCO-SYSTEM-EXT-MIB cseSysCPUUtilization/cseSysMemoryUtilization: 둘 다
+#     행 하나짜리 전체-시스템 스칼라로 응답(9%, 27%) -- CPU/MEM 모두 이걸로 통일
+#   - CISCO-ENVMON-MIB(온도/팬), 표준 ENTITY-SENSOR-MIB: 셋 다 응답 없음 ->
+#     env_mib는 'dell' 프로필과 같은 이유로 None (안전한 기본값이 없음, 추측 안 함)
+# 주의: 아래 두 OID는 실제로는 스칼라(.0으로 끝나는 단일 값)이지만, 이
+# 프로젝트의 cpu_oid/mem_pct_oid는 _snmp_walk()로 "테이블 trunk" 취급돼서
+# base_oid+'.'로 시작하는 다음 OID들을 모은다 -- .0까지 포함한 전체 OID를
+# 넣으면 walk가 그 바로 다음(엉뚱한) OID부터 찾아서 빈 결과가 나온다. 그래서
+# 끝의 .0을 뺀 trunk만 저장해서, walk가 자식인 .0 인스턴스를 정상적으로
+# 찾게 한다 (실제로 {'0': '9'}/{'0': '27'} 한 행짜리 dict가 나오고, 기존
+# 평균 로직이 한 값 그대로를 cpu/mem에 쓰게 됨 -- 다른 벤더처럼 여러 행
+# 평균이 필요 없는 경우에도 동일한 메커니즘이 그대로 맞물려 동작함).
+OID_CISCO_NXOS_CPU = '1.3.6.1.4.1.9.9.305.1.1.1'
+OID_CISCO_NXOS_MEM_PCT = '1.3.6.1.4.1.9.9.305.1.1.2'
+
 # HP/Aruba (classic ProCurve/ProVision switches), STATISTICS-MIB --
 # hpSwitchCpuStat / hpGlobalMemAllocBytes / hpGlobalMemFreeBytes. These are
 # TABLE columns like the Cisco ones above (not single scalar leaves), so
@@ -312,6 +335,8 @@ OID_MIB_INFO = {
     OID_H3C_TEMPERATURE: ('HH3C-ENTITY-EXT-MIB', False),
     OID_H3C_TEMPERATURE_THRESHOLD: ('HH3C-ENTITY-EXT-MIB', False),
     OID_H3C_OPER_STATUS: ('HH3C-ENTITY-EXT-MIB', False),
+    OID_CISCO_NXOS_CPU: ('CISCO-SYSTEM-EXT-MIB', False),
+    OID_CISCO_NXOS_MEM_PCT: ('CISCO-SYSTEM-EXT-MIB', False),
 }
 
 
@@ -372,6 +397,23 @@ PROFILES = {
         # the hp/dell/juniper entries below for why that's the honest answer
         # for some of them, not just an oversight).
         'env_mib': 'cisco_envmon',
+    },
+    # Cisco Nexus(NX-OS) -- 'cisco' 위 OID들(IOS 기준)은 메모리가 전혀 안
+    # 나오는 것을 실제 운영 중인 Nexus 9504로 실측 확인했음(2026-10-22, OID_
+    # CISCO_NXOS_CPU 위 주석 참고). CPU도 cpmCPUTotal5min 대신 같은 NX-OS 전용
+    # MIB의 스칼라로 통일 -- 모듈별 테이블 평균보다 "전체 시스템 1개 값"이
+    # 더 명확하고, 실측으로 응답이 확인된 값이기도 함.
+    'cisco-nxos': {
+        'name': 'cisco-nxos',
+        'cpu_oid': OID_CISCO_NXOS_CPU,
+        'cpu_fallback_oid': None,
+        'mem_used_oid': None,
+        'mem_free_oid': None,
+        'mem_pct_oid': OID_CISCO_NXOS_MEM_PCT,
+        # 온도/팬 센서(CISCO-ENVMON-MIB) + 표준 ENTITY-SENSOR-MIB 둘 다 이
+        # 장비에서 응답 없음을 실측 확인 -- 'dell'과 같은 이유로 안전한
+        # 기본값이 없어 None (추측 안 함).
+        'env_mib': None,
     },
     'ups': {
         'name': 'ups',
@@ -509,11 +551,18 @@ def resolve_profile(vendor_profile, sys_descr):
     (confirmed live on a 2530/J9776A), while ArubaOS-CX (a different,
     Linux-based OS with no ProCurve heritage) never does (confirmed live
     on a 6100/JL675A) -- so 'procurve' present or absent is what actually
-    tells the two apart, not just the word 'aruba' alone (both say it)."""
+    tells the two apart, not just the word 'aruba' alone (both say it).
+    'nx-os'/'nexus' is checked BEFORE plain 'cisco' below: a real Nexus
+    sysDescr contains "cisco" too (e.g. "Cisco NX-OS(tm) n9000, ..."), but
+    'cisco' (the IOS profile) has no working memory OID on NX-OS at all
+    (실측 확인, OID_CISCO_NXOS_CPU 위 주석 참고) -- same ordering principle as
+    comware/aruba-cx above, more specific keyword first."""
     if vendor_profile and vendor_profile != 'generic':
         return PROFILES.get(vendor_profile, PROFILES['generic'])
     if sys_descr:
         descr = sys_descr.lower()
+        if 'nx-os' in descr or 'nexus' in descr:
+            return PROFILES['cisco-nxos']
         if 'cisco' in descr:
             return PROFILES['cisco']
         if 'comware' in descr:
