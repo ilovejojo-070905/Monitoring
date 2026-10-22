@@ -239,19 +239,32 @@ function Resolve-ExeAndAddToPath([string]$cmd, [string[]]$searchGlobs) {
     # just-installed interpreter and broke every step after it. Rejecting any
     # match under WindowsApps forces the search-glob fallback (the actual
     # known winget install location) instead.
-    $existing = Get-Command $cmd -ErrorAction SilentlyContinue
-    if ($existing -and $existing.Source -notmatch '\\WindowsApps\\') { return $existing.Source }
-    foreach ($glob in $searchGlobs) {
-        # No -Recurse: it doesn't combine with a wildcard in the middle of
-        # the path on PowerShell 5.1 (silently matches nothing) -- the glob
-        # itself already covers the one variable path segment (version
-        # number / winget's hash-named folder), so it isn't needed anyway.
-        $found = Get-ChildItem $glob -ErrorAction SilentlyContinue -File | Select-Object -First 1
-        if ($found) {
-            $dir = Split-Path $found.FullName -Parent
-            $env:Path = "$dir;$env:Path"
-            return $found.FullName
+    # 실제 겪은 문제(2026-10-22, 다른 PC에 Setup으로 설치 중): 1회차
+    # 설치에서 git을 못 찾아 전체가 취소됐는데, 설치 파일을 그냥 다시
+    # 실행(새 프로세스)했더니 바로 성공했다. 아래 후보 경로를 넓힌 것과는
+    # 별개로, winget install 명령이 "끝났다"고 돌아온 직후에도 설치된
+    # 파일이 디스크에 완전히 반영되기까지 아주 짧은 지연이 있을 수 있다
+    # (백신 실시간 검사, 디스크 I/O 등) -- 어느 쪽이 실제 원인이었는지
+    # 재현해서 확정할 방법이 없으므로, 둘 다 대비한다: 못 찾았다고 바로
+    # 포기하지 않고 최대 5회(매번 2초 간격)까지 재확인한다. 이미 설치돼
+    # 있던 경우(가장 흔한 경로)는 첫 시도에서 바로 찾아 반환되므로 이
+    # 재시도 때문에 느려지지 않는다.
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $existing = Get-Command $cmd -ErrorAction SilentlyContinue
+        if ($existing -and $existing.Source -notmatch '\\WindowsApps\\') { return $existing.Source }
+        foreach ($glob in $searchGlobs) {
+            # No -Recurse: it doesn't combine with a wildcard in the middle of
+            # the path on PowerShell 5.1 (silently matches nothing) -- the glob
+            # itself already covers the one variable path segment (version
+            # number / winget's hash-named folder), so it isn't needed anyway.
+            $found = Get-ChildItem $glob -ErrorAction SilentlyContinue -File | Select-Object -First 1
+            if ($found) {
+                $dir = Split-Path $found.FullName -Parent
+                $env:Path = "$dir;$env:Path"
+                return $found.FullName
+            }
         }
+        if ($attempt -lt 5) { Start-Sleep -Seconds 2 }
     }
     throw "$cmd 를 설치 후에도 찾을 수 없습니다. 설치가 실패했을 수 있습니다."
 }
