@@ -256,7 +256,18 @@ function Resolve-ExeAndAddToPath([string]$cmd, [string[]]$searchGlobs) {
     throw "$cmd 를 설치 후에도 찾을 수 없습니다. 설치가 실패했을 수 있습니다."
 }
 
-$gitExe    = Resolve-ExeAndAddToPath 'git'    @("$env:ProgramFiles\Git\cmd\git.exe")
+#
+# 실제 겪은 문제(2026-10-22, 다른 PC에 Setup으로 설치 중 실측 발견):
+# git만 후보 경로가 "Program Files\Git" 한 곳뿐이었다(아래 python/caddy/
+# mkcert는 전부 여러 후보를 globs로 찾는데 git만 하드코딩 하나였음 --
+# 바로 위 함수 설명 자체가 "하드코딩하지 않고 찾는다"인데 git만 그 원칙을
+# 안 지키고 있던 불일치). winget install이 항상 머신 전체 범위(Program
+# Files)로 Git을 넣는다고 가정했지만, 이 설치(admin 권한으로 실행됐는데도)
+# 에선 그 경로에 git.exe가 없어서 "git 를 설치 후에도 찾을 수 없습니다"로
+# 설치 전체가 실패했다 -- winget이 사용자 범위(LOCALAPPDATA\Programs\Git)
+# 로 설치했거나 32비트 Program Files(x86)을 썼을 가능성. 세 후보 전부
+# 찾아보게 넓힘.
+$gitExe    = Resolve-ExeAndAddToPath 'git'    @("$env:ProgramFiles\Git\cmd\git.exe", "${env:ProgramFiles(x86)}\Git\cmd\git.exe", "$env:LOCALAPPDATA\Programs\Git\cmd\git.exe")
 $pythonExe = Resolve-ExeAndAddToPath 'python' @("$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe")
 $caddyExe  = Resolve-ExeAndAddToPath 'caddy'  @("$env:LOCALAPPDATA\Microsoft\WinGet\Packages\CaddyServer.Caddy_*\caddy.exe")
 $mkcertExe = Resolve-ExeAndAddToPath 'mkcert' @("$env:LOCALAPPDATA\Microsoft\WinGet\Packages\FiloSottile.mkcert_*\mkcert*.exe")
