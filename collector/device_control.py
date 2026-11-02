@@ -60,6 +60,14 @@ PROFILES = {
 }
 
 
+def _safe_port(v):
+    try:
+        p = int(v)
+        return p if 1 <= p <= 65535 else None
+    except (TypeError, ValueError):
+        return None
+
+
 class DeviceControlError(Exception):
     """사용자에게 그대로 보여줘도 되는 메시지만 담는다 (스택트레이스 노출 안 함)."""
 
@@ -84,9 +92,14 @@ def _connect(device_row, profile):
     if not password:
         raise DeviceControlError('SSH/Telnet 자격증명이 등록되지 않았습니다. 장비 편집에서 먼저 등록해주세요.')
 
+    # SSH 포트가 22가 아닌 장비 대비(사용자 요청) -- fields.sshPort는 비밀값이
+    # 아니라 snmpPort와 같은 설정값이라 credentials가 아니라 fields JSON에
+    # 그대로 둔다. 비워두면 기존처럼 22(SSH)/23(Telnet) 기본값을 그대로 씀.
+    ssh_port = _safe_port((device_row.get('fields') or {}).get('sshPort')) or 22
+
     attempts = []
     if profile.get('ssh_device_type'):
-        attempts.append((profile['ssh_device_type'], 22))
+        attempts.append((profile['ssh_device_type'], ssh_port))
     if profile.get('telnet_device_type'):
         attempts.append((profile['telnet_device_type'], 23))
     if not attempts:

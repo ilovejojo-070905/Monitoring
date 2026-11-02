@@ -3115,6 +3115,7 @@ function renderRegisterSkeleton(){
               <div class="field"><label>SSH/Telnet 사용자명</label><input type="text" id="f-ssh-username" placeholder="사용자 이름 없는 장비는 비워두세요" autocomplete="off"></div>
               <div class="field"><label>SSH/Telnet 비밀번호</label><input type="password" id="f-ssh-password" placeholder="비워두면 기존 값 유지" autocomplete="new-password"></div>
               <div class="field"><label>Enable 비밀번호</label><input type="password" id="f-ssh-enable-password" placeholder="로그인 비밀번호와 다를 때만" autocomplete="new-password"></div>
+              <div class="field"><label>SSH 포트</label><input type="number" id="f-ssh-port" placeholder="22 (기본값)" min="1" max="65535"></div>
             </div>
           </div>
 
@@ -3737,6 +3738,9 @@ function renderRegisterSkeleton(){
       $('#f-ssh-password').value = '';
       $('#f-ssh-password').placeholder = '변경하려면 입력 (비워두면 기존 값 유지)';
       $('#f-ssh-enable-password').value = '';
+      // sshPort는 credential이 아니라 snmpPort처럼 평범한 값이라(서버가
+      // 숨기지 않고 그대로 돌려줌) 기존 값을 그대로 채워서 보여준다.
+      $('#f-ssh-port').value = entity.sshPort || '';
     }
     else if(cat==='fac'){
       const factypeSelEl = $('#f-factype');
@@ -3889,6 +3893,10 @@ function renderRegisterSkeleton(){
         const sshEnableInput = $('#f-ssh-enable-password').value;
         if(sshEnableInput) fields.sshEnablePassword = sshEnableInput;
       }
+      // sshPort는 비밀값이 아니라 snmpPort처럼 평범한 설정값이라 credential
+      // 입력 여부와 무관하게 항상 같이 보냄(비워두면 기본 22 사용).
+      const sshPortInput = $('#f-ssh-port').value;
+      if(sshPortInput) fields.sshPort = parseInt(sshPortInput);
     }
 
     // Prevents an impatient/accidental double-click on 장비 등록 from firing

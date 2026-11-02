@@ -1078,6 +1078,9 @@ def _register_device_core(category, name, mode, ip, fields):
     snmp_port = fields.get('snmpPort')
     if snmp_port not in (None, '') and not validation.is_valid_port(snmp_port):
         return 400, {'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}
+    ssh_port_field = fields.get('sshPort')
+    if ssh_port_field not in (None, '') and not validation.is_valid_port(ssh_port_field):
+        return 400, {'error': 'sshPort는 1~65535 사이의 숫자여야 합니다'}
     # 2-1: group is still just a free-text fields.group string (see
     # storage.py's device_groups docstring for why), but it's rendered and
     # matched the same way a device name is, so it gets the same charset/
@@ -1369,6 +1372,9 @@ def api_update_device(device_id):
     snmp_port = fields.get('snmpPort')
     if snmp_port not in (None, '') and not validation.is_valid_port(snmp_port):
         return jsonify({'error': 'snmpPort는 1~65535 사이의 숫자여야 합니다'}), 400
+    ssh_port_field = fields.get('sshPort')
+    if ssh_port_field not in (None, '') and not validation.is_valid_port(ssh_port_field):
+        return jsonify({'error': 'sshPort는 1~65535 사이의 숫자여야 합니다'}), 400
     # 등록(api_register_device)엔 있던 중복 이름/IP 검사가 이 수정 라우트엔
     # 없었음 -- 이름을 바꿔서 기존 다른 장비와 같은 이름/IP가 되는 경로가
     # 그대로 뚫려 있었고, 이게 LLDP 이웃 매칭(find_device_by_name_or_ip를
