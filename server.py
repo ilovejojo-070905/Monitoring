@@ -2338,6 +2338,21 @@ def api_set_vendor_profile(device_id):
     return jsonify({'ok': True})
 
 
+def _force_extended_repoll(device_id):
+    """shutdown/no-shutdown/reboot 직후 호출 -- interface adminStatus는
+    snmp_collector.py의 EXTENDED_POLL_INTERVAL_SEC(20초)로만 갱신되는
+    "느린" 필드라(장비 부하를 줄이려고 일부러 2초 틱보다 느리게 돎), 명령을
+    성공시켜도 화면의 Up/Down·비활성화 표시가 최대 20초까지 안 바뀌는
+    것처럼 보인다는 사용자 보고로 추가함. _extendedLastRun을 0으로 되돌려
+    놓으면 "20초 지났는지" 판정(snmp_collector.py:866)이 바로 다음 정기
+    폴링 틱(기본 2초 간격)에서 참이 되어, 새 폴링 작업을 따로 만들지 않고
+    기존 주기 그대로 다음 틱에 바로 adminStatus를 다시 읽어오게 만든다."""
+    with state.LOCK:
+        entity = state.LIVE.get(device_id)
+        if entity is not None:
+            entity['_extendedLastRun'] = 0
+
+
 def _control_profile_name(device_row):
     """snmp_profiles.resolve_profile과 같은 방식(수동 vendor_profile 우선,
     없으면 sysDescr 자동 감지)으로 '지금 이 장비에 실제로 적용된 벤더
@@ -2365,6 +2380,7 @@ def api_interface_shutdown(device_id, if_name):
     except device_control.DeviceControlError as e:
         audit('INTERFACE_SHUTDOWN_FAILED', target=device_id, details=f'{if_name}: {e}')
         return jsonify({'error': str(e)}), 400
+    _force_extended_repoll(device_id)
     audit('INTERFACE_SHUTDOWN', target=device_id, details=if_name)
     return jsonify({'ok': True, 'output': output})
 
@@ -2380,6 +2396,7 @@ def api_interface_no_shutdown(device_id, if_name):
     except device_control.DeviceControlError as e:
         audit('INTERFACE_NO_SHUTDOWN_FAILED', target=device_id, details=f'{if_name}: {e}')
         return jsonify({'error': str(e)}), 400
+    _force_extended_repoll(device_id)
     audit('INTERFACE_NO_SHUTDOWN', target=device_id, details=if_name)
     return jsonify({'ok': True, 'output': output})
 
@@ -2397,6 +2414,7 @@ def api_device_reboot(device_id):
     except device_control.DeviceControlError as e:
         audit('DEVICE_REBOOT_FAILED', target=device_id, details=str(e))
         return jsonify({'error': str(e)}), 400
+    _force_extended_repoll(device_id)
     audit('DEVICE_REBOOT', target=device_id, details=f'saveConfigFirst={save_first}')
     return jsonify({'ok': True, 'output': output})
 
