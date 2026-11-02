@@ -3260,6 +3260,13 @@ function renderRegisterSkeleton(){
 
   function updateFormVisibility(){
     $$('#reg-form [data-group]').forEach(g=>{ g.style.display = g.dataset.group===regCategory ? '' : 'none'; });
+    // 인터페이스 shutdown/재부팅용 SSH/Telnet 자격증명은 실제 장비를 직접
+    // 조작할 수 있게 되는 민감한 설정이라, 장비 편집 자체는 OPERATOR+도
+    // 가능해도(require_role('OPERATOR')) 이 입력란만큼은 ADMIN에게만
+    // 보이게 숨긴다 -- 서버도 api_update_device/_register_device_core에서
+    // 똑같이 ADMIN 미만이면 이 필드를 거부하므로, 화면에서 숨기는 건
+    // "안 보이니 혼란 없게" 하는 것일 뿐 보안 경계 자체는 서버가 담당.
+    if(CURRENT_ROLE!=='ADMIN') $('#f-ssh-control-group').style.display = 'none';
     $('#net-bulk-chip-area').style.display = regCategory==='net' ? 'flex' : 'none';
     if(regCategory!=='net'){ $('#net-bulk-feedback').style.display = 'none'; }
     $('#mode-btn-agent').style.display = regCategory==='server' ? '' : 'none';
@@ -6248,6 +6255,7 @@ function drawPingDevice(e, catLabel){
             ${hasErr ? `<span class="mono" style="font-size:10px;color:var(--warn)" title="에러/드랍 누적 발생">⚠ ${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>` : ''}
             ${f.status==='up' ? `<span class="mono" style="font-size:10px;color:var(--text-faint)">${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps${utilMax>0 ? ` (${fmt0(utilMax)}%)` : ''}</span>` : ''}
             <span class="pill ${f.status==='up'?'good':'neutral'}"><span class="dot"></span>${f.status==='up'?'Up':(f.adminStatus==='down'?'비활성화':'Down')}</span>
+            ${(CURRENT_ROLE==='ADMIN' && e.category==='net') ? `<button type="button" class="btn iface-ctrl-inline-btn" data-idx="${escapeHtml(f.idx)}" style="font-size:10px;padding:2px 7px;white-space:nowrap">${f.adminStatus==='down' ? '활성화' : '비활성화'}</button>` : ''}
           </span>
         </div>`;}).join('')}
       </div>
@@ -6305,6 +6313,36 @@ function drawPingDevice(e, catLabel){
       const reEnvCardHtml = drawPingDevice(e, catLabel) || '';
       $('#drawerBody').insertAdjacentHTML('beforeend',
         `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${reEnvCardHtml}${collectionStateBlock(e)}${agentInfoBlock(e)}</div>`);
+    });
+  });
+  // 인터페이스 목록에서 모달을 열지 않고 바로 shutdown/no-shutdown할 수
+  // 있는 버튼 -- "상세창에 바로 보이게 해달라"는 사용자 요청으로 추가(이전
+  // 엔 인터페이스 클릭 -> 트래픽 팝업을 열어야만 제어 버튼이 보였음). 행
+  // 클릭(트래픽 팝업 열기)과 겹치지 않게 stopPropagation 필요.
+  $$('.iface-ctrl-inline-btn', $('#drawerBody')).forEach(btn=>{
+    btn.addEventListener('click', async (ev)=>{
+      ev.stopPropagation();
+      const f = (e.interfaces||[]).find(x=>x.idx===btn.dataset.idx);
+      if(!f) return;
+      const goingDown = f.adminStatus!=='down';
+      const msg = goingDown
+        ? `"${e.name}"의 "${f.name}" 인터페이스를 비활성화(shutdown)할까요?\n지금 이 포트로 흐르는 트래픽이 즉시 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`
+        : `"${e.name}"의 "${f.name}" 인터페이스를 다시 활성화(no shutdown)할까요?\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`;
+      const typed = window.prompt(msg);
+      if(typed !== e.name) return;
+      btn.disabled = true;
+      const prevText = btn.textContent;
+      btn.textContent = '전송 중...';
+      try{
+        const path = goingDown ? 'shutdown' : 'no-shutdown';
+        const r = await apiFetch(`/api/devices/${encodeURIComponent(e.id)}/interfaces/${encodeURIComponent(f.name)}/${path}`, {method:'POST'});
+        const j = await r.json();
+        if(!r.ok) throw new Error(j.error||'명령 전송 실패');
+      }catch(err){
+        await showConfirm(err.message, {title:'인터페이스 제어 실패', okText:'확인'});
+        btn.disabled = false;
+        btn.textContent = prevText;
+      }
     });
   });
   if(drawerBodyEl) drawerBodyEl.scrollTop = prevBodyScroll;

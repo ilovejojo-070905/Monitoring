@@ -1160,6 +1160,12 @@ def _register_device_core(category, name, mode, ip, fields):
     ssh_username = fields.pop('sshUsername', None)
     ssh_password = fields.pop('sshPassword', None)
     ssh_enable_password = fields.pop('sshEnablePassword', None)
+    # 실제 장비를 직접 조작(인터페이스 shutdown/재부팅)할 수 있게 되는
+    # 자격증명이라, 장비 등록 자체는 OPERATOR+ 권한이어도 이 자격증명만은
+    # ADMIN만 등록 가능하도록 서버에서 한 번 더 막는다(화면의 ADMIN
+    # 전용 숨김은 UX일 뿐, 실제 경계는 여기).
+    if ssh_password and storage.ROLE_RANK.get(_current_role(), -1) < storage.ROLE_RANK.get('ADMIN'):
+        return 400, {'error': 'SSH/Telnet 자격증명은 ADMIN 권한만 등록할 수 있습니다.'}
     vendor_profile = fields.pop('vendorProfile', None)
     if mode == 'snmp':
         snmp_version = fields.get('snmpVersion') or 'v2c'
@@ -1420,6 +1426,8 @@ def api_update_device(device_id):
     ssh_username = fields.pop('sshUsername', None)
     ssh_password = fields.pop('sshPassword', None)
     ssh_enable_password = fields.pop('sshEnablePassword', None)
+    if ssh_password and storage.ROLE_RANK.get(_current_role(), -1) < storage.ROLE_RANK.get('ADMIN'):
+        return jsonify({'error': 'SSH/Telnet 자격증명은 ADMIN 권한만 등록할 수 있습니다.'}), 400
     if mode == 'snmp' and (v3_username or v3_auth_protocol or v3_auth_password or v3_priv_protocol or v3_priv_password):
         v3_err = validation.validate_snmpv3_params(
             v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password,
