@@ -2346,7 +2346,7 @@ def _control_profile_name(device_row):
 # 삭제(bulk-delete)가 "실수로 여러 개 선택" 위험 때문에 OPERATOR가 아니라
 # ADMIN으로 올라간 전례(위 bulk-delete 주석)가 있는데, 이건 그 위험에 더해
 # "실제 통신 차단"까지 더해지므로 ADMIN 전용으로 시작한다.
-@app.post('/api/devices/<device_id>/interfaces/<if_name>/shutdown')
+@app.post('/api/devices/<device_id>/interfaces/<path:if_name>/shutdown')
 @require_role('ADMIN')
 def api_interface_shutdown(device_id, if_name):
     device_row = storage.load_device(device_id)
@@ -2361,7 +2361,7 @@ def api_interface_shutdown(device_id, if_name):
     return jsonify({'ok': True, 'output': output})
 
 
-@app.post('/api/devices/<device_id>/interfaces/<if_name>/no-shutdown')
+@app.post('/api/devices/<device_id>/interfaces/<path:if_name>/no-shutdown')
 @require_role('ADMIN')
 def api_interface_no_shutdown(device_id, if_name):
     device_row = storage.load_device(device_id)
