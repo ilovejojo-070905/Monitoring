@@ -1162,12 +1162,17 @@ def _register_device_core(category, name, mode, ip, fields):
     # 경로에는 빠져 있던 것을 추가함).
     ssh_username = fields.pop('sshUsername', None)
     ssh_password = fields.pop('sshPassword', None)
+    # 빈 비밀번호로 로그인하는 실제 장비가 있어(실측 확인) ssh_password가
+    # falsy(''/None)인 것만으로는 "자격증명 입력 안 함"과 "진짜 빈 비밀번호
+    # 등록"을 구분할 수 없다 -- 화면이 체크박스로 후자를 명시할 때만 이
+    # 플래그를 같이 보낸다.
+    ssh_password_explicit = bool(fields.pop('sshPasswordExplicit', False))
     ssh_enable_password = fields.pop('sshEnablePassword', None)
     # 실제 장비를 직접 조작(인터페이스 shutdown/재부팅)할 수 있게 되는
     # 자격증명이라, 장비 등록 자체는 OPERATOR+ 권한이어도 이 자격증명만은
     # ADMIN만 등록 가능하도록 서버에서 한 번 더 막는다(화면의 ADMIN
     # 전용 숨김은 UX일 뿐, 실제 경계는 여기).
-    if ssh_password and storage.ROLE_RANK.get(_current_role(), -1) < storage.ROLE_RANK.get('ADMIN'):
+    if (ssh_password or ssh_password_explicit) and storage.ROLE_RANK.get(_current_role(), -1) < storage.ROLE_RANK.get('ADMIN'):
         return 400, {'error': 'SSH/Telnet 자격증명은 ADMIN 권한만 등록할 수 있습니다.'}
     vendor_profile = fields.pop('vendorProfile', None)
     if mode == 'snmp':
@@ -1209,8 +1214,8 @@ def _register_device_core(category, name, mode, ip, fields):
     storage.set_credential(device_id, 'snmpv3_auth_password', v3_auth_password)
     storage.set_credential(device_id, 'snmpv3_priv_protocol', v3_priv_protocol)
     storage.set_credential(device_id, 'snmpv3_priv_password', v3_priv_password)
-    if ssh_password:
-        storage.set_credential(device_id, 'ssh_password', ssh_password)
+    if ssh_password or ssh_password_explicit:
+        storage.set_credential(device_id, 'ssh_password', ssh_password or '')
         storage.set_credential(device_id, 'ssh_username', ssh_username or '')
         if ssh_enable_password:
             storage.set_credential(device_id, 'ssh_enable_password', ssh_enable_password)
@@ -1431,8 +1436,13 @@ def api_update_device(device_id):
     # 포함) 덮어쓴다.
     ssh_username = fields.pop('sshUsername', None)
     ssh_password = fields.pop('sshPassword', None)
+    # 빈 비밀번호로 로그인하는 실제 장비가 있어(실측 확인) ssh_password가
+    # falsy(''/None)인 것만으로는 "변경 안 함"과 "진짜 빈 비밀번호로 갱신"을
+    # 구분할 수 없다 -- 화면이 체크박스로 후자를 명시할 때만 이 플래그를
+    # 같이 보낸다.
+    ssh_password_explicit = bool(fields.pop('sshPasswordExplicit', False))
     ssh_enable_password = fields.pop('sshEnablePassword', None)
-    if ssh_password and storage.ROLE_RANK.get(_current_role(), -1) < storage.ROLE_RANK.get('ADMIN'):
+    if (ssh_password or ssh_password_explicit) and storage.ROLE_RANK.get(_current_role(), -1) < storage.ROLE_RANK.get('ADMIN'):
         return jsonify({'error': 'SSH/Telnet 자격증명은 ADMIN 권한만 등록할 수 있습니다.'}), 400
     if mode == 'snmp' and (v3_username or v3_auth_protocol or v3_auth_password or v3_priv_protocol or v3_priv_password):
         v3_err = validation.validate_snmpv3_params(
@@ -1467,8 +1477,8 @@ def api_update_device(device_id):
         storage.set_credential(device_id, 'snmpv3_priv_protocol', v3_priv_protocol)
     if v3_priv_password:
         storage.set_credential(device_id, 'snmpv3_priv_password', v3_priv_password)
-    if ssh_password:
-        storage.set_credential(device_id, 'ssh_password', ssh_password)
+    if ssh_password or ssh_password_explicit:
+        storage.set_credential(device_id, 'ssh_password', ssh_password or '')
         storage.set_credential(device_id, 'ssh_username', ssh_username or '')
         if ssh_enable_password:
             storage.set_credential(device_id, 'ssh_enable_password', ssh_enable_password)

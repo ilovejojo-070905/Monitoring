@@ -148,7 +148,12 @@ def _connect(device_row, profile):
     username = storage.get_credential(device_id, 'ssh_username') or ''
     password = storage.get_credential(device_id, 'ssh_password')
     enable_password = storage.get_credential(device_id, 'ssh_enable_password')
-    if not password:
+    # 실측 확인: 빈 비밀번호로 로그인하는 실제 장비가 있다(Aruba 등) --
+    # get_credential은 "등록된 적 없음"이면 None, "빈 비밀번호로 등록됨"이면
+    # ''을 돌려주므로(storage.py), 여기서는 None만 "미등록"으로 취급해야
+    # 한다. `not password`로 체크하면 ''도 걸러져서 실제로 등록한 빈
+    # 비밀번호가 "등록 안 됨"으로 잘못 막히는 버그가 있었다.
+    if password is None:
         raise DeviceControlError('SSH/Telnet 자격증명이 등록되지 않았습니다. 장비 편집에서 먼저 등록해주세요.')
 
     # SSH 포트가 22가 아닌 장비 대비(사용자 요청) -- fields.sshPort는 비밀값이
