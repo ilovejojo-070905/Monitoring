@@ -720,6 +720,7 @@
     <div><h2 id="drawerTitle">-</h2><div class="role" id="drawerRole">-</div></div>
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button class="btn" id="drawerEditBtn" style="white-space:nowrap;display:none">수정</button>
+      <button class="btn" id="drawerRebootBtn" style="white-space:nowrap;display:none">재부팅</button>
       <button class="btn" id="drawerDelBtn" style="white-space:nowrap;display:none">삭제</button>
       <button class="btn" id="drawerMaintBtn" style="white-space:nowrap"></button>
       <button class="drawer-close" id="drawerClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
@@ -3108,6 +3109,15 @@ function renderRegisterSkeleton(){
             </div>
           </div>
 
+          <div id="f-ssh-control-group" data-group="net" style="display:none;margin-top:14px">
+            <div class="field-label-row" style="font-size:12px;color:var(--text-faint);margin-bottom:6px">인터페이스 shutdown/재부팅 기능용 SSH/Telnet 로그인 정보 (선택, 비워두면 그 기능만 못 씀)</div>
+            <div class="form-grid">
+              <div class="field"><label>SSH/Telnet 사용자명</label><input type="text" id="f-ssh-username" placeholder="사용자 이름 없는 장비는 비워두세요" autocomplete="off"></div>
+              <div class="field"><label>SSH/Telnet 비밀번호</label><input type="password" id="f-ssh-password" placeholder="비워두면 기존 값 유지" autocomplete="new-password"></div>
+              <div class="field"><label>Enable 비밀번호</label><input type="password" id="f-ssh-enable-password" placeholder="로그인 비밀번호와 다를 때만" autocomplete="new-password"></div>
+            </div>
+          </div>
+
           <div id="f-snmp-test-row" data-mode-group="snmp" style="display:none;margin-top:14px">
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
               <button type="button" class="btn" id="snmp-test-btn">연결 테스트</button>
@@ -3713,6 +3723,13 @@ function renderRegisterSkeleton(){
         $('#f-nettype-other').value = '';
       }
       updateOtherFieldVisibility('f-nettype','f-nettype-other');
+      // SSH/Telnet 자격증명도 다른 credential 필드와 같은 이유로 서버가
+      // 절대 돌려주지 않으니 항상 빈 값에서 시작(placeholder로 "기존 값
+      // 유지"만 안내).
+      $('#f-ssh-username').value = '';
+      $('#f-ssh-password').value = '';
+      $('#f-ssh-password').placeholder = '변경하려면 입력 (비워두면 기존 값 유지)';
+      $('#f-ssh-enable-password').value = '';
     }
     else if(cat==='fac'){
       const factypeSelEl = $('#f-factype');
@@ -3850,6 +3867,20 @@ function renderRegisterSkeleton(){
         // Adding: blank falls back to the common SNMP default (v3 has no
         // equivalent insecure default, which is why it's required above).
         if(communityInput || !editingDeviceId) fields.community = communityInput || 'public';
+      }
+    }
+    if(regCategory==='net'){
+      // 인터페이스 shutdown/재부팅(device_control.py)용 SSH/Telnet 로그인
+      // 정보 -- SNMPv3 필드들과 같은 "빈 값 제출 = 기존 값 유지" 원칙.
+      // sshUsername은 일부러 예외: 사용자 이름 없이 비밀번호만 쓰는 장비가
+      // 실제로 있어서(실측 확인), 빈 문자열도 "명시적으로 없음"으로 그대로
+      // 보낸다 -- sshPassword가 새로 입력됐을 때만 같이 보냄.
+      const sshPwInput = $('#f-ssh-password').value;
+      if(sshPwInput){
+        fields.sshUsername = $('#f-ssh-username').value.trim();
+        fields.sshPassword = sshPwInput;
+        const sshEnableInput = $('#f-ssh-enable-password').value;
+        if(sshEnableInput) fields.sshEnablePassword = sshEnableInput;
       }
     }
 
@@ -5886,6 +5917,37 @@ function openDrawerFor(id){
       afterDeviceChange();
     };
   }
+  // 재부팅: 데이터가 아니라 실제 운영 트래픽을 끊는 동작이라 수정/삭제보다
+  // 한 단계 더 높은 권한(ADMIN)을 요구하고(장비 일괄삭제가 OPERATOR가 아닌
+  // ADMIN인 것과 같은 이유), 삭제 확인창(showConfirm, 버튼 2개)보다 강한
+  // "장비 이름을 직접 타이핑해야 확인"으로 한 번 더 막는다 -- 이 프로젝트에
+  // 아직 타이핑 확인 모달이 없어 임시로 네이티브 prompt()를 쓰지만, 다른
+  // 모든 확인창은 네이티브 대화상자를 피하는 게 이 프로젝트 관례라
+  // 전용 모달로 바꾸는 걸 후속 작업으로 남겨둔다.
+  const rebootBtn = $('#drawerRebootBtn');
+  rebootBtn.style.display = (cat==='net' && CURRENT_ROLE_RANK >= 2) ? '' : 'none';
+  if(cat==='net' && CURRENT_ROLE_RANK >= 2){
+    rebootBtn.onclick = async ()=>{
+      const typed = window.prompt(`"${entity.name}"를 재부팅할까요?\n재부팅 전 설정을 저장하고, 몇 분간 이 장비와의 통신이 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${entity.name}`);
+      if(typed !== entity.name) return;
+      rebootBtn.disabled = true;
+      rebootBtn.textContent = '재부팅 중...';
+      try{
+        const r = await apiFetch(`/api/devices/${id}/reboot`, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({saveConfigFirst: true}),
+        });
+        const j = await r.json();
+        if(!r.ok) throw new Error(j.error||'재부팅 명령 전송 실패');
+        await showConfirm(`재부팅 명령을 보냈습니다. 몇 분 후 다시 확인해주세요.`, {title:'재부팅', okText:'확인'});
+      }catch(e){
+        await showConfirm(e.message, {title:'재부팅 실패', okText:'확인'});
+      }finally{
+        rebootBtn.disabled = false;
+        rebootBtn.textContent = '재부팅';
+      }
+    };
+  }
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
   let envCardHtml = '';
   if(entity.mode==='ping' || entity.mode==='snmp') envCardHtml = drawPingDevice(entity, catLabel) || '';
@@ -5953,8 +6015,44 @@ function renderIfaceModal(){
     <div class="card"><div class="card-head"><h3>트래픽 추이</h3><span class="sub">SNMP 실측 · 최근 60초 · Mbps</span></div>
       <div style="height:200px"><canvas id="ifaceModalCanvas"></canvas></div>
     </div>
+    ${CURRENT_ROLE==='ADMIN' ? `
+    <div class="card">
+      <div class="card-head"><h3>인터페이스 제어</h3><span class="sub">SSH/Telnet으로 실제 장비에 명령 전송 · 검증된 벤더만 동작</span></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn" id="iface-ctrl-btn">${f.adminStatus==='down' ? '인터페이스 활성화 (no shutdown)' : '인터페이스 비활성화 (shutdown)'}</button>
+        <span id="iface-ctrl-result" style="font-size:12px"></span>
+      </div>
+    </div>` : ''}
   `;
   charts.ifaceModalChart = lineChart($('#ifaceModalCanvas'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:f.hist||[], color:'#ffb020', fill:true}], {showX:false});
+  if(CURRENT_ROLE==='ADMIN'){
+    const ctrlBtn = $('#iface-ctrl-btn');
+    const resultEl = $('#iface-ctrl-result');
+    const goingDown = f.adminStatus!=='down';
+    ctrlBtn.addEventListener('click', async ()=>{
+      const msg = goingDown
+        ? `"${entity.name}"의 "${f.name}" 인터페이스를 비활성화(shutdown)할까요?\n지금 이 포트로 흐르는 트래픽이 즉시 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${entity.name}`
+        : `"${entity.name}"의 "${f.name}" 인터페이스를 다시 활성화(no shutdown)할까요?\n확인을 위해 장비 이름을 정확히 입력해주세요: ${entity.name}`;
+      const typed = window.prompt(msg);
+      if(typed !== entity.name) return;
+      ctrlBtn.disabled = true;
+      resultEl.textContent = '전송 중...';
+      resultEl.style.color = '';
+      try{
+        const path = goingDown ? 'shutdown' : 'no-shutdown';
+        const r = await apiFetch(`/api/devices/${encodeURIComponent(entity.id)}/interfaces/${encodeURIComponent(f.name)}/${path}`, {method:'POST'});
+        const j = await r.json();
+        if(!r.ok) throw new Error(j.error||'명령 전송 실패');
+        resultEl.textContent = '완료됨 (상태 반영까지 몇 초 걸릴 수 있습니다)';
+        resultEl.style.color = 'var(--good)';
+      }catch(e){
+        resultEl.textContent = e.message;
+        resultEl.style.color = 'var(--crit)';
+      }finally{
+        ctrlBtn.disabled = false;
+      }
+    });
+  }
 }
 $('#ifaceModalClose').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });
 $('#ifaceOverlay').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });

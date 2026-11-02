@@ -45,3 +45,13 @@ openpyxl==3.1.5
 # machines get it for free in the next InfraSightAgent.exe rebuild (PyInstaller
 # bundles it into the exe, nothing to install on the target PC itself).
 pywin32==311
+# 인터페이스 shutdown/장비 재부팅(SSH/Telnet CLI 자동화): 이 프로젝트는 SNMP
+# SET을 한 번도 쓴 적이 없고 앞으로도 안 쓴다 -- 상태 변경은 전부 실제
+# 장비의 CLI(enable 모드, interface 서브모드, reload/reboot 등)로 가야 한다.
+# netmiko를 고른 이유: paramiko(저수준 SSH 전송)만으로는 벤더별 enable 모드
+# 진입, 프롬프트 인식, "Proceed with reload? [confirm]" 같은 대화형 확인까지
+# 전부 직접 손으로 처리해야 하는데, netmiko는 device_type별로(cisco_ios/
+# cisco_ios_telnet/cisco_nxos/arubaoscx/hp_comware/juniper_junos 등) 이미
+# 처리해주고, 이 프로젝트의 snmp_profiles.py 벤더 프로필 구조와 1:1로
+# 맞물린다. SSH/Telnet 둘 다 지원(디바이스마다 '_telnet' 접미사 device_type).
+netmiko==4.8.0

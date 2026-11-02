@@ -38,6 +38,7 @@ from collector import snmp_collector
 from collector import snmp_profiles
 from collector import discovery
 from collector import flow_listener
+from collector import device_control
 
 BASE_DIR = storage.BASE_DIR
 PORT = storage.PORT
@@ -1150,6 +1151,15 @@ def _register_device_core(category, name, mode, ip, fields):
     v3_auth_password = fields.pop('snmpv3AuthPassword', None)
     v3_priv_protocol = fields.pop('snmpv3PrivProtocol', None)
     v3_priv_password = fields.pop('snmpv3PrivPassword', None)
+    # device_control.py(인터페이스 shutdown/재부팅)용 SSH/Telnet 로그인
+    # 정보도 같은 이유(credential이지 장비 메타데이터가 아님)로 fields
+    # JSON 블롭에서 꺼낸다 -- 이걸 빼먹으면 비밀번호가 credentials 테이블의
+    # Fernet 암호화 없이 devices.fields 안에 평문으로 저장되는 보안 문제가
+    # 생긴다(api_update_device는 이미 이렇게 처리하고 있었는데, 신규 등록
+    # 경로에는 빠져 있던 것을 추가함).
+    ssh_username = fields.pop('sshUsername', None)
+    ssh_password = fields.pop('sshPassword', None)
+    ssh_enable_password = fields.pop('sshEnablePassword', None)
     vendor_profile = fields.pop('vendorProfile', None)
     if mode == 'snmp':
         snmp_version = fields.get('snmpVersion') or 'v2c'
@@ -1190,6 +1200,11 @@ def _register_device_core(category, name, mode, ip, fields):
     storage.set_credential(device_id, 'snmpv3_auth_password', v3_auth_password)
     storage.set_credential(device_id, 'snmpv3_priv_protocol', v3_priv_protocol)
     storage.set_credential(device_id, 'snmpv3_priv_password', v3_priv_password)
+    if ssh_password:
+        storage.set_credential(device_id, 'ssh_password', ssh_password)
+        storage.set_credential(device_id, 'ssh_username', ssh_username or '')
+        if ssh_enable_password:
+            storage.set_credential(device_id, 'ssh_enable_password', ssh_enable_password)
     if vendor_profile:
         storage.set_vendor_profile(device_id, vendor_profile)
     device_row = storage.load_device(device_id)
@@ -1395,6 +1410,16 @@ def api_update_device(device_id):
     v3_auth_password = fields.pop('snmpv3AuthPassword', None)
     v3_priv_protocol = fields.pop('snmpv3PrivProtocol', None)
     v3_priv_password = fields.pop('snmpv3PrivPassword', None)
+    # 인터페이스 shutdown/재부팅(device_control.py) 자동화용 SSH/Telnet
+    # 로그인 정보 -- SNMP community/v3와 완전히 같은 패턴(credentials
+    # 테이블, 빈 값 제출은 "그대로 유지"). sshUsername은 일부러 빈 문자열도
+    # 허용(사용자 이름 없이 비밀번호만 쓰는 구형 장비 대비, 실측 확인된
+    # 케이스) -- 그래서 다른 필드와 달리 "비어있으면 저장 안 함"을 적용하지
+    # 않고, sshPassword가 새로 입력된 경우에만 username도 같이 (빈 값
+    # 포함) 덮어쓴다.
+    ssh_username = fields.pop('sshUsername', None)
+    ssh_password = fields.pop('sshPassword', None)
+    ssh_enable_password = fields.pop('sshEnablePassword', None)
     if mode == 'snmp' and (v3_username or v3_auth_protocol or v3_auth_password or v3_priv_protocol or v3_priv_password):
         v3_err = validation.validate_snmpv3_params(
             v3_username, v3_auth_protocol, v3_auth_password, v3_priv_protocol, v3_priv_password,
@@ -1428,6 +1453,11 @@ def api_update_device(device_id):
         storage.set_credential(device_id, 'snmpv3_priv_protocol', v3_priv_protocol)
     if v3_priv_password:
         storage.set_credential(device_id, 'snmpv3_priv_password', v3_priv_password)
+    if ssh_password:
+        storage.set_credential(device_id, 'ssh_password', ssh_password)
+        storage.set_credential(device_id, 'ssh_username', ssh_username or '')
+        if ssh_enable_password:
+            storage.set_credential(device_id, 'ssh_enable_password', ssh_enable_password)
     before_summary = {'name': device_row['name'], 'ip': device_row['ip'], **(device_row['fields'] or {})}
     after_summary = {'name': name, 'ip': ip, **fields}
     diff = _diff_str(before_summary, after_summary, set(before_summary) | set(after_summary))
@@ -2298,6 +2328,69 @@ def api_set_vendor_profile(device_id):
     storage.set_vendor_profile(device_id, profile)
     audit('SET_VENDOR_PROFILE', target=device_id, details=profile)
     return jsonify({'ok': True})
+
+
+def _control_profile_name(device_row):
+    """snmp_profiles.resolve_profile과 같은 방식(수동 vendor_profile 우선,
+    없으면 sysDescr 자동 감지)으로 '지금 이 장비에 실제로 적용된 벤더
+    이름'을 구한다 -- base['mibProfile'] 계산(위 serialize_device)과 동일한
+    근거. device_control.PROFILES의 키 이름은 snmp_profiles.PROFILES와
+    일부러 똑같이 맞춰뒀다."""
+    entity = state.LIVE.get(device_row['id'], {})
+    resolved = snmp_profiles.resolve_profile(device_row.get('vendor_profile'), entity.get('sysDescr'))
+    return resolved['name']
+
+
+# 인터페이스 shutdown/재부팅: 이 프로젝트가 지금까지 만든 그 어떤 기능보다
+# 실제 장비에 영향이 크다(데이터가 아니라 운영 트래픽이 끊김) -- 장비 일괄
+# 삭제(bulk-delete)가 "실수로 여러 개 선택" 위험 때문에 OPERATOR가 아니라
+# ADMIN으로 올라간 전례(위 bulk-delete 주석)가 있는데, 이건 그 위험에 더해
+# "실제 통신 차단"까지 더해지므로 ADMIN 전용으로 시작한다.
+@app.post('/api/devices/<device_id>/interfaces/<if_name>/shutdown')
+@require_role('ADMIN')
+def api_interface_shutdown(device_id, if_name):
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    try:
+        output = device_control.shutdown_interface(device_row, _control_profile_name(device_row), if_name)
+    except device_control.DeviceControlError as e:
+        audit('INTERFACE_SHUTDOWN_FAILED', target=device_id, details=f'{if_name}: {e}')
+        return jsonify({'error': str(e)}), 400
+    audit('INTERFACE_SHUTDOWN', target=device_id, details=if_name)
+    return jsonify({'ok': True, 'output': output})
+
+
+@app.post('/api/devices/<device_id>/interfaces/<if_name>/no-shutdown')
+@require_role('ADMIN')
+def api_interface_no_shutdown(device_id, if_name):
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    try:
+        output = device_control.bring_up_interface(device_row, _control_profile_name(device_row), if_name)
+    except device_control.DeviceControlError as e:
+        audit('INTERFACE_NO_SHUTDOWN_FAILED', target=device_id, details=f'{if_name}: {e}')
+        return jsonify({'error': str(e)}), 400
+    audit('INTERFACE_NO_SHUTDOWN', target=device_id, details=if_name)
+    return jsonify({'ok': True, 'output': output})
+
+
+@app.post('/api/devices/<device_id>/reboot')
+@require_role('ADMIN')
+def api_device_reboot(device_id):
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    body = request.get_json(silent=True) or {}
+    save_first = body.get('saveConfigFirst', True)
+    try:
+        output = device_control.reboot_device(device_row, _control_profile_name(device_row), save_config_first=save_first)
+    except device_control.DeviceControlError as e:
+        audit('DEVICE_REBOOT_FAILED', target=device_id, details=str(e))
+        return jsonify({'error': str(e)}), 400
+    audit('DEVICE_REBOOT', target=device_id, details=f'saveConfigFirst={save_first}')
+    return jsonify({'ok': True, 'output': output})
 
 
 @app.post('/api/devices/<device_id>/token/reissue')
