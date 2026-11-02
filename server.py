@@ -2338,6 +2338,28 @@ def api_set_vendor_profile(device_id):
     return jsonify({'ok': True})
 
 
+def _patch_interface_admin_status(device_id, if_name, admin_up):
+    """shutdown/no-shutdown 명령이 실제 장비에서 성공했다고 CLI 출력으로
+    이미 확인된 직후 호출 -- 다음 폴링 틱(최대 20초 뒤일 수 있는 extended
+    필드 갱신)을 기다리지 않고, 화면에 바로 반영되게 메모리 캐시를 직접
+    앞당겨 고친다. entity['interfaces']는 매 기본 폴링 틱(2초)마다 새로
+    만들어지지만 그 안의 adminStatus 값은 ext_cache['adminStatus'](extended
+    틱에서만 갱신)에서 그대로 읽어오므로(snmp_collector.py:1014/1045),
+    그 캐시만 먼저 바꿔두면 "다음 2초 틱"에 바로 올바른 값으로 다시
+    그려진다 -- _force_extended_repoll()이 그 뒤에 실제 재확인(SNMP 재조회)
+    까지 해주니, 이건 "확정된 CLI 성공 결과를 화면에 선반영"하는 것이지
+    추측이 아니다."""
+    with state.LOCK:
+        entity = state.LIVE.get(device_id)
+        if entity is None:
+            return
+        idx = next((f.get('idx') for f in (entity.get('interfaces') or []) if f.get('name') == if_name), None)
+        if idx is None:
+            return
+        ext_cache = entity.setdefault('_extCache', {})
+        ext_cache.setdefault('adminStatus', {})[idx] = '1' if admin_up else '2'
+
+
 def _force_extended_repoll(device_id):
     """shutdown/no-shutdown/reboot 직후 호출 -- interface adminStatus는
     snmp_collector.py의 EXTENDED_POLL_INTERVAL_SEC(20초)로만 갱신되는
@@ -2380,6 +2402,7 @@ def api_interface_shutdown(device_id, if_name):
     except device_control.DeviceControlError as e:
         audit('INTERFACE_SHUTDOWN_FAILED', target=device_id, details=f'{if_name}: {e}')
         return jsonify({'error': str(e)}), 400
+    _patch_interface_admin_status(device_id, if_name, admin_up=False)
     _force_extended_repoll(device_id)
     audit('INTERFACE_SHUTDOWN', target=device_id, details=if_name)
     return jsonify({'ok': True, 'output': output})
@@ -2396,6 +2419,7 @@ def api_interface_no_shutdown(device_id, if_name):
     except device_control.DeviceControlError as e:
         audit('INTERFACE_NO_SHUTDOWN_FAILED', target=device_id, details=f'{if_name}: {e}')
         return jsonify({'error': str(e)}), 400
+    _patch_interface_admin_status(device_id, if_name, admin_up=True)
     _force_extended_repoll(device_id)
     audit('INTERFACE_NO_SHUTDOWN', target=device_id, details=if_name)
     return jsonify({'ok': True, 'output': output})

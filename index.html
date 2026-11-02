@@ -6022,44 +6022,8 @@ function renderIfaceModal(){
     <div class="card"><div class="card-head"><h3>트래픽 추이</h3><span class="sub">SNMP 실측 · 최근 60초 · Mbps</span></div>
       <div style="height:200px"><canvas id="ifaceModalCanvas"></canvas></div>
     </div>
-    ${CURRENT_ROLE==='ADMIN' ? `
-    <div class="card">
-      <div class="card-head"><h3>인터페이스 제어</h3><span class="sub">SSH/Telnet으로 실제 장비에 명령 전송 · 검증된 벤더만 동작</span></div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button type="button" class="btn" id="iface-ctrl-btn">${f.adminStatus==='down' ? '인터페이스 활성화 (no shutdown)' : '인터페이스 비활성화 (shutdown)'}</button>
-        <span id="iface-ctrl-result" style="font-size:12px"></span>
-      </div>
-    </div>` : ''}
   `;
   charts.ifaceModalChart = lineChart($('#ifaceModalCanvas'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:f.hist||[], color:'#ffb020', fill:true}], {showX:false});
-  if(CURRENT_ROLE==='ADMIN'){
-    const ctrlBtn = $('#iface-ctrl-btn');
-    const resultEl = $('#iface-ctrl-result');
-    const goingDown = f.adminStatus!=='down';
-    ctrlBtn.addEventListener('click', async ()=>{
-      const msg = goingDown
-        ? `"${entity.name}"의 "${f.name}" 인터페이스를 비활성화(shutdown)할까요?\n지금 이 포트로 흐르는 트래픽이 즉시 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${entity.name}`
-        : `"${entity.name}"의 "${f.name}" 인터페이스를 다시 활성화(no shutdown)할까요?\n확인을 위해 장비 이름을 정확히 입력해주세요: ${entity.name}`;
-      const typed = window.prompt(msg);
-      if(typed !== entity.name) return;
-      ctrlBtn.disabled = true;
-      resultEl.textContent = '전송 중...';
-      resultEl.style.color = '';
-      try{
-        const path = goingDown ? 'shutdown' : 'no-shutdown';
-        const r = await apiFetch(`/api/devices/${encodeURIComponent(entity.id)}/interfaces/${encodeURIComponent(f.name)}/${path}`, {method:'POST'});
-        const j = await r.json();
-        if(!r.ok) throw new Error(j.error||'명령 전송 실패');
-        resultEl.textContent = '완료됨 (상태 반영까지 몇 초 걸릴 수 있습니다)';
-        resultEl.style.color = 'var(--good)';
-      }catch(e){
-        resultEl.textContent = e.message;
-        resultEl.style.color = 'var(--crit)';
-      }finally{
-        ctrlBtn.disabled = false;
-      }
-    });
-  }
 }
 $('#ifaceModalClose').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });
 $('#ifaceOverlay').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });
