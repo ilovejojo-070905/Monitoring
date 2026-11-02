@@ -10,52 +10,111 @@ set_cmd 없음), 상태를 바꾸는 동작은 전부 이 모듈을 통해 실�
 하기 위함.
 
 netmiko를 쓰는 이유(requirements.txt 주석 참고): 벤더별 enable 모드 진입,
-프롬프트 인식, reload/reboot의 "Proceed? [confirm]" 같은 대화형 확인까지
-이미 처리해주고, device_type에 '_telnet' 접미사만 붙이면 SSH/Telnet을 같은
-방식으로 다룰 수 있어 이 프로젝트의 sshOpen/telnetOpen 동적 감지와 잘
-맞물린다.
+프롬프트 인식까지 이미 처리해주고, device_type에 '_telnet' 접미사만
+붙이면 SSH/Telnet을 같은 방식으로 다룰 수 있어 이 프로젝트의 sshOpen/
+telnetOpen 동적 감지와 잘 맞물린다. 다만 reload/reboot의 대화형 확인
+("[confirm]", "(y/n)?" 등)은 벤더마다 명령어/프롬프트 문구/확인 응답이
+전부 달라서(아래 _send_reboot_sequence) netmiko의 자동 처리에 기대지
+않고 직접 write_channel + 폴링으로 구현한다 -- 실측 중 send_command_timing
+한 번으로는 "please wait......" 같은 중간 메시지 뒤에 몇 초 늦게 나오는
+진짜 확인 프롬프트를 놓치는 문제를 겪어서(최초엔 Comware에서 놓쳐서
+재부팅이 전혀 안 걸렸었음), 여러 번 짧게 폴링하며 누적하는 방식으로
+바꿨다.
+
+인터페이스 shutdown/no-shutdown 명령이 벤더마다 다른 것도 실측으로
+직접 확인한 것 -- 추측 아님:
+  - Cisco IOS: shutdown / no shutdown
+  - HP Comware(H3C): shutdown / undo shutdown ("no shutdown" 아님)
+  - ArubaOS-Switch(클래식, ProCurve 계열): disable / enable
+    ("shutdown"류 명령 자체가 없음)
 """
+import time
+
 from netmiko import ConnectHandler
 from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
 
 import storage
 
 # 벤더별 CLI 프로필. ssh_device_type/telnet_device_type은 netmiko가 쓰는
-# 정식 이름(https://github.com/ktbyers/netmiko#supported-platforms 기준).
-# *_cmds가 None이면 그 동작은 이 벤더에서 아직 미검증/미지원.
-#
-# 'cisco' (Cisco IOS, Catalyst 2960S/C2960S-UNIVERSALK9-M, 12.2(55)SE5)는
-# 2026-11-02 실제 테스트 장비(192.168.30.250, Telnet, 사용자 이름 없이
-# enable 비밀번호만)로 전부 실측 검증 완료:
-#   - shutdown/no shutdown: gi1/0/1(빈 포트, [TEST] 라벨)에서 상태가
-#     notconnect -> disabled -> notconnect로 정확히 왕복되는 것 확인
-#   - save_config(write memory): "[OK]" 응답 확인
-#   - reload: "Proceed with reload? [confirm]"에 Enter 전송 -> 접속이
-#     즉시 끊기는 것까지 확인(재부팅이 실제로 시작됐다는 뜻 -- 정상 동작,
-#     버그 아님. _send_reload()가 이 연결 끊김을 성공으로 처리한다)
+# 정식 이름. *_cmds가 None이면 그 동작은 이 벤더에서 아직 미검증/미지원.
+# reboot_* 필드가 없으면(reboot_cmd 없음) 재부팅 미지원.
 PROFILES = {
+    # Cisco IOS -- 2026-11-02, 실제 테스트 장비(192.168.30.250, Catalyst
+    # 2960S/C2960S-UNIVERSALK9-M 12.2(55)SE5, Telnet·사용자 이름 없이
+    # enable 비밀번호만)로 전부 실측 검증 완료:
+    #   - shutdown/no shutdown: gi1/0/1(빈 포트, [TEST] 라벨)에서 상태가
+    #     notconnect -> disabled -> notconnect로 정확히 왕복
+    #   - save_config(write memory): "[OK]" 응답 확인
+    #   - reload: "Proceed with reload? [confirm]"에 Enter 전송 -> 접속이
+    #     즉시 끊기는 것까지 확인(재부팅이 실제로 시작됐다는 뜻). 이후 핑으로
+    #     약 3~4분 뒤 장비가 실제로 재부팅 후 복구되는 것까지 확인.
     'cisco': {
         'ssh_device_type': 'cisco_ios',
         'telnet_device_type': 'cisco_ios_telnet',
         'shutdown_cmds': lambda if_name: [f'interface {if_name}', 'shutdown'],
         'no_shutdown_cmds': lambda if_name: [f'interface {if_name}', 'no shutdown'],
-        'supports_reload': True,
+        'reboot_pre_cmds': [],
+        'reboot_cmd': 'reload',
+        'reboot_confirm_keys': ('confirm',),
+        'reboot_confirm_response': '',
     },
     'cisco-nxos': {
         'ssh_device_type': 'cisco_nxos', 'telnet_device_type': None,
-        'shutdown_cmds': None, 'no_shutdown_cmds': None, 'supports_reload': False,
+        'shutdown_cmds': None, 'no_shutdown_cmds': None,
     },
     'aruba-cx': {
         'ssh_device_type': 'aruba_os', 'telnet_device_type': None,
-        'shutdown_cmds': None, 'no_shutdown_cmds': None, 'supports_reload': False,
+        'shutdown_cmds': None, 'no_shutdown_cmds': None,
     },
+    # HP A-series(Comware/H3C OEM) -- 2026-11-02, 실제 테스트 장비
+    # (192.168.30.251, HP A5500-24G-4SFP HI, Comware 5.20.99, Telnet만
+    # 응답(SSH 포트 22는 닫혀있음), admin 계정)으로 전부 실측 검증 완료:
+    #   - shutdown/undo shutdown: GE1/0/2(빈 포트)에서 Link 상태가
+    #     DOWN -> ADM(관리자 비활성화) -> DOWN으로 정확히 왕복
+    #   - save_config(netmiko 기본 "save force"): 저장 성공 메시지 확인
+    #   - reboot: system-view 안에서는 "Unrecognized command"로 거부됨 ->
+    #     반드시 'return'으로 user view로 나온 뒤에 'reboot'를 보내야 함
+    #     (reboot_pre_cmds로 처리). "Start to check configuration...
+    #     please wait......DONE! This command will reboot the device.
+    #     Continue? [Y/N]:" 확인 프롬프트가 몇 초 늦게 나오는 것까지 실측
+    #     확인(그래서 send_command_timing 한 번이 아니라 폴링 방식 사용) ->
+    #     'Y' 응답 후 핑으로 약 2분 뒤 정상 복구 확인.
     'hp-comware': {
         'ssh_device_type': 'hp_comware', 'telnet_device_type': 'hp_comware_telnet',
-        'shutdown_cmds': None, 'no_shutdown_cmds': None, 'supports_reload': False,
+        'shutdown_cmds': lambda if_name: [f'interface {if_name}', 'shutdown'],
+        'no_shutdown_cmds': lambda if_name: [f'interface {if_name}', 'undo shutdown'],
+        'reboot_pre_cmds': ['return'],
+        'reboot_cmd': 'reboot',
+        'reboot_confirm_keys': ('y/n',),
+        'reboot_confirm_response': 'Y',
+    },
+    # ArubaOS-Switch(클래식, ProCurve 계열 -- ArubaOS-CX와는 다른 OS/프로필,
+    # snmp_profiles.py의 'hp' 벤더와 동일 계열) -- 2026-11-02, 실제 테스트
+    # 장비(192.168.30.252, HP-2530-24G, YA.16.06.0006, admin 계정+빈
+    # 비밀번호)로 전부 실측 검증 완료. SSH(22)는 이 장비의 구형 SSH가
+    # paramiko와 키교환 알고리즘이 안 맞아 실패(Incompatible ssh peer) --
+    # 신형 장비는 될 수도 있어 ssh_device_type은 남겨두되(시도만 하고 안
+    # 되면 자동으로 Telnet 폴백), 실제 검증은 Telnet으로만 함:
+    #   - disable/enable: 포트 2(빈 포트, Down)에서 Enabled 컬럼이
+    #     Yes -> No -> Yes로 정확히 왕복(이 장비는 "shutdown"류 명령 자체가
+    #     없고 disable/enable을 씀)
+    #   - save_config(netmiko 기본 "write memory"): 저장 확인
+    #   - reload: "This will reboot the system from the primary image.
+    #     Continue (y/n)? "에 'y' 응답 -> 접속 끊김(EOFError, 정상) -> 핑으로
+    #     확인 결과 확인 명령 후 약 45초 뒤 실제로 꺼지고, 이후 정상 복구까지
+    #     확인.
+    'hp': {
+        'ssh_device_type': 'hp_procurve', 'telnet_device_type': 'hp_procurve_telnet',
+        'shutdown_cmds': lambda if_name: [f'interface {if_name}', 'disable'],
+        'no_shutdown_cmds': lambda if_name: [f'interface {if_name}', 'enable'],
+        'reboot_pre_cmds': [],
+        'reboot_cmd': 'reload',
+        'reboot_confirm_keys': ('y/n',),
+        'reboot_confirm_response': 'y',
     },
     'juniper': {
         'ssh_device_type': 'juniper_junos', 'telnet_device_type': None,
-        'shutdown_cmds': None, 'no_shutdown_cmds': None, 'supports_reload': False,
+        'shutdown_cmds': None, 'no_shutdown_cmds': None,
     },
 }
 
@@ -144,27 +203,56 @@ def bring_up_interface(device_row, vendor_profile, if_name):
         conn.disconnect()
 
 
+def _send_reboot_sequence(conn, profile):
+    """벤더마다 다른 reload/reboot 확인 흐름을 공통 처리. send_command_timing
+    한 번으로는 Comware의 "please wait......" 같은 중간 메시지 뒤에 몇 초
+    늦게 나오는 진짜 확인 프롬프트를 놓치는 걸 실측으로 겪어서, 짧은 간격
+    (1.5초)으로 여러 번 폴링하며 출력을 누적하는 방식으로 구현한다."""
+    for cmd in profile.get('reboot_pre_cmds') or []:
+        conn.write_channel(cmd + '\n')
+        time.sleep(1.5)
+        conn.read_channel()
+
+    conn.write_channel(profile['reboot_cmd'] + '\n')
+    confirm_keys = profile.get('reboot_confirm_keys') or ()
+    collected = ''
+    for _ in range(10):
+        time.sleep(1.5)
+        chunk = conn.read_channel()
+        if chunk:
+            collected += chunk
+        if confirm_keys and any(k in collected.lower() for k in confirm_keys):
+            break
+
+    if confirm_keys and any(k in collected.lower() for k in confirm_keys):
+        conn.write_channel(profile.get('reboot_confirm_response', '') + '\n')
+        time.sleep(2)
+        try:
+            collected += conn.read_channel()
+        except Exception:
+            # 실측 확인(Cisco/ArubaOS-Switch 둘 다, 2026-11-02): 확인 응답
+            # 직후 장비가 바로 재부팅을 시작하면서 세션이 끊기는 게 정상
+            # 동작이다(EOFError 등) -- 이건 실패가 아니라 재부팅이 실제로
+            # 걸렸다는 증거다.
+            pass
+    return collected
+
+
 def reboot_device(device_row, vendor_profile, save_config_first=True):
     profile = get_profile(vendor_profile)
-    if not profile or not profile.get('supports_reload'):
+    if not profile or not profile.get('reboot_cmd'):
         raise DeviceControlError(f'"{vendor_profile}" 벤더는 재부팅이 아직 검증되지 않았습니다.')
     conn = _connect(device_row, profile)
     save_output = ''
     try:
         if save_config_first:
             save_output = conn.save_config()
-        reload_output = conn.send_command_timing('reload')
-        if any(k in reload_output.lower() for k in ('confirm', '[yes/no]', 'continue')):
-            reload_output += conn.send_command_timing('\n')
+        reboot_output = _send_reboot_sequence(conn, profile)
     except Exception:
-        # 실측 확인(2026-11-02): reload 확인 직후 장비가 바로 재부팅을
-        # 시작하면서 세션이 끊기는 게 정상 동작이다(EOFError 등) --
-        # 이 시점 이후의 연결 예외는 전부 "재부팅이 실제로 걸렸다"는
-        # 증거로 취급하고 실패로 보지 않는다.
         return save_output + '\n(재부팅 명령 전송됨 -- 장비 재부팅으로 연결이 끊어졌습니다. 정상입니다.)'
     finally:
         try:
             conn.disconnect()
         except Exception:
             pass
-    return save_output + '\n' + reload_output
+    return save_output + '\n' + reboot_output
