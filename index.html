@@ -666,6 +666,16 @@
     <button type="button" class="btn primary" id="confirmOkBtn">확인</button>
   </div>
 </div>
+<div class="overlay" id="typedConfirmOverlay" style="z-index:89"></div>
+<div class="confirm-modal" id="typedConfirmModal">
+  <div class="confirm-title" id="typedConfirmTitle">확인</div>
+  <div class="confirm-msg" id="typedConfirmMsg" style="white-space:pre-line"></div>
+  <div class="field" style="margin:12px 0"><input type="text" id="typedConfirmInput" placeholder="장비 이름 입력" autocomplete="off"></div>
+  <div class="confirm-actions">
+    <button type="button" class="btn" id="typedConfirmCancelBtn">취소</button>
+    <button type="button" class="btn primary" id="typedConfirmOkBtn" disabled>확인</button>
+  </div>
+</div>
 <div class="overlay" id="userEditOverlay" style="z-index:89"></div>
 <div class="confirm-modal" id="userEditModal">
   <div class="confirm-title" id="userEditTitle">계정 수정</div>
@@ -1116,6 +1126,47 @@ function showConfirm(message, opts){
     $('#confirmOkBtn').addEventListener('click', onOk);
     $('#confirmCancelBtn').addEventListener('click', onCancel);
     $('#confirmOverlay').addEventListener('click', onCancel);
+  });
+}
+/* 장비 이름을 정확히 타이핑해야 풀리는 확인창 -- 인터페이스 shutdown/
+   재부팅처럼 삭제보다 더 위험한(실제 운영 트래픽 차단) 동작에 씀. 예전엔
+   네이티브 prompt()를 임시로 썼는데, 브라우저가 그 위치를 화면 위쪽에
+   고정해서 "가운데서 뜨게 해달라"는 요청을 받아 showConfirm과 같은
+   항상-중앙 패턴으로 바꿈. 입력값이 expectedText와 정확히 일치할 때만
+   확인 버튼이 풀린다(기존 네이티브 prompt의 "이름 다르면 취소" 동작과
+   동일한 안전장치, 버튼이 아예 비활성화돼 있어 더 명확함).*/
+function showTypedConfirm(message, expectedText, opts){
+  opts = opts || {};
+  return new Promise(resolve=>{
+    const input = $('#typedConfirmInput');
+    $('#typedConfirmTitle').textContent = opts.title || '확인';
+    $('#typedConfirmMsg').textContent = message;
+    const okBtn = $('#typedConfirmOkBtn');
+    okBtn.textContent = opts.okText || '확인';
+    input.value = '';
+    okBtn.disabled = true;
+    $('#typedConfirmOverlay').classList.add('show');
+    $('#typedConfirmModal').classList.add('show');
+    setTimeout(()=> input.focus(), 50);
+    function updateOkState(){ okBtn.disabled = input.value !== expectedText; }
+    function cleanup(result){
+      $('#typedConfirmOverlay').classList.remove('show');
+      $('#typedConfirmModal').classList.remove('show');
+      okBtn.removeEventListener('click', onOk);
+      $('#typedConfirmCancelBtn').removeEventListener('click', onCancel);
+      $('#typedConfirmOverlay').removeEventListener('click', onCancel);
+      input.removeEventListener('input', updateOkState);
+      input.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    }
+    function onOk(){ if(input.value === expectedText) cleanup(true); }
+    function onCancel(){ cleanup(false); }
+    function onKeydown(e){ if(e.key==='Enter') onOk(); else if(e.key==='Escape') onCancel(); }
+    okBtn.addEventListener('click', onOk);
+    $('#typedConfirmCancelBtn').addEventListener('click', onCancel);
+    $('#typedConfirmOverlay').addEventListener('click', onCancel);
+    input.addEventListener('input', updateOkState);
+    input.addEventListener('keydown', onKeydown);
   });
 }
 function showToast(inc, kind){
@@ -5878,10 +5929,8 @@ function openDrawerFor(id){
   // 재부팅: 데이터가 아니라 실제 운영 트래픽을 끊는 동작이라 수정/삭제보다
   // 한 단계 더 높은 권한(ADMIN)을 요구하고(장비 일괄삭제가 OPERATOR가 아닌
   // ADMIN인 것과 같은 이유), 삭제 확인창(showConfirm, 버튼 2개)보다 강한
-  // "장비 이름을 직접 타이핑해야 확인"으로 한 번 더 막는다 -- 이 프로젝트에
-  // 아직 타이핑 확인 모달이 없어 임시로 네이티브 prompt()를 쓰지만, 다른
-  // 모든 확인창은 네이티브 대화상자를 피하는 게 이 프로젝트 관례라
-  // 전용 모달로 바꾸는 걸 후속 작업으로 남겨둔다.
+  // "장비 이름을 직접 타이핑해야 확인"으로 한 번 더 막는다 --
+  // showTypedConfirm(위, 항상 화면 중앙에 뜨는 전용 모달)으로 처리.
   const rebootBtn = $('#drawerRebootBtn');
   rebootBtn.style.display = (cat==='net' && CURRENT_ROLE_RANK >= 2) ? '' : 'none';
   rebootBtn.style.color = '#000';
@@ -5889,8 +5938,10 @@ function openDrawerFor(id){
   rebootBtn.style.borderColor = 'var(--crit)';
   if(cat==='net' && CURRENT_ROLE_RANK >= 2){
     rebootBtn.onclick = async ()=>{
-      const typed = window.prompt(`"${entity.name}"를 재부팅할까요?\n재부팅 전 설정을 저장하고, 몇 분간 이 장비와의 통신이 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${entity.name}`);
-      if(typed !== entity.name) return;
+      const ok = await showTypedConfirm(
+        `"${entity.name}"를 재부팅할까요?\n재부팅 전 설정을 저장하고, 몇 분간 이 장비와의 통신이 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${entity.name}`,
+        entity.name, {title:'재부팅', okText:'재부팅'});
+      if(!ok) return;
       rebootBtn.disabled = true;
       rebootBtn.textContent = '재부팅 중...';
       try{
@@ -6246,8 +6297,8 @@ function drawPingDevice(e, catLabel){
       const msg = goingDown
         ? `"${e.name}"의 "${f.name}" 인터페이스를 비활성화(shutdown)할까요?\n지금 이 포트로 흐르는 트래픽이 즉시 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`
         : `"${e.name}"의 "${f.name}" 인터페이스를 다시 활성화(no shutdown)할까요?\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`;
-      const typed = window.prompt(msg);
-      if(typed !== e.name) return;
+      const ok = await showTypedConfirm(msg, e.name, {title: goingDown ? '인터페이스 비활성화' : '인터페이스 활성화', okText: goingDown ? '비활성화' : '활성화'});
+      if(!ok) return;
       btn.disabled = true;
       const prevText = btn.textContent;
       btn.textContent = '전송 중...';
