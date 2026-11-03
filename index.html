@@ -350,15 +350,15 @@
   @media (max-width:600px){ .form-grid{grid-template-columns:1fr} }
 
   /* ---------- toast notifications (web alert channel) ---------- */
-  .toast-stack{position:fixed;top:76px;right:18px;z-index:80;display:flex;flex-direction:column;gap:10px;width:min(340px,90vw);pointer-events:none}
+  .toast-stack{position:fixed;bottom:18px;right:18px;z-index:80;display:flex;flex-direction:column;gap:10px;width:min(340px,90vw);pointer-events:none}
   .toast{
     display:flex;align-items:flex-start;gap:10px;background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--text-faint);
     border-radius:var(--radius-sm);padding:11px 12px;box-shadow:0 12px 28px rgba(30,41,59,.16);cursor:pointer;pointer-events:auto;
     animation:toastIn .22s ease;
   }
   .toast.closing{animation:toastOut .2s ease forwards}
-  @keyframes toastIn{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:translateX(0)}}
-  @keyframes toastOut{to{opacity:0;transform:translateX(16px)}}
+  @keyframes toastIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes toastOut{to{opacity:0;transform:translateY(16px)}}
   .toast .dot{width:9px;height:9px;border-radius:50%;flex:none;margin-top:4px;background:var(--text-faint)}
   .toast-crit{border-left-color:var(--crit)} .toast-crit .dot{background:var(--crit);box-shadow:0 0 6px rgba(239,59,92,.7)}
   .toast-warn{border-left-color:var(--warn)} .toast-warn .dot{background:var(--warn);box-shadow:0 0 6px rgba(230,150,15,.7)}
@@ -721,8 +721,6 @@
     <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
       <button class="btn" id="drawerEditBtn" style="white-space:nowrap;display:none">수정</button>
       <button class="btn" id="drawerRebootBtn" style="white-space:nowrap;display:none">재부팅</button>
-      <button class="btn" id="drawerDelBtn" style="white-space:nowrap;display:none">삭제</button>
-      <button class="btn" id="drawerMaintBtn" style="white-space:nowrap"></button>
       <button class="drawer-close" id="drawerClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
     </div>
   </div>
@@ -1171,9 +1169,6 @@ async function registerDevice(category, mode, name, ip, fields){
   const j = await r.json();
   if(!r.ok) throw new Error(j.error||'등록 실패');
   return j;
-}
-async function unregisterDevice(id){
-  await apiFetch('/api/devices/'+id, {method:'DELETE'});
 }
 async function updateDevice(id, name, ip, fields){
   const r = await apiFetch('/api/devices/'+id, {
@@ -2559,24 +2554,7 @@ function renderNetworkSkeleton(){
         <tbody id="net-tbody"></tbody>
       </table></div>
     </div>
-    <div class="grid grid-2">
-      <div class="card">
-        <div class="card-head"><h3 id="net-chart-title">응답시간 추이</h3><span class="sub">최근 60초 · ms</span></div>
-        <div style="height:170px"><canvas id="net-chart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h3 id="net-chart2-title">CPU / 메모리 추이</h3><span class="sub" id="net-chart2-sub">SNMP 실측 시에만 표시</span></div>
-        <div style="height:170px"><canvas id="net-chart2"></canvas></div>
-      </div>
-    </div>
   `;
-  charts.net_chart = lineChart($('#net-chart'), Array(24).fill(''), [
-    {label:'지연시간(ms)', data:Array(24).fill(0), color:'#3ecbff', fill:true},
-  ], {showX:false});
-  charts.net_chart2 = lineChart($('#net-chart2'), Array(24).fill(''), [
-    {label:'CPU', data:Array(24).fill(0), color:'#7c5cff'},
-    {label:'MEM', data:Array(24).fill(0), color:'#00e6a8'},
-  ], {showX:false, max:100});
   $('#net-search').addEventListener('input', renderNetwork);
   wireStatusFilter('net-filters', v=>netFilter=v, renderNetwork);
   $('#net-group-filter').addEventListener('change', ()=>{ netGroupFilter = $('#net-group-filter').value; renderNetwork(); });
@@ -2639,24 +2617,6 @@ function renderNetwork(){
   if(remoteTh) remoteTh.style.display = CURRENT_ROLE==='ADMIN' ? '' : 'none';
   updateSortArrows('net', netSort, ['status','name','type','ip','group']);
   if(!selectedNetId && NETS.length) selectedNetId = NETS[0].id;
-  const n = NETS.find(x=>x.id===selectedNetId);
-  if(n && charts.net_chart){
-    $('#net-chart-title').textContent = `${n.name} 응답시간 추이`;
-    charts.net_chart.data.datasets[0].data = (n.hist && n.hist.latency) || [];
-    charts.net_chart.update('none');
-  } else if(charts.net_chart){
-    $('#net-chart-title').textContent = `응답시간 추이`;
-    charts.net_chart.data.datasets[0].data = [];
-    charts.net_chart.update('none');
-  }
-  if(charts.net_chart2){
-    const hasCpuMem = n && n.hist && n.hist.cpu && typeof n.cpu === 'number';
-    $('#net-chart2-title').textContent = hasCpuMem ? `${n.name} CPU / 메모리 추이` : 'CPU / 메모리 추이';
-    $('#net-chart2-sub').textContent = hasCpuMem ? 'SNMP 실측 · 최근 60초' : 'SNMP 실측 시에만 표시';
-    charts.net_chart2.data.datasets[0].data = hasCpuMem ? n.hist.cpu.map(fmt1) : [];
-    charts.net_chart2.data.datasets[1].data = hasCpuMem && n.hist.mem ? n.hist.mem.map(fmt1) : [];
-    charts.net_chart2.update('none');
-  }
 }
 
 /* ================= FLOW ANALYSIS (NetFlow/sFlow, 4-3) =================
@@ -5893,31 +5853,13 @@ function openDrawerFor(id){
   openDrawerId = id;
   const catLabel = s?'서버 (SMS)':d?'데이터베이스 (DBMS)':n?'네트워크 (NMS)':'전산실 설비 (FMS)';
   const cat = s?'server':d?'db':n?'net':'fac';
-  const maint = entity.maintenance || {enabled:false};
-  const maintBtn = $('#drawerMaintBtn');
-  // 1-4: /api/devices/<id>/maintenance is OPERATOR+ on the server -- a
-  // VIEWER would just get a 403, so don't even show the button.
-  maintBtn.style.display = CURRENT_ROLE_RANK >= 1 ? '' : 'none';
-  maintBtn.textContent = maint.enabled ? '유지보수 해제' : '유지보수 시작';
-  maintBtn.style.color = maint.enabled ? 'var(--warn)' : '';
-  maintBtn.style.borderColor = maint.enabled ? 'rgba(255,176,32,.4)' : '';
-  maintBtn.onclick = async ()=>{
-    const enabling = !maint.enabled;
-    await apiFetch(`/api/devices/${id}/maintenance`, {
-      method:'PUT', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({enabled: enabling, start: enabling ? Date.now() : null, end: null, reason: enabling ? '수동 설정' : null}),
-    });
-    await afterDeviceChange();
-  };
-  // 수정/삭제는 "장비 등록" 화면의 등록된 장비 목록 표가 삭제되면서 이쪽
-  // (상세 드로어)으로 옮겨왔다 -- 사용자가 직접 등록한 장비(origin==='user')
-  // 에만 의미가 있는 동작인 데다, 1-4부터는 OPERATOR+ 권한도 필요하다
-  // (/api/devices/<id> PUT·DELETE가 서버에서 OPERATOR 이상을 요구함).
+  // 수정은 "장비 등록" 화면의 등록된 장비 목록 표가 삭제되면서 이쪽(상세
+  // 드로어)으로 옮겨왔다 -- 사용자가 직접 등록한 장비(origin==='user')에만
+  // 의미가 있는 동작인 데다, 1-4부터는 OPERATOR+ 권한도 필요하다
+  // (/api/devices/<id> PUT이 서버에서 OPERATOR 이상을 요구함).
   const editBtn = $('#drawerEditBtn');
-  const delBtn = $('#drawerDelBtn');
   const isUserOrigin = entity.origin === 'user' && CURRENT_ROLE_RANK >= 1;
   editBtn.style.display = isUserOrigin ? '' : 'none';
-  delBtn.style.display = isUserOrigin ? '' : 'none';
   if(isUserOrigin){
     editBtn.onclick = ()=>{
       // 수정 폼은 "장비 등록" 화면(#view-register) 안에 모달로 떠 있는 구조라,
@@ -5931,13 +5873,6 @@ function openDrawerFor(id){
       closeDrawer();
       switchView('register');
       window.startEditDevice(entity, cat);
-    };
-    delBtn.onclick = async ()=>{
-      const ok = await showConfirm(`"${entity.name}" 삭제할까요?\n등록된 설정과 이력이 함께 삭제됩니다.`, {title:'장비 삭제', okText:'삭제'});
-      if(!ok) return;
-      await unregisterDevice(id);
-      closeDrawer();
-      afterDeviceChange();
     };
   }
   // 재부팅: 데이터가 아니라 실제 운영 트래픽을 끊는 동작이라 수정/삭제보다
