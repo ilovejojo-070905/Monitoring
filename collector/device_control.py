@@ -112,9 +112,33 @@ PROFILES = {
         'reboot_confirm_keys': ('y/n',),
         'reboot_confirm_response': 'y',
     },
+    # Juniper(Junos) -- 2026-11-03, 실제 테스트 장비(192.168.30.253, root
+    # 계정, SSH 정상 응답)로 전부 실측 검증 완료. Junos는 Cisco/Comware/
+    # ArubaOS-Switch와 근본적으로 다른 패러다임(line-mode 즉시 적용이
+    # 아니라 set/delete로 "후보 설정"을 쌓은 뒤 commit으로 한 번에 반영) --
+    #   - disable/활성화: set interfaces {if}/delete interfaces {if}
+    #     disable을 commit과 "같은 config 세션"에서 함께 보내야 함(실측으로
+    #     발견: netmiko의 send_config_set()과 별도로 conn.commit()을 나중에
+    #     호출하면 commit 자체는 성공해도 설정 모드를 제대로 못 빠져나와
+    #     이후 명령이 전부 꼬이는 netmiko 쪽 한계가 있었음 -- 그래서 commit도
+    #     shutdown_cmds/no_shutdown_cmds 리스트 안에 같이 넣어 한 번에
+    #     처리). ge-0/0/9(빈 포트)에서 show interfaces terse 기준 Admin이
+    #     up -> down -> up으로 정확히 왕복하는 것 확인.
+    #   - 재부팅: "request system reboot" -> "Reboot the system ?
+    #     [yes,no] (no)"에 'yes' 응답 -> "System going down IMMEDIATELY"
+    #     확인, 핑으로 실제 꺼지는 것까지 확인. Junos는 commit 자체가 이미
+    #     "저장"이라 Cisco류의 별도 write-memory 개념이 없음(skip_save_config
+    #     로 reboot_device()가 generic save_config() 호출 자체를 건너뛰게
+    #     함 -- 안 그러면 netmiko가 뭘 보낼지 검증 안 된 채로 호출하게 됨).
     'juniper': {
-        'ssh_device_type': 'juniper_junos', 'telnet_device_type': None,
-        'shutdown_cmds': None, 'no_shutdown_cmds': None,
+        'ssh_device_type': 'juniper_junos', 'telnet_device_type': 'juniper_junos_telnet',
+        'shutdown_cmds': lambda if_name: [f'set interfaces {if_name} disable', 'commit'],
+        'no_shutdown_cmds': lambda if_name: [f'delete interfaces {if_name} disable', 'commit'],
+        'skip_save_config': True,
+        'reboot_pre_cmds': [],
+        'reboot_cmd': 'request system reboot',
+        'reboot_confirm_keys': ('yes,no',),
+        'reboot_confirm_response': 'yes',
     },
 }
 
@@ -250,7 +274,11 @@ def reboot_device(device_row, vendor_profile, save_config_first=True):
     conn = _connect(device_row, profile)
     save_output = ''
     try:
-        if save_config_first:
+        # Junos는 commit 자체가 이미 "저장"이라 별도 write-memory 개념이
+        # 없다(위 'juniper' 프로필 주석 참고) -- skip_save_config인 벤더는
+        # netmiko의 범용 save_config()를 아예 호출하지 않는다(뭘 보낼지
+        # 실측 검증 안 된 채로 호출하는 걸 피하기 위함).
+        if save_config_first and not profile.get('skip_save_config'):
             save_output = conn.save_config()
         reboot_output = _send_reboot_sequence(conn, profile)
     except Exception:
