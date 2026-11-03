@@ -194,6 +194,8 @@ if ($staleBackend -or $staleCaddy) {
 # --------------------------------------------------------- [2] 필수 도구 --
 Write-Step '[2/10] 필수 도구 확인 (Git / Python / Caddy / mkcert)'
 
+$script:WingetLog = @{}
+
 function Install-IfMissing([string]$cmd, [string]$wingetId, [string]$label) {
     # Same WindowsApps-stub trap Resolve-ExeAndAddToPath guards against below
     # (see its own comment for the full story) -- without this check here
@@ -209,7 +211,17 @@ function Install-IfMissing([string]$cmd, [string]$wingetId, [string]$label) {
         return
     }
     Write-Host "    $label 설치 중 (winget install $wingetId)..."
-    Invoke-Native { winget install --id $wingetId -e --source winget --accept-package-agreements --accept-source-agreements | Out-Null }
+    # 실제 겪은 문제(2026-11-03, 다른 PC에 Setup으로 설치 중): winget install이
+    # 실패했는데도 그 출력을 Out-Null로 버리고 있어서, 뒤의
+    # Resolve-ExeAndAddToPath가 결국 못 찾고 "git 를 설치 후에도 찾을 수
+    # 없습니다"로만 실패해 winget이 왜 실패했는지(네트워크/소스/권한 등) 전혀
+    # 알 수 없었다. 출력과 종료 코드를 cmd별로 보관해뒀다가, 끝내 못 찾았을 때
+    # 그 에러 메시지에 그대로 포함시킨다.
+    $output = Invoke-Native { winget install --id $wingetId -e --source winget --accept-package-agreements --accept-source-agreements 2>&1 | Out-String }
+    $script:WingetLog[$cmd] = @{ ExitCode = $LASTEXITCODE; Output = $output }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn2 "$label winget 설치가 종료 코드 $LASTEXITCODE 로 끝났습니다 (아래에서 실제로 찾았는지 다시 확인합니다)"
+    }
 }
 
 Install-IfMissing 'git' 'Git.Git' 'Git'
@@ -266,7 +278,12 @@ function Resolve-ExeAndAddToPath([string]$cmd, [string[]]$searchGlobs) {
         }
         if ($attempt -lt 5) { Start-Sleep -Seconds 2 }
     }
-    throw "$cmd 를 설치 후에도 찾을 수 없습니다. 설치가 실패했을 수 있습니다."
+    $detail = ''
+    if ($script:WingetLog.ContainsKey($cmd)) {
+        $w = $script:WingetLog[$cmd]
+        $detail = "`n`nwinget install $cmd 결과 (종료 코드 $($w.ExitCode)):`n$($w.Output)"
+    }
+    throw "$cmd 를 설치 후에도 찾을 수 없습니다. 설치가 실패했을 수 있습니다.$detail"
 }
 
 #
