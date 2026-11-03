@@ -22,6 +22,8 @@ from functools import wraps
 
 import psutil
 from flask import Flask, Response, g, jsonify, redirect, request, send_file, send_from_directory, session
+from flask import sessions as flask_sessions
+from itsdangerous import BadSignature, SignatureExpired
 from waitress import serve
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -169,6 +171,60 @@ app.config['SESSION_COOKIE_SECURE'] = True
 # headroom, while still refusing a deliberately oversized POST.
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024
 
+# 실측으로 겪은 문제(2026-11-03, 다른 PC에서 "계속 로그인 화면으로 튕긴다"
+# 보고): logs/app.log의 AUTH-DIAG 진단 로그(_log_unauthorized_diag 참고)로
+# 확인한 실제 원인 -- 그 PC(VM으로 추정)의 시스템 시계가 주기적으로(매분
+# 근처) 몇 초~1분 가까이 뒤로 보정되면서, 바로 직전에 발급된 세션 쿠키의
+# 서명 타임스탬프가 "방금 서명됐는데 현재 시각보다 미래"인 상태가 되고,
+# itsdangerous의 TimestampSigner는 서명 나이가 음수(0보다 작음)인 경우를
+# 무조건 SignatureExpired로 처리한다(itsdangerous/timed.py의 `if age < 0:
+# raise SignatureExpired(...)` -- 소스 직접 확인). 서명(HMAC) 검증 자체는
+# 이미 통과한 뒤에 나이만 보고 거부하는 것이므로, 쿠키가 위조된 게 전혀
+# 아니라 순전히 시계 드리프트 때문에 정상 사용자가 로그아웃당하는 상황.
+# NTP/하이퍼바이저 시간 동기화로 인한 수 초~수십 초짜리 시계 뒤틀림은
+# 실제 운영 환경(특히 VM)에서 드물지 않으므로, 작은 음수 나이(최대
+# CLOCK_SKEW_LEEWAY_SECONDS)는 세션을 끊지 않고 그냥 받아들인다 -- 서명이
+# 이미 암호학적으로 검증된 뒤라 안전하다. 30분 유휴 타임아웃 자체(너무
+# '오래된' 양수 나이)는 전혀 안 건드림: 이 완화는 '미래 시각으로 보이는'
+# 경우에만, 그것도 몇 분 이내로만 적용된다.
+CLOCK_SKEW_LEEWAY_SECONDS = 120
+
+
+class _ClockSkewTolerantSessionInterface(flask_sessions.SecureCookieSessionInterface):
+    def open_session(self, app, request):
+        s = self.get_signing_serializer(app)
+        if s is None:
+            return None
+        val = request.cookies.get(self.get_cookie_name(app))
+        if not val:
+            return self.session_class()
+        max_age = int(app.permanent_session_lifetime.total_seconds())
+        try:
+            data = s.loads(val, max_age=max_age)
+            return self.session_class(data)
+        except SignatureExpired as e:
+            if e.date_signed is not None:
+                age = (datetime.now(timezone.utc) - e.date_signed).total_seconds()
+                if -CLOCK_SKEW_LEEWAY_SECONDS <= age < 0:
+                    try:
+                        # e.payload는 TimestampSigner.unsign()이 HMAC 서명
+                        # 검증까지 이미 통과한 뒤, 나이 체크에서만 걸려 붙여둔
+                        # base64-디코딩된 원본 바이트 -- load_payload()로
+                        # 역직렬화하면 정상 성공 경로와 동일한 세션 데이터.
+                        data = s.load_payload(e.payload)
+                        app_logger.warning(
+                            '[AUTH-DIAG] 시계 드리프트(age=%.1f초)를 허용 범위 내로 보고 세션 유지: %s %s',
+                            age, request.method, request.path)
+                        return self.session_class(data)
+                    except Exception:
+                        pass
+            return self.session_class()
+        except BadSignature:
+            return self.session_class()
+
+
+app.session_interface = _ClockSkewTolerantSessionInterface()
+
 CSRF_METHODS = ('POST', 'PUT', 'DELETE', 'PATCH')
 
 # Security hardening Phase B section 3: per-IP login rate limit, on top of the
@@ -294,7 +350,6 @@ def _log_unauthorized_diag():
     '값' 자체는 세션 위조에 쓰일 수 있는 민감정보라 로그에 남기지 않고
     길이/사유만 남긴다."""
     try:
-        from itsdangerous import BadSignature, SignatureExpired
         raw = request.cookies.get(app.config['SESSION_COOKIE_NAME'])
         if not raw:
             app_logger.warning('[AUTH-DIAG] %s %s: 쿠키 자체가 요청에 없음', request.method, request.path)
