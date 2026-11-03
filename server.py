@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import defaultdict, deque
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from functools import wraps
 
 import psutil
@@ -287,6 +287,40 @@ def _handle_token_auth(fn, token, min_role, args, kwargs):
     return resp
 
 
+def _log_unauthorized_diag():
+    """require_role()의 'unauthorized' 분기 전용 1회성 진단 헬퍼 -- 위
+    require_role()의 호출부 주석 참고. Flask가 이미 삼켜버린 서명 검증
+    실패 사유를 itsdangerous로 직접 재현해 logs/app.log에 남긴다. 쿠키
+    '값' 자체는 세션 위조에 쓰일 수 있는 민감정보라 로그에 남기지 않고
+    길이/사유만 남긴다."""
+    try:
+        from itsdangerous import BadSignature, SignatureExpired
+        raw = request.cookies.get(app.config['SESSION_COOKIE_NAME'])
+        if not raw:
+            app_logger.warning('[AUTH-DIAG] %s %s: 쿠키 자체가 요청에 없음', request.method, request.path)
+            return
+        try:
+            serializer = app.session_interface.get_signing_serializer(app)
+            serializer.loads(raw, max_age=int(app.config['PERMANENT_SESSION_LIFETIME'].total_seconds()))
+            app_logger.warning('[AUTH-DIAG] %s %s: 서명 검증은 통과했는데 session에 user가 없음 (len=%d)',
+                                request.method, request.path, len(raw))
+        except SignatureExpired as e:
+            # date_signed는 itsdangerous 2.0+부터 timezone-aware UTC라서
+            # naive datetime.utcnow()와 바로 빼면 TypeError -- 실측으로 확인.
+            age = (datetime.now(timezone.utc) - e.date_signed).total_seconds() if e.date_signed else None
+            app_logger.warning('[AUTH-DIAG] %s %s: 만료된 서명 (len=%d, age=%s초, 허용=%d초)',
+                                request.method, request.path, len(raw), age,
+                                int(app.config['PERMANENT_SESSION_LIFETIME'].total_seconds()))
+        except BadSignature:
+            app_logger.warning('[AUTH-DIAG] %s %s: 서명 불일치 (len=%d) -- 시크릿 키가 발급 시점과 다를 가능성',
+                                request.method, request.path, len(raw))
+        except Exception as e:
+            app_logger.warning('[AUTH-DIAG] %s %s: 디코딩 중 예외 %s: %s',
+                                request.method, request.path, type(e).__name__, e)
+    except Exception as e:
+        app_logger.warning('[AUTH-DIAG] 진단 로직 자체 실패: %s: %s', type(e).__name__, e)
+
+
 def require_role(min_role='VIEWER'):
     """Replaces the old login_required for every protected route: checks the
     user is logged in, that their session hasn't been invalidated by a
@@ -302,6 +336,16 @@ def require_role(min_role='VIEWER'):
                 return _handle_token_auth(fn, auth_header[7:].strip(), min_role, args, kwargs)
             username = session.get('user')
             if not username:
+                # 실측 진단용(2026-11-03, 다른 PC에서 "계속 로그인 화면으로
+                # 튕긴다" 보고): 정상적으로 서명된 쿠키가 들어오는데도
+                # session.get('user')가 비어있는 경우가 반복됐다 -- Flask의
+                # open_session()이 서명 검증 실패를 내부에서 조용히 삼키고
+                # 빈 세션만 돌려주기 때문에, 원래는 "쿠키가 아예 없었다"와
+                # "서명/만료 검증에 실패했다"를 구분할 방법이 없었다. 같은
+                # 쿠키 값을 itsdangerous로 직접 다시 풀어서 정확한 사유(쿠키
+                # 없음/서명 불일치/타임아웃 초과 등)를 logs/app.log에 남긴다.
+                # 원인이 특정되면 이 블록은 되돌린다.
+                _log_unauthorized_diag()
                 return jsonify({'error': 'unauthorized'}), 401
             current_sv = storage.get_session_version(username)
             if current_sv is None or session.get('sv') != current_sv:
