@@ -6184,6 +6184,8 @@ function drawPingDevice(e, catLabel){
   const prevBodyScroll = drawerBodyEl ? drawerBodyEl.scrollTop : 0;
   const prevIfaceEl = document.getElementById('iface-list');
   const prevIfaceScroll = prevIfaceEl ? prevIfaceEl.scrollTop : 0;
+  const prevEnvEl = document.getElementById('env-sensor-list');
+  const prevEnvScroll = prevEnvEl ? prevEnvEl.scrollTop : 0;
   $('#drawerTitle').textContent = e.name;
   $('#drawerRole').textContent = `${catLabel} · ${e.ip||'-'}`;
   const isSnmp = e.mode==='snmp';
@@ -6235,7 +6237,7 @@ function drawPingDevice(e, catLabel){
   const envStateLabel = s => ({normal:'정상', warning:'주의', critical:'위험', shutdown:'차단', notPresent:'미설치', unknown:'알수없음'})[s] || s;
   const envCard = hasEnv ? `
     <div class="card" style="min-width:0;display:flex;flex-direction:column;height:192px"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
-      <div style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto">
+      <div id="env-sensor-list" style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto">
         ${(e.envTemps||[]).filter(t=>t.state!=='notPresent').map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(t.description||'온도 센서')}${t.valueC!=null ? ` · ${fmt0(t.valueC)}°C` : ''}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(t.state)};color:${envStateColor(t.state)}"><span class="dot" style="background:${envStateColor(t.state)}"></span>${envStateLabel(t.state)}</span></div>`).join('')}
         ${(e.envFans||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>팬 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
         ${(e.envSupplies||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>전원 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
@@ -6317,6 +6319,8 @@ function drawPingDevice(e, catLabel){
   if(drawerBodyEl) drawerBodyEl.scrollTop = prevBodyScroll;
   const newIfaceEl = document.getElementById('iface-list');
   if(newIfaceEl) newIfaceEl.scrollTop = prevIfaceScroll;
+  const newEnvEl = document.getElementById('env-sensor-list');
+  if(newEnvEl) newEnvEl.scrollTop = prevEnvScroll;
   if(hasTraffic){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
   }
