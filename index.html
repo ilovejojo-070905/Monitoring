@@ -5949,6 +5949,8 @@ function openDrawerFor(id){
   // 전용 모달로 바꾸는 걸 후속 작업으로 남겨둔다.
   const rebootBtn = $('#drawerRebootBtn');
   rebootBtn.style.display = (cat==='net' && CURRENT_ROLE_RANK >= 2) ? '' : 'none';
+  rebootBtn.style.color = 'var(--crit)';
+  rebootBtn.style.borderColor = 'rgba(239,59,92,.4)';
   if(cat==='net' && CURRENT_ROLE_RANK >= 2){
     rebootBtn.onclick = async ()=>{
       const typed = window.prompt(`"${entity.name}"를 재부팅할까요?\n재부팅 전 설정을 저장하고, 몇 분간 이 장비와의 통신이 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${entity.name}`);
