@@ -5901,6 +5901,7 @@ function openDrawerFor(id){
   const entity = s||d||n||f;
   if(!entity) return;
   if(id !== openDrawerId && ifaceModalState && ifaceModalState.deviceId !== id) closeIfaceModal();
+  if(id !== ifaceBulkSelectionDeviceId){ ifaceBulkSelection = new Set(); ifaceBulkSelectionDeviceId = id; }
   openDrawerId = id;
   const catLabel = s?'서버 (SMS)':d?'데이터베이스 (DBMS)':n?'네트워크 (NMS)':'전산실 설비 (FMS)';
   const cat = s?'server':d?'db':n?'net':'fac';
@@ -5972,6 +5973,8 @@ function openDrawerFor(id){
 }
 function closeDrawer(){
   openDrawerId = null;
+  ifaceBulkSelection = new Set();
+  ifaceBulkSelectionDeviceId = null;
   closeIfaceModal();
   $('#overlay').classList.remove('show'); $('#drawer').classList.remove('show');
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
@@ -5992,6 +5995,20 @@ function refreshOpenDrawer(){
 
 /* ================= interface traffic popup ================= */
 let ifaceModalState = null;
+// 인터페이스 여러 개를 한 번에 shutdown/no-shutdown하기 위한 선택 상태.
+// 드로어가 열려있는 장비 id별로 유지할 필요는 없다 -- 장비를 바꿔 열면
+// (openDrawerFor에서 비교) 그냥 비운다.
+let ifaceBulkSelection = new Set();
+let ifaceBulkSelectionDeviceId = null;
+// drawPingDevice()가 #drawerBody 전체를 새로 쓰기 때문에, openDrawerFor()가
+// 바깥에서 덧붙인 환경센서/수집상태 줄도 같이 지워진다 -- 인터페이스 행
+// 클릭/체크박스 토글/일괄 제어 성공 직후 즉시 다시 그릴 때마다 똑같이
+// 다시 덧붙여야 그 줄이 순간적으로 사라지지 않는다.
+function redrawIfaceSection(e, catLabel){
+  const reEnvCardHtml = drawPingDevice(e, catLabel) || '';
+  $('#drawerBody').insertAdjacentHTML('beforeend',
+    `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${reEnvCardHtml}${collectionStateBlock(e)}${agentInfoBlock(e)}</div>`);
+}
 function openIfaceModal(deviceId, idx){
   ifaceModalState = {deviceId, idx};
   renderIfaceModal();
@@ -6211,16 +6228,35 @@ function drawPingDevice(e, catLabel){
     </div>` : '';
 
   const ifaces = isSnmp && Array.isArray(e.interfaces) ? e.interfaces : [];
+  // 인터페이스를 하나씩 눌러서 비활성화/활성화하기 번거롭다는 사용자
+  // 요청으로 체크박스 다중 선택 + 일괄 제어 툴바 추가. 기존 행별 버튼
+  // (iface-ctrl-inline-btn)과 같은 권한 조건(ADMIN+net)을 그대로 쓴다.
+  const bulkEligible = CURRENT_ROLE==='ADMIN' && e.category==='net';
+  const allSelected = bulkEligible && ifaces.length>0 && ifaces.every(f=>ifaceBulkSelection.has(f.idx));
+  const bulkToolbar = bulkEligible ? `
+    <div style="display:flex;align-items:center;gap:8px;padding:0 2px 8px;font-size:11px">
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text-dim)">
+        <input type="checkbox" id="iface-select-all" ${allSelected?'checked':''}>전체 선택
+      </label>
+      <span style="color:var(--text-faint)">${ifaceBulkSelection.size}개 선택됨</span>
+      <span style="flex:1"></span>
+      <button type="button" class="btn" id="iface-bulk-down-btn" ${ifaceBulkSelection.size===0?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">선택 비활성화</button>
+      <button type="button" class="btn" id="iface-bulk-up-btn" ${ifaceBulkSelection.size===0?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">선택 활성화</button>
+    </div>` : '';
   const ifaceCard = ifaces.length ? `
     <div class="card" style="min-width:0;height:425px;display:flex;flex-direction:column"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
+      ${bulkToolbar}
       <div id="iface-list" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
         ${ifaces.map(f=>{
           const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
           const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
           return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:10px">
-            <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
-            ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
+          <span style="display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden;padding-right:10px">
+            ${bulkEligible ? `<input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="flex:none;cursor:pointer">` : ''}
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
+              ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
+            </span>
           </span>
           <span style="display:flex;align-items:center;gap:8px;flex:none">
             ${hasErr ? `<span class="mono" style="font-size:10px;color:var(--warn)" title="에러/드랍 누적 발생">⚠ ${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>` : ''}
@@ -6278,14 +6314,60 @@ function drawPingDevice(e, catLabel){
       } else {
         openIfaceModal(e.id, row.dataset.idx);
       }
-      // drawPingDevice()는 #drawerBody 전체를 새로 쓰기 때문에, openDrawerFor()가
-      // 바깥에서 덧붙인 환경센서/수집상태 줄도 같이 지워진다 -- 여기서 똑같이
-      // 다시 덧붙여줘야 인터페이스 클릭할 때마다 그 줄이 순간적으로 사라지지 않는다.
-      const reEnvCardHtml = drawPingDevice(e, catLabel) || '';
-      $('#drawerBody').insertAdjacentHTML('beforeend',
-        `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">${reEnvCardHtml}${collectionStateBlock(e)}${agentInfoBlock(e)}</div>`);
+      redrawIfaceSection(e, catLabel);
     });
   });
+  $$('.iface-bulk-checkbox', $('#drawerBody')).forEach(cb=>{
+    cb.addEventListener('click', ev=>{ ev.stopPropagation(); });
+    cb.addEventListener('change', ()=>{
+      if(cb.checked) ifaceBulkSelection.add(cb.dataset.idx); else ifaceBulkSelection.delete(cb.dataset.idx);
+      redrawIfaceSection(e, catLabel);
+    });
+  });
+  const selectAllCb = document.getElementById('iface-select-all');
+  if(selectAllCb){
+    selectAllCb.addEventListener('click', ev=>{ ev.stopPropagation(); });
+    selectAllCb.addEventListener('change', ()=>{
+      if(selectAllCb.checked) ifaces.forEach(f=>ifaceBulkSelection.add(f.idx));
+      else ifaces.forEach(f=>ifaceBulkSelection.delete(f.idx));
+      redrawIfaceSection(e, catLabel);
+    });
+  }
+  // 일괄 제어 -- 기존 행별 shutdown/no-shutdown(아래 iface-ctrl-inline-btn)과
+  // 같은 확인 방식(장비 이름 직접 입력)을 쓰되, 대상이 여러 개라는 걸
+  // 메시지에 그대로 나열해서 사용자가 뭘 끄는지 정확히 보고 확인하게 한다.
+  async function runBulkIfaceAction(goingDown){
+    const idxList = Array.from(ifaceBulkSelection);
+    const names = idxList.map(idx => { const f = ifaces.find(x=>x.idx===idx); return f ? f.name : null; }).filter(Boolean);
+    if(!names.length) return;
+    const btn = document.getElementById(goingDown ? 'iface-bulk-down-btn' : 'iface-bulk-up-btn');
+    const msg = goingDown
+      ? `"${e.name}"의 다음 ${names.length}개 인터페이스를 비활성화(shutdown)할까요?\n${names.join(', ')}\n지금 이 포트들로 흐르는 트래픽이 즉시 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`
+      : `"${e.name}"의 다음 ${names.length}개 인터페이스를 다시 활성화(no shutdown)할까요?\n${names.join(', ')}\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`;
+    const ok = await showTypedConfirm(msg, e.name, {title: goingDown ? '인터페이스 일괄 비활성화' : '인터페이스 일괄 활성화', okText: goingDown ? '비활성화' : '활성화'});
+    if(!ok) return;
+    btn.disabled = true;
+    const prevText = btn.textContent;
+    btn.textContent = '전송 중...';
+    try{
+      const path = goingDown ? 'shutdown' : 'no-shutdown';
+      const r = await apiFetch(`/api/devices/${encodeURIComponent(e.id)}/interfaces-bulk/${path}`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ifNames: names}),
+      });
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error||'명령 전송 실패');
+      ifaceBulkSelection.clear();
+      redrawIfaceSection(e, catLabel);
+    }catch(err){
+      await showConfirm(err.message, {title: goingDown ? '인터페이스 일괄 비활성화 실패' : '인터페이스 일괄 활성화 실패', okText:'확인'});
+      btn.disabled = false;
+      btn.textContent = prevText;
+    }
+  }
+  const bulkDownBtn = document.getElementById('iface-bulk-down-btn');
+  const bulkUpBtn = document.getElementById('iface-bulk-up-btn');
+  if(bulkDownBtn) bulkDownBtn.addEventListener('click', ()=>runBulkIfaceAction(true));
+  if(bulkUpBtn) bulkUpBtn.addEventListener('click', ()=>runBulkIfaceAction(false));
   // 인터페이스 목록에서 모달을 열지 않고 바로 shutdown/no-shutdown할 수
   // 있는 버튼 -- "상세창에 바로 보이게 해달라"는 사용자 요청으로 추가(이전
   // 엔 인터페이스 클릭 -> 트래픽 팝업을 열어야만 제어 버튼이 보였음). 행

@@ -2540,6 +2540,56 @@ def api_interface_no_shutdown(device_id, if_name):
     return jsonify({'ok': True, 'output': output})
 
 
+# 인터페이스를 하나씩 눌러서 비활성화/활성화하기 번거롭다는 사용자 요청으로
+# 추가한 일괄 제어. URL을 /interfaces/<path:if_name>/shutdown과 겹치지 않게
+# "/interfaces-bulk/..."로 따로 둔다 -- <path:if_name>은 그 뒤에 리터럴
+# '/shutdown'이 와야만 매치되므로, 만약 /interfaces/bulk-shutdown처럼
+# 세그먼트를 하나만 둔다면 그 라우트와는 안 겹치지만 헷갈릴 수 있어 아예
+# 접두사를 분리했다.
+@app.post('/api/devices/<device_id>/interfaces-bulk/shutdown')
+@require_role('ADMIN')
+def api_interface_bulk_shutdown(device_id):
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    body = request.get_json(silent=True) or {}
+    if_names = body.get('ifNames')
+    if not isinstance(if_names, list) or not if_names:
+        return jsonify({'error': 'ifNames가 비어 있습니다.'}), 400
+    try:
+        output = device_control.shutdown_interfaces(device_row, _control_profile_name(device_row), if_names)
+    except device_control.DeviceControlError as e:
+        audit('INTERFACE_SHUTDOWN_FAILED', target=device_id, details=f'{", ".join(if_names)}: {e}')
+        return jsonify({'error': str(e)}), 400
+    for if_name in if_names:
+        _patch_interface_admin_status(device_id, if_name, admin_up=False)
+    _force_extended_repoll(device_id)
+    audit('INTERFACE_SHUTDOWN', target=device_id, details=', '.join(if_names))
+    return jsonify({'ok': True, 'output': output})
+
+
+@app.post('/api/devices/<device_id>/interfaces-bulk/no-shutdown')
+@require_role('ADMIN')
+def api_interface_bulk_no_shutdown(device_id):
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    body = request.get_json(silent=True) or {}
+    if_names = body.get('ifNames')
+    if not isinstance(if_names, list) or not if_names:
+        return jsonify({'error': 'ifNames가 비어 있습니다.'}), 400
+    try:
+        output = device_control.bring_up_interfaces(device_row, _control_profile_name(device_row), if_names)
+    except device_control.DeviceControlError as e:
+        audit('INTERFACE_NO_SHUTDOWN_FAILED', target=device_id, details=f'{", ".join(if_names)}: {e}')
+        return jsonify({'error': str(e)}), 400
+    for if_name in if_names:
+        _patch_interface_admin_status(device_id, if_name, admin_up=True)
+    _force_extended_repoll(device_id)
+    audit('INTERFACE_NO_SHUTDOWN', target=device_id, details=', '.join(if_names))
+    return jsonify({'ok': True, 'output': output})
+
+
 @app.post('/api/devices/<device_id>/reboot')
 @require_role('ADMIN')
 def api_device_reboot(device_id):

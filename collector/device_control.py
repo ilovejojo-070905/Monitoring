@@ -208,26 +208,47 @@ def _connect(device_row, profile):
     raise DeviceControlError(f'장비에 연결할 수 없습니다 (SSH/Telnet 둘 다 실패): {last_err}')
 
 
+def _build_bulk_cmds(cmds_fn, if_names):
+    """인터페이스 여러 개를 한 config 세션으로 묶어서 보낼 명령 목록을 만든다.
+    Juniper 프로필은 인터페이스 1개당 cmds 끝에 'commit'이 붙어있어(위
+    PROFILES 주석) 그대로 이어붙이면 커밋이 여러 번 들어간다 -- 중복
+    제거하고 맨 끝에 한 번만 커밋되게 한다. 다른 벤더는 cmds에 'commit'을
+    아예 안 써서 이 처리가 영향을 주지 않는다."""
+    all_cmds = []
+    for if_name in if_names:
+        all_cmds.extend(cmds_fn(if_name))
+    if all_cmds.count('commit') > 1:
+        all_cmds = [c for c in all_cmds if c != 'commit']
+        all_cmds.append('commit')
+    return all_cmds
+
+
 def shutdown_interface(device_row, vendor_profile, if_name):
+    return shutdown_interfaces(device_row, vendor_profile, [if_name])
+
+
+def bring_up_interface(device_row, vendor_profile, if_name):
+    return bring_up_interfaces(device_row, vendor_profile, [if_name])
+
+
+def shutdown_interfaces(device_row, vendor_profile, if_names):
     profile = get_profile(vendor_profile)
     if not profile or not profile.get('shutdown_cmds'):
         raise DeviceControlError(f'"{vendor_profile}" 벤더는 인터페이스 제어가 아직 검증되지 않았습니다.')
     conn = _connect(device_row, profile)
     try:
-        output = conn.send_config_set(profile['shutdown_cmds'](if_name))
-        return output
+        return conn.send_config_set(_build_bulk_cmds(profile['shutdown_cmds'], if_names))
     finally:
         conn.disconnect()
 
 
-def bring_up_interface(device_row, vendor_profile, if_name):
+def bring_up_interfaces(device_row, vendor_profile, if_names):
     profile = get_profile(vendor_profile)
     if not profile or not profile.get('no_shutdown_cmds'):
         raise DeviceControlError(f'"{vendor_profile}" 벤더는 인터페이스 제어가 아직 검증되지 않았습니다.')
     conn = _connect(device_row, profile)
     try:
-        output = conn.send_config_set(profile['no_shutdown_cmds'](if_name))
-        return output
+        return conn.send_config_set(_build_bulk_cmds(profile['no_shutdown_cmds'], if_names))
     finally:
         conn.disconnect()
 
