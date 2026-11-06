@@ -274,6 +274,38 @@ JUNIPER_CLASS_FAN = '4'
 # 걸 정상이라고 표시"보다 훨씬 안전하다는 판단.
 JUNIPER_STATE_NORMAL_CODES = ('2', '5')  # running(2) / running at full speed(5)
 
+# Axgate(국산 방화벽/UTM) -- 실제 등록된 장비(Axgate-80D, 192.168.30.254,
+# sysDescr: "aos-2.1.2.1-octeon3-u(r68981-b28)", sysObjectID: 1.3.6.1.4.1.37288)
+# 로 실측 확인(2026-11-06, 사용자가 "CPU/환경센서가 안 보인다"로 제보).
+# 공식 MIB 문서를 못 구해서 enterprise 트리(1.3.6.1.4.1.37288) 전체를 직접
+# walk(188개 OID)하고, 6초 간격으로 두 번 떠서 값이 바뀌는 OID만 추려
+# 분석함:
+#   - CPU 사용률: 표준 OID(HOST-RESOURCES-MIB hrProcessorLoad, UCD-SNMP-MIB
+#     laLoad)도 응답 없고, enterprise 트리 전체에서도 사용자가 장비 자체
+#     화면에서 본 9~10%에 대응하는, 오르내리는 게이지 값을 못 찾음(바뀌는
+#     값은 전부 누적 카운터뿐 -- 타임스탬프, 패킷/바이트 카운터류). 이
+#     장비는 SNMP로 CPU 사용률 자체를 안 주는 것으로 결론, cpu_oid는 추측
+#     없이 None으로 둠.
+#   - 메모리: 벤더 전용 OID 없이도 이미 HOST-RESOURCES-MIB hrStorageTable
+#     로 정상 수집됨(generic 프로필과 동일하게 snmp_collector.py의 hrStorage
+#     폴백 경로를 그대로 탐) -- 그래서 이 프로필도 mem_used_oid/mem_free_oid/
+#     mem_pct_oid 전부 비워둠.
+#   - 환경센서(온도): 1.1.5.2.1.{1,2}가 센서 이름("System"/"CPU"), 1.1.5.2.2.
+#     {1,2}가 각각의 값(실측: 267/387)으로 같은 인덱스로 짝지어짐. 사용자가
+#     장비 자체 화면에서 본 실제 값(System 27.3도, CPU 39도)과 267/10=26.7,
+#     387/10=38.7을 대조해 거의 일치(몇 초 사이 자연스러운 드리프트 범위)
+#     -- raw를 10으로 나눈 섭씨 온도로 확정.
+#   - 팬: 1.1.5.3.1.1="Chassis"(이름) / 1.1.5.3.2.1=1(상태) 딱 한 행뿐인데,
+#     이 "1"이 정상/비정상 중 무엇을 뜻하는지 확인할 공식 문서나 고장 상태
+#     샘플이 없어(운영 중인 실장비라 고장을 재현해볼 수도 없음) 다른
+#     벤더들과 같은 안전 정책대로 상태는 항상 '모름'으로 둔다(값 표시는
+#     하되 정상이라 단정하지 않음) -- 온도 임계값이 없는 H3C의 Board 행과
+#     같은 처리.
+OID_AXGATE_TEMP_NAME = '1.3.6.1.4.1.37288.1.1.5.2.1'
+OID_AXGATE_TEMP_VALUE = '1.3.6.1.4.1.37288.1.1.5.2.2'
+OID_AXGATE_FAN_NAME = '1.3.6.1.4.1.37288.1.1.5.3.1'
+OID_AXGATE_FAN_STATUS = '1.3.6.1.4.1.37288.1.1.5.3.2'
+
 # 신규 기능(2026-10-16, "표준 MIB와 제조사별 확장 MIB를 분리"): 이전엔 이
 # 구분이 소스 코드 주석에만 있었고(각 OID_* 상수 위의 설명), 실행 중에
 # 쿼리 가능한 데이터가 전혀 아니었음 -- 어떤 OID가 표준 MIB(여러 벤더가
@@ -356,6 +388,10 @@ OID_MIB_INFO = {
     OID_CISCO_NXOS_MEM_PCT: ('CISCO-SYSTEM-EXT-MIB', False),
     OID_CISCO_FRU_FAN_STATUS: ('CISCO-ENTITY-FRU-CONTROL-MIB', False),
     OID_CISCO_FRU_POWER_STATUS: ('CISCO-ENTITY-FRU-CONTROL-MIB', False),
+    OID_AXGATE_TEMP_NAME: ('AXGATE-PRIVATE-MIB (추정, 공식 문서 없음)', False),
+    OID_AXGATE_TEMP_VALUE: ('AXGATE-PRIVATE-MIB (추정, 공식 문서 없음)', False),
+    OID_AXGATE_FAN_NAME: ('AXGATE-PRIVATE-MIB (추정, 공식 문서 없음)', False),
+    OID_AXGATE_FAN_STATUS: ('AXGATE-PRIVATE-MIB (추정, 공식 문서 없음)', False),
 }
 
 
@@ -547,6 +583,20 @@ PROFILES = {
         # above).
         'env_mib': 'h3c_entity_ext',
     },
+    # Axgate 방화벽/UTM -- 실제 등록된 Axgate-80D로 실측 확인(위 OID_AXGATE_*
+    # 주석 참고). CPU 사용률은 이 장비가 SNMP로 아예 안 줘서 cpu_oid/
+    # cpu_fallback_oid 전부 None -- 추측으로 다른 OID를 넣지 않는다. 메모리는
+    # 벤더 전용 OID 없이 generic과 동일하게 HR-MIB hrStorage 폴백으로 이미
+    # 정상 수집됨(mem_used_oid/mem_free_oid/mem_pct_oid 전부 비워둬서
+    # snmp_collector.py가 그 폴백 경로를 타게 둔다).
+    'axgate': {
+        'name': 'axgate',
+        'cpu_oid': None,
+        'cpu_fallback_oid': None,
+        'mem_used_oid': None,
+        'mem_free_oid': None,
+        'env_mib': 'axgate_env',
+    },
 }
 
 
@@ -576,7 +626,12 @@ def resolve_profile(vendor_profile, sys_descr):
     sysDescr contains "cisco" too (e.g. "Cisco NX-OS(tm) n9000, ..."), but
     'cisco' (the IOS profile) has no working memory OID on NX-OS at all
     (실측 확인, OID_CISCO_NXOS_CPU 위 주석 참고) -- same ordering principle as
-    comware/aruba-cx above, more specific keyword first."""
+    comware/aruba-cx above, more specific keyword first.
+    Axgate 방화벽의 sysDescr엔 "axgate"라는 브랜드명이 전혀 없고 자체 OS
+    이름("aos-")과 칩셋("octeon")만 나온다(실제 Axgate-80D 실측: "aos-
+    2.1.2.1-octeon3-u(r68981-b28)") -- 그래서 'axgate' 키워드로는 못 잡고
+    이 두 조각을 같이 봐야 한다. 'aos-' 하나만 보면 다른 벤더의 sysDescr과
+    우연히 겹칠 위험이 있어서 'octeon'까지 같이 확인."""
     if vendor_profile and vendor_profile != 'generic':
         return PROFILES.get(vendor_profile, PROFILES['generic'])
     if sys_descr:
@@ -585,6 +640,8 @@ def resolve_profile(vendor_profile, sys_descr):
             return PROFILES['cisco-nxos']
         if 'cisco' in descr:
             return PROFILES['cisco']
+        if 'aos-' in descr and 'octeon' in descr:
+            return PROFILES['axgate']
         if 'comware' in descr:
             return PROFILES['hp-comware']
         if 'aruba' in descr and 'procurve' not in descr:

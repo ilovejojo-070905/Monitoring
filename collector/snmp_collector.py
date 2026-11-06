@@ -491,6 +491,12 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
                 (result['envTempDescr'], result['envTempValue'], result['envTempState'],
                  result['envFanState'], result['envSupplyState']) = _entity_sensor_env(
                     sensor_type, sensor_scale, sensor_precision, sensor_value, sensor_status, phys_name)
+            elif env_mib == 'axgate_env':
+                temp_name = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_AXGATE_TEMP_NAME, timeout=timeout)
+                temp_value = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_AXGATE_TEMP_VALUE, timeout=timeout)
+                fan_name = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_AXGATE_FAN_NAME, timeout=timeout)
+                (result['envTempDescr'], result['envTempValue'], result['envTempState'],
+                 result['envFanState'], result['envSupplyState']) = _axgate_env(temp_name, temp_value, fan_name)
             elif env_mib == 'cisco_fru':
                 fru_fan = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_FRU_FAN_STATUS, timeout=timeout)
                 fru_power = await _snmp_walk(engine, ip, auth_data, port, snmp_profiles.OID_CISCO_FRU_POWER_STATUS, timeout=timeout)
@@ -723,6 +729,27 @@ def _entity_sensor_env(sensor_type, sensor_scale, sensor_precision, sensor_value
         elif t_s == snmp_profiles.ENT_SENSOR_TYPE_WATTS:
             supply_state[idx] = code
     return temp_descr, temp_value, temp_state, fan_state, supply_state
+
+
+def _axgate_env(temp_name, temp_value, fan_name):
+    """Axgate 전용 enterprise OID(1.3.6.1.4.1.37288.1.1.5), 실제 등록된
+    Axgate-80D(192.168.30.254)로 확인(snmp_profiles.py의 OID_AXGATE_* 주석
+    참고). 온도 raw값은 섭씨*10(실측: 267/387 -> 26.7/38.7도, 사용자가 장비
+    자체 화면에서 본 27.3/39도와 근접 -- 몇 초 사이 드리프트로 설명되는
+    차이) -- _safe_int로 한 번 더 깎이기 전에 여기서 정수 섭씨로 반올림해
+    정확도를 지킨다. 공식 MIB 문서가 없어 온도/팬 상태의 정상 임계값을
+    모르므로 둘 다 '9'(모름)로 둔다 -- 값은 보여주되 정상이라 단정하지
+    않음(다른 벤더의 "임계값 없는 센서 행"과 같은 안전 정책)."""
+    temp_descr, temp_value_out, temp_state = {}, {}, {}
+    for idx, raw in temp_value.items():
+        raw_int = _safe_int(raw)
+        if raw_int is None:
+            continue
+        temp_descr[idx] = temp_name.get(idx)
+        temp_value_out[idx] = round(raw_int / 10)
+        temp_state[idx] = '9'
+    fan_state = {idx: '9' for idx in fan_name}
+    return temp_descr, temp_value_out, temp_state, fan_state, {}
 
 
 def _cisco_fru_env(fan_raw, power_raw):
