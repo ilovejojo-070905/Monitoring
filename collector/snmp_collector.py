@@ -737,17 +737,37 @@ def _axgate_env(temp_name, temp_value, fan_name):
     참고). 온도 raw값은 섭씨*10(실측: 267/387 -> 26.7/38.7도, 사용자가 장비
     자체 화면에서 본 27.3/39도와 근접 -- 몇 초 사이 드리프트로 설명되는
     차이) -- _safe_int로 한 번 더 깎이기 전에 여기서 정수 섭씨로 반올림해
-    정확도를 지킨다. 공식 MIB 문서가 없어 온도/팬 상태의 정상 임계값을
-    모르므로 둘 다 '9'(모름)로 둔다 -- 값은 보여주되 정상이라 단정하지
-    않음(다른 벤더의 "임계값 없는 센서 행"과 같은 안전 정책)."""
+    정확도를 지킨다.
+
+    상태 판정: 이 테이블엔 H3C처럼 장비가 직접 주는 임계값 컬럼이 없어서
+    (공식 MIB 문서도 없음) 장비가 알려주는 "진짜" 임계값은 아니다. 다만
+    "온도가 보여도 항상 모름"으로만 두면 사용자 입장에선 기능이 반쯤 고장난
+    것처럼 보인다는 피드백(2026-11-06)을 받아, Octeon3 기반 임베디드
+    방화벽/UTM류가 일반적으로 안전하다고 보는 보수적인 여유치(정상 <65도,
+    위험 >=85도, 그 사이는 주의)를 추정치로 적용한다 -- 실측(27/39도)은
+    둘 다 정상 구간에 여유 있게 들어간다. 장비 자체 임계값이 아니라는 점은
+    이 주석으로 남겨두고, 실제로 고온 경보가 안 맞는 것으로 확인되면
+    조정한다. 팬 상태(1.1.5.3.2)는 연속값이 아니라 의미를 알 수 없는 단일
+    코드라 이 추정 방식을 적용할 수 없어 그대로 '9'(모름)로 둔다."""
+    AXGATE_TEMP_WARN_C = 65
+    AXGATE_TEMP_CRIT_C = 85
+
+    def classify(temp_c):
+        if temp_c >= AXGATE_TEMP_CRIT_C:
+            return '3'
+        if temp_c >= AXGATE_TEMP_WARN_C:
+            return '2'
+        return '1'
+
     temp_descr, temp_value_out, temp_state = {}, {}, {}
     for idx, raw in temp_value.items():
         raw_int = _safe_int(raw)
         if raw_int is None:
             continue
         temp_descr[idx] = temp_name.get(idx)
-        temp_value_out[idx] = round(raw_int / 10)
-        temp_state[idx] = '9'
+        temp_c = round(raw_int / 10)
+        temp_value_out[idx] = temp_c
+        temp_state[idx] = classify(temp_c)
     fan_state = {idx: '9' for idx in fan_name}
     return temp_descr, temp_value_out, temp_state, fan_state, {}
 
