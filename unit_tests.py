@@ -1336,18 +1336,88 @@ def test_junos_syslog_ignores_unrelated_messages():
 
 def test_syslog_listener_tries_multiple_vendor_parsers():
     # syslog_listener._PARSERS가 벤더별 파서를 순서대로 시도해서, 같은
-    # UDP/514 포트로 들어온 Cisco 메시지와 Junos 메시지가 둘 다 올바르게
-    # (서로 엉뚱한 파서에 걸리지 않고) 매치되는지 확인.
+    # UDP/514 포트로 들어온 서로 다른 벤더 메시지가 각자 올바르게(서로
+    # 엉뚱한 파서에 걸리지 않고) 매치되는지 확인. Cisco/Comware/
+    # ArubaOS-Switch 줄은 실제 등록된 장비가 보낸 진짜 원문(이 세션에서
+    # syslog_listener.py의 진단 로그로 캡처), Junos 줄만 아직 live로
+    # 검증 못 한 합성 샘플.
     from collector import syslog_listener as sl
-    cisco_line = ('%SEC_LOGIN-5-LOGIN_SUCCESS: Login Success [user: admin] [Source: 1.2.3.4] '
-                  '[localport: 23] at 00:00:00 UTC Mon Mar 1 2026')
-    junos_line = 'sshd[1]: Accepted password for root from 5.6.7.8 port 1234 ssh2'
-    found_cisco, found_junos = [], []
-    for parser_module in sl._PARSERS:
-        found_cisco.extend(parser_module.parse(cisco_line.encode('utf-8'), '192.168.30.250', 1700000000000))
-        found_junos.extend(parser_module.parse(junos_line.encode('utf-8'), '192.168.30.253', 1700000000000))
-    check('N13 both a Cisco-formatted and a Junos-formatted message are matched by exactly one parser each',
-          len(found_cisco) == 1 and len(found_junos) == 1, (found_cisco, found_junos))
+    samples = {
+        'cisco': '%SEC_LOGIN-5-LOGIN_SUCCESS: Login Success [user: admin] [Source: 1.2.3.4] [localport: 23] at 00:00:00 UTC Mon Mar 1 2026',
+        'junos': 'sshd[1]: Accepted password for root from 5.6.7.8 port 1234 ssh2',
+        'comware': '<188>Apr 28 02:35:23 2000 Main_Switch_1 %%10SHELL/4/LOGINAUTHFAIL(t):   Trap 1.3.6.1.4.1.25506.2.2.1.1.3.0.3: failed to login from VTY, reason is 3',
+        'arubaswitch': '<14>Jan  2 14:36:04 192.168.30.252 00179 mgr:  SME TELNET from 192.168.30.36 - MANAGER Mode',
+    }
+    found = {name: [] for name in samples}
+    for name, line in samples.items():
+        for parser_module in sl._PARSERS:
+            found[name].extend(parser_module.parse(line.encode('utf-8'), '0.0.0.0', 1700000000000))
+    check('N13 every vendor sample is matched by exactly one parser, none crossed into another vendor\'s parser',
+          all(len(v) == 1 for v in found.values()), found)
+
+
+def test_cisco_syslog_config_changed_with_username():
+    # 실측(2026-11-07, 실제 등록된 Cisco 장비 192.168.30.250): login local
+    # 전환 후 캡처된 실제 원문 그대로.
+    from collector import cisco_syslog_parser as csp
+    line = '<189>44: *Mar  2 14:25:25: %SYS-5-CONFIG_I: Configured from console by admin on vty0 (192.168.30.36)'
+    events = csp.parse(line.encode('utf-8'), '192.168.30.250', 1700000000000)
+    check('N14 CONFIG_CHANGED with a username ("by X on LINE") captures both',
+          len(events) == 1 and events[0]['event_type'] == 'CONFIG_CHANGED' and events[0]['username'] == 'admin'
+          and 'vty0' in events[0]['details'] and '192.168.30.36' in events[0]['details'], events)
+
+
+def test_cisco_syslog_config_changed_without_username():
+    # 실측: login local 전환 "전"(사용자 계정이 없던 시절)에 캡처된 실제
+    # 원문 -- "by X"만 있고 "on 라인"이 없는 변형. 이때 X는 사용자명이
+    # 아니라 라인 자체다(모듈 docstring 참고).
+    from collector import cisco_syslog_parser as csp
+    line = '<189>40: *Mar  2 14:18:25: %SYS-5-CONFIG_I: Configured from console by vty0 (192.168.30.36)'
+    events = csp.parse(line.encode('utf-8'), '192.168.30.250', 1700000000000)
+    check('N15 CONFIG_CHANGED without a username ("by LINE" only) does not fabricate a username',
+          len(events) == 1 and events[0]['event_type'] == 'CONFIG_CHANGED' and events[0]['username'] is None
+          and 'vty0' in events[0]['details'], events)
+
+
+def test_comware_syslog_login_failed():
+    # 실측(2026-11-07, 실제 등록된 HPE 5500 192.168.30.251)에서 캡처된
+    # 실제 원문 그대로.
+    from collector import comware_syslog_parser as hsp
+    line = ('<188>Apr 28 02:35:23 2000 Main_Switch_1 %%10SHELL/4/LOGINAUTHFAIL(t):   '
+            'Trap 1.3.6.1.4.1.25506.2.2.1.1.3.0.3: failed to login from VTY, reason is 3')
+    events = hsp.parse(line.encode('utf-8'), '192.168.30.251', 1700000000000)
+    check('N16 Comware LOGIN_FAILED is parsed (no username/source in this trap -- confirmed absent in the real message)',
+          len(events) == 1 and events[0]['event_type'] == 'LOGIN_FAILED' and events[0]['username'] is None
+          and 'VTY' in events[0]['details'] and '3' in events[0]['details'], events)
+
+
+def test_comware_syslog_logout():
+    from collector import comware_syslog_parser as hsp
+    line = ('<188>Apr 28 02:35:23 2000 Main_Switch_1 %%10SHELL/4/LOGOUT(t):   '
+            'Trap 1.3.6.1.4.1.25506.2.2.1.1.3.0.2: logout from VTY')
+    events = hsp.parse(line.encode('utf-8'), '192.168.30.251', 1700000000000)
+    check('N17 Comware LOGOUT is parsed', len(events) == 1 and events[0]['event_type'] == 'LOGOUT', events)
+
+
+def test_comware_syslog_config_changed():
+    from collector import comware_syslog_parser as hsp
+    line = ('<190>Apr 28 02:35:14 2000 Main_Switch_1 %%10SHELL/6/SHELL_CMD(l): '
+            '-Task=vt0-IPAddr=192.168.30.36-User=admin; Command is info-center loghost 192.168.30.36')
+    events = hsp.parse(line.encode('utf-8'), '192.168.30.251', 1700000000000)
+    check('N18 Comware CONFIG_CHANGED captures user/source IP/command from the real trap format',
+          len(events) == 1 and events[0]['event_type'] == 'CONFIG_CHANGED' and events[0]['username'] == 'admin'
+          and '192.168.30.36' in events[0]['details'] and 'info-center loghost' in events[0]['details'], events)
+
+
+def test_arubaswitch_syslog_login_success():
+    # 실측(2026-11-07, 실제 등록된 Arbua/ArubaOS-Switch 192.168.30.252)에서
+    # 캡처된 실제 원문 그대로.
+    from collector import arubaswitch_syslog_parser as asp
+    line = '<14>Jan  2 14:36:04 192.168.30.252 00179 mgr:  SME TELNET from 192.168.30.36 - MANAGER Mode'
+    events = asp.parse(line.encode('utf-8'), '192.168.30.252', 1700000000000)
+    check('N19 ArubaOS-Switch LOGIN_SUCCESS is parsed (no username -- shared manager password, confirmed absent in the real message)',
+          len(events) == 1 and events[0]['event_type'] == 'LOGIN_SUCCESS' and events[0]['username'] is None
+          and 'TELNET' in events[0]['details'] and 'MANAGER' in events[0]['details'], events)
 
 
 # ======================================================================
@@ -1853,6 +1923,9 @@ def main():
         test_device_access_log_unmatched_ip_falls_back_to_ip,
         test_junos_syslog_login_success, test_junos_syslog_login_failed, test_junos_syslog_ignores_unrelated_messages,
         test_syslog_listener_tries_multiple_vendor_parsers,
+        test_cisco_syslog_config_changed_with_username, test_cisco_syslog_config_changed_without_username,
+        test_comware_syslog_login_failed, test_comware_syslog_logout, test_comware_syslog_config_changed,
+        test_arubaswitch_syslog_login_success,
         test_db_concurrent_writes_no_lock_errors, test_metrics_aggregation_idempotent_on_rerun,
         test_scheduler_job_survives_disk_full_write_failure, test_backup_integrity_check_rejects_corrupt_file,
         test_backup_failure_triggers_incident_and_health_log, test_restore_verifies_separate_copy_before_touching_live_db,
