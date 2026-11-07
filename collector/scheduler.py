@@ -19,6 +19,7 @@ import storage
 from collector import state, health, metrics
 from collector import local_collector, ping_collector, snmp_collector, agent_collector
 from collector import flow_listener
+from collector import syslog_listener
 from collector import maintenance
 from collector import escalation
 from collector import alert_retry
@@ -262,6 +263,11 @@ def start():
     # storage once a minute -- this scheduler's thread pool, not a new one,
     # same reasoning as every other periodic job here.
     _scheduler.add_job(flow_listener.flush, 'interval', seconds=60, id='flow_flush', replace_existing=True)
+    # 사용자 요청("PuTTY로 직접 접속했는데 접속이력이 보이질 않아")으로
+    # 추가된 collector/syslog_listener.py도 flow_listener와 같은 이유로
+    # 장비 등록/IP 변경을 주기적으로 반영해야 한다.
+    _scheduler.add_job(syslog_listener.refresh_device_cache, 'interval', seconds=60, id='syslog_cache_refresh',
+                        replace_existing=True)
     # 2-3: evaluate maintenance_windows against the clock every 60s, with an
     # immediate first run (next_run_time=now) so a window that should already
     # be active takes effect right after a restart instead of waiting a full

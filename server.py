@@ -40,6 +40,7 @@ from collector import snmp_collector
 from collector import snmp_profiles
 from collector import discovery
 from collector import flow_listener
+from collector import syslog_listener
 from collector import device_control
 
 BASE_DIR = storage.BASE_DIR
@@ -2425,7 +2426,12 @@ def api_set_maintenance(device_id):
 # 관리에 만들어달라"는 후속 요청으로 그 화면(view-incidents)의 "미해결"
 # 옆에 별도 탭으로 옮겼고, 이어서 "관리자만 볼 수 있게 해달라"는 요청으로
 # ADMIN 전용으로 바뀜(index.html 쪽 탭 버튼도 CURRENT_ROLE==='ADMIN'일
-# 때만 보임 -- 여기서도 같은 등급으로 한 번 더 막는다).
+# 때만 보임 -- 여기서도 같은 등급으로 한 번 더 막는다). 이 action 목록은
+# audit_log(InfraSight 사이트를 거친 작업)만 추려내는 용도 -- 이어서
+# "PuTTY로 직접 접속했는데 접속이력이 보이질 않아"라는 요청으로 추가된
+# device_access_log(장비 syslog 기반 접속 기록, collector/
+# syslog_listener.py)는 그 자체로 전부 접속 이력이라 별도 필터가 필요
+# 없고, storage.load_device_history()가 둘을 UNION으로 합쳐서 돌려준다.
 DEVICE_HISTORY_ACTIONS = (
     'REGISTER_DEVICE', 'UPDATE_DEVICE', 'DELETE_DEVICE', 'BULK_DELETE_DEVICES',
     'SET_VENDOR_PROFILE', 'SET_MAINTENANCE',
@@ -2440,9 +2446,12 @@ DEVICE_HISTORY_ACTIONS = (
 @require_role('ADMIN')
 def api_devices_history():
     limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
-    before_id = request.args.get('beforeId', type=int)
+    # audit_log와 device_access_log(syslog 기반 접속 기록)를 합친 결과라
+    # 커서가 더 이상 하나의 테이블 PK(id)가 아니라 ts(ms) -- storage.
+    # load_device_history()의 UNION 설명 참고.
+    before_ts = request.args.get('beforeTs', type=int)
     q = (request.args.get('q') or '').strip() or None
-    entries = storage.load_device_history(limit=limit, before_id=before_id, actions=DEVICE_HISTORY_ACTIONS, q=q)
+    entries = storage.load_device_history(limit=limit, before_ts=before_ts, actions=DEVICE_HISTORY_ACTIONS, q=q)
     return jsonify({'entries': entries})
 
 
@@ -3397,6 +3406,7 @@ def main():
     storage.init_db()
     scheduler.start()
     flow_listener.start()
+    syslog_listener.start()
     conn = storage.get_db()
     has_admin = conn.execute('SELECT 1 FROM users LIMIT 1').fetchone() is not None
     conn.close()

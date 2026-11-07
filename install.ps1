@@ -463,7 +463,12 @@ $rules = @(
     # collector/flow_listener.py, regardless of how correctly the device
     # itself is configured.
     @{ Name = 'InfraSight NetFlow (UDP)'; Port = 2055; Protocol = 'UDP' },
-    @{ Name = 'InfraSight sFlow (UDP)';   Port = 6343; Protocol = 'UDP' }
+    @{ Name = 'InfraSight sFlow (UDP)';   Port = 6343; Protocol = 'UDP' },
+    # 사용자 요청("PuTTY로 직접 접속했는데 접속이력이 보이질 않아"): Cisco
+    # 장비가 로그인/로그아웃 시 syslog를 이 포트로 보내도록 설정해야
+    # collector/syslog_listener.py가 받을 수 있다 -- 위 NetFlow/sFlow와
+    # 같은 이유(장비가 먼저 보내는 push 방식)로 인바운드 허용 필요.
+    @{ Name = 'InfraSight Syslog (UDP)';  Port = 514;  Protocol = 'UDP' }
 )
 foreach ($r in $rules) {
     try {

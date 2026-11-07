@@ -1194,6 +1194,117 @@ def test_flow_parse_error_tracking_and_status_merge():
 
 
 # ======================================================================
+# N. Cisco syslog 접속 이력 (사용자 요청: "PuTTY로 직접 접속했는데
+# 접속이력이 보이질 않아") -- collector/cisco_syslog_parser.py /
+# storage.device_access_log / load_device_history()의 UNION.
+# 주의: cisco_syslog_parser.py 모듈 docstring 참고 -- 아래 정규식은 실제
+# 장비의 live syslog로 검증하지 못했다(로그인 시점에만 나오는 메시지라
+# 이 세션에서 재현할 방법이 없었음). 여기서는 Cisco가 문서화한 표준
+# 메시지 형식이 그 형식 그대로 들어왔을 때 정확히 파싱되는지만 확인한다.
+# ======================================================================
+
+def test_cisco_syslog_login_success():
+    from collector import cisco_syslog_parser as csp
+    line = ('<189>46: *Mar  1 00:04:22.123: %SEC_LOGIN-5-LOGIN_SUCCESS: Login Success '
+            '[user: admin] [Source: 192.168.1.50] [localport: 22] at 00:04:22 UTC Mon Mar 1 2026')
+    events = csp.parse(line.encode('utf-8'), '192.168.30.250', 1700000000000)
+    check('N1 LOGIN_SUCCESS is parsed with username/source/port',
+          len(events) == 1 and events[0]['event_type'] == 'LOGIN_SUCCESS' and events[0]['username'] == 'admin'
+          and '192.168.1.50' in events[0]['details'] and '22' in events[0]['details'], events)
+
+
+def test_cisco_syslog_login_failed():
+    from collector import cisco_syslog_parser as csp
+    line = ('<188>47: *Mar  1 00:05:10.456: %SEC_LOGIN-4-LOGIN_FAILED: Login failed '
+            '[user: admin] [Source: 192.168.1.50] [localport: 22] [Reason: Invalid login] '
+            'at 00:05:10 UTC Mon Mar 1 2026')
+    events = csp.parse(line.encode('utf-8'), '192.168.30.250', 1700000000000)
+    check('N2 LOGIN_FAILED is parsed with the failure reason',
+          len(events) == 1 and events[0]['event_type'] == 'LOGIN_FAILED' and events[0]['username'] == 'admin'
+          and 'Invalid login' in events[0]['details'], events)
+
+
+def test_cisco_syslog_logout():
+    from collector import cisco_syslog_parser as csp
+    line = ('<189>48: *Mar  1 00:10:00.789: %SEC_LOGIN-5-LOGOUT: Exec session is terminated '
+            'for user admin, reason is user requests , on line vty0 ( 192.168.1.50 )')
+    events = csp.parse(line.encode('utf-8'), '192.168.30.250', 1700000000000)
+    check('N3 LOGOUT is parsed with username/line/source',
+          len(events) == 1 and events[0]['event_type'] == 'LOGOUT' and events[0]['username'] == 'admin'
+          and 'vty0' in events[0]['details'] and '192.168.1.50' in events[0]['details'], events)
+
+
+def test_cisco_syslog_ignores_unrelated_messages():
+    from collector import cisco_syslog_parser as csp
+    line = '<189>49: *Mar  1 00:15:00.000: %LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down'
+    events = csp.parse(line.encode('utf-8'), '192.168.30.250', 1700000000000)
+    check('N4 a non-login syslog message is ignored (empty list, not an error)', events == [], events)
+
+
+def test_device_access_log_merges_with_audit_log_history():
+    # audit_log(InfraSight 사이트를 거친 작업)와 device_access_log(syslog
+    # 기반, PuTTY 등 직접 접속)가 storage.load_device_history()의 UNION에서
+    # 한 타임라인으로 올바르게 섞이는지 확인.
+    dev = 'unittest_syslog_merge_dev'
+    now_ms = int(time.time() * 1000)
+    conn = storage.get_db()
+    conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+    conn.execute("DELETE FROM audit_log WHERE target=?", (dev,))
+    conn.execute("DELETE FROM device_access_log WHERE device_id=?", (dev,))
+    conn.execute("INSERT INTO devices(id,category,name,mode,ip,fields,created_at) "
+                 "VALUES (?,'net','UnitTestSyslogMergeDev','ping','203.0.113.99','{}',?)", (dev, now_ms))
+    conn.commit()
+    conn.close()
+    try:
+        storage.write_audit('unittest_tester', 'REGISTER_DEVICE', target=dev, details='unittest')
+        storage.record_device_access(device_id=dev, device_ip='203.0.113.99', ts=now_ms + 1000,
+                                      event_type='LOGIN_SUCCESS', username='admin',
+                                      details='203.0.113.50에서 접속 (포트 22)',
+                                      raw_message='%SEC_LOGIN-5-LOGIN_SUCCESS: ...')
+        entries = storage.load_device_history(limit=50, actions=('REGISTER_DEVICE',), q='UnitTestSyslogMergeDev')
+        srcs = {e['src'] for e in entries}
+        check('N5 UNION returns both audit and syslog rows for the same device', srcs == {'audit', 'syslog'}, entries)
+        check('N6 results are ordered newest-first across both sources (syslog row is newer)',
+              len(entries) >= 2 and entries[0]['src'] == 'syslog', entries)
+        syslog_row = next(e for e in entries if e['src'] == 'syslog')
+        check('N7 syslog row resolves device_name via LEFT JOIN to devices.name',
+              syslog_row['device_name'] == 'UnitTestSyslogMergeDev', syslog_row)
+        check('N8 syslog row carries its own username (device-local account, not an InfraSight account)',
+              syslog_row['username'] == 'admin', syslog_row)
+    finally:
+        conn = storage.get_db()
+        conn.execute("DELETE FROM devices WHERE id=?", (dev,))
+        conn.execute("DELETE FROM audit_log WHERE target=?", (dev,))
+        conn.execute("DELETE FROM device_access_log WHERE device_id=?", (dev,))
+        conn.commit()
+        conn.close()
+
+
+def test_device_access_log_unmatched_ip_falls_back_to_ip():
+    # 등록되지 않은(또는 IP가 다른) 장비에서 와도 device_ip는 항상
+    # 남아야 한다 -- device_name 컬럼은 COALESCE(devices.name, device_ip)라
+    # 매칭 안 되면 raw IP가 그대로 "장비명" 자리에 보인다.
+    ip = '203.0.113.123'
+    now_ms = int(time.time() * 1000)
+    conn = storage.get_db()
+    conn.execute("DELETE FROM device_access_log WHERE device_ip=?", (ip,))
+    conn.commit()
+    conn.close()
+    try:
+        storage.record_device_access(device_id=None, device_ip=ip, ts=now_ms,
+                                      event_type='LOGIN_FAILED', username='root',
+                                      details='test', raw_message='raw')
+        entries = storage.load_device_history(limit=50, actions=('REGISTER_DEVICE',), q=ip)
+        check('N9 an access-log row with no matching registered device still shows up, using its raw IP as the device name',
+              len(entries) == 1 and entries[0]['device_name'] == ip and entries[0]['device_id'] is None, entries)
+    finally:
+        conn = storage.get_db()
+        conn.execute("DELETE FROM device_access_log WHERE device_ip=?", (ip,))
+        conn.commit()
+        conn.close()
+
+
+# ======================================================================
 # Q. DB 동시접근/디스크실패/백업/SLA 신뢰성 (운영 DB 검토 7개)
 # 안전 규칙: 이 섹션의 테스트는 절대 운영 DB(storage.DB_PATH가 가리키는
 # 실제 파일)를 건드리지 않는다 -- 복사본을 만들어 storage.DB_PATH를
@@ -1691,6 +1802,9 @@ def main():
         test_classify_snmp_error, test_snmp_get_returns_tuple_on_unreachable,
         test_sflow_classic_sample_captures_version_and_direction, test_sflow_expanded_sample_offset_fixed,
         test_netflow_v5_captures_version_and_direction, test_flow_parse_error_tracking_and_status_merge,
+        test_cisco_syslog_login_success, test_cisco_syslog_login_failed, test_cisco_syslog_logout,
+        test_cisco_syslog_ignores_unrelated_messages, test_device_access_log_merges_with_audit_log_history,
+        test_device_access_log_unmatched_ip_falls_back_to_ip,
         test_db_concurrent_writes_no_lock_errors, test_metrics_aggregation_idempotent_on_rerun,
         test_scheduler_job_survives_disk_full_write_failure, test_backup_integrity_check_rejects_corrupt_file,
         test_backup_failure_triggers_incident_and_health_log, test_restore_verifies_separate_copy_before_touching_live_db,

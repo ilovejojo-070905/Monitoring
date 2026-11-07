@@ -36,6 +36,11 @@ PORT = int(os.environ.get('INFRASIGHT_PORT', '5057'))
 # PORT is (a second isolated instance for testing).
 NETFLOW_PORT = int(os.environ.get('INFRASIGHT_NETFLOW_PORT', '2055'))
 SFLOW_PORT = int(os.environ.get('INFRASIGHT_SFLOW_PORT', '6343'))
+# 사용자 요청("PuTTY로 직접 접속했는데 접속이력이 보이질 않아"): NetFlow/
+# sFlow와 같은 이유로 push 방식(장비가 로그인 시점에 syslog를 쏴줌)이라
+# collector/syslog_listener.py가 이 UDP 포트에서 상시 수신한다. 표준
+# syslog 포트(RFC 5424 기본값) 그대로 둠.
+SYSLOG_PORT = int(os.environ.get('INFRASIGHT_SYSLOG_PORT', '514'))
 LOCAL_ID = 'local-pc'
 IS_WINDOWS = os.name == 'nt'
 
@@ -243,6 +248,27 @@ def init_db():
         source_ip TEXT,
         details TEXT
     )''')
+    # 사용자 요청("PuTTY로 직접 접속했는데 접속이력이 보이질 않아"): audit_log는
+    # InfraSight 사이트를 거친 작업만 기록해서, PuTTY 등으로 장비에 직접
+    # SSH/Telnet 접속한 건 전혀 안 보였다. collector/syslog_listener.py가
+    # 장비가 보내는 syslog(%SEC_LOGIN-*)를 받아 여기 적재한다. device_id는
+    # device_ip로 devices 테이블을 찾아 매칭되면 채우고, 등록 안 된(또는
+    # IP가 다른) 장비에서 와도 device_ip는 항상 남겨 추적 가능하게 한다.
+    # username은 InfraSight 계정이 아니라 장비 자체의 로컬/TACACS 계정명 --
+    # audit_log.username과 네임스페이스가 다르지만 "누가 했는지" 보여주는
+    # 역할은 같아서 같은 이름으로 둠. api_devices_history()에서 audit_log와
+    # UNION으로 합쳐 하나의 "접속/설정 이력" 화면에 같이 보여준다.
+    conn.execute('''CREATE TABLE IF NOT EXISTS device_access_log(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT,
+        device_ip TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        username TEXT,
+        details TEXT,
+        raw_message TEXT NOT NULL
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_device_access_log ON device_access_log(device_id, ts)')
     conn.execute('''CREATE TABLE IF NOT EXISTS credentials(
         device_id TEXT NOT NULL,
         type TEXT NOT NULL,
@@ -1909,37 +1935,71 @@ def load_audit_log(limit=200, before_id=None, action=None, username=None):
     return [dict(r) for r in rows]
 
 
-def load_device_history(limit=50, before_id=None, actions=None, q=None):
+def load_device_history(limit=50, before_ts=None, actions=None, q=None):
     """이벤트/장애 관리 화면의 "접속/설정 이력" 탭(ADMIN 전용, server.py
     api_devices_history)용 전용 쿼리. load_audit_log()의 범용 쿼리로는
     대상 장비의 "이름"으로 검색할 수 없다 -- audit_log.target은
     device_id일 뿐 이름을 모른다. devices 테이블과 LEFT JOIN(INNER JOIN이면
     이미 삭제된 장비의 과거 기록이 통째로 사라짐)해서 장비명/사용자/작업/
     상세 내용을 한 검색창으로 한꺼번에 찾을 수 있게 한다.
-    actions: 보여줄 action 종류 한정(IN 절) -- server.py의
-    DEVICE_HISTORY_ACTIONS.
+
+    audit_log(InfraSight 사이트를 거친 작업)와 device_access_log(장비가
+    보낸 syslog 기반 접속 기록, PuTTY 등 직접 접속)를 UNION ALL로 합쳐서
+    하나의 시간순 타임라인으로 보여준다 -- 사용자 요청("PuTTY로 직접
+    접속했는데 접속이력이 보이질 않아")으로 추가됨. 두 테이블의 PK(id)가
+    서로 독립적이라 페이지네이션 커서로 쓸 수 없으므로(값이 겹칠 수 있음)
+    ts(밀리초)를 커서로 쓴다 -- 같은 ms에 기록이 여럿이면 경계에서 한두
+    건 중복/누락될 수 있지만("더 보기" 페이지네이션일 뿐이라 치명적이지
+    않음), audit_log 쪽 before_id처럼 완전히 정확한 커서보다 두 테이블을
+    섞어 보여주는 쪽이 사용자 요청의 핵심이라 이 정도 트레이드오프는
+    감안함.
+    actions: audit_log 쪽에서 보여줄 action 종류 한정(IN 절) -- server.py의
+    DEVICE_HISTORY_ACTIONS. device_access_log 쪽은 모든 행이 이미
+    "접속 이력"이라는 단 하나의 목적으로만 쌓이므로 별도 필터가 필요 없음.
     q: 장비명/사용자/작업/상세 중 하나라도 포함하면 매치(LIKE, 대소문자
     무시)."""
     limit = max(1, min(limit, 500))
     conn = get_db()
-    query = '''SELECT a.*, d.name AS device_name FROM audit_log a
-               LEFT JOIN devices d ON d.id = a.target WHERE 1=1'''
-    params = []
-    if before_id is not None:
-        query += ' AND a.id < ?'
-        params.append(before_id)
-    if actions:
-        query += f' AND a.action IN ({",".join("?" * len(actions))})'
-        params.extend(actions)
+    actions_ph = ",".join("?" * len(actions)) if actions else None
+    cte = f'''
+        SELECT a.id AS src_id, 'audit' AS src, a.ts AS ts, a.action AS action,
+               a.target AS device_id, d.name AS device_name, a.username AS username,
+               a.details AS details
+        FROM audit_log a LEFT JOIN devices d ON d.id = a.target
+        {f'WHERE a.action IN ({actions_ph})' if actions_ph else ''}
+        UNION ALL
+        SELECT dal.id AS src_id, 'syslog' AS src, dal.ts AS ts, dal.event_type AS action,
+               dal.device_id AS device_id, COALESCE(d2.name, dal.device_ip) AS device_name,
+               dal.username AS username, dal.details AS details
+        FROM device_access_log dal LEFT JOIN devices d2 ON d2.id = dal.device_id
+    '''
+    params = list(actions) if actions else []
+    query = f'SELECT * FROM ({cte}) WHERE 1=1'
+    if before_ts is not None:
+        query += ' AND ts < ?'
+        params.append(before_ts)
     if q:
         like = f'%{q}%'
-        query += ' AND (d.name LIKE ? OR a.username LIKE ? OR a.action LIKE ? OR a.details LIKE ? OR a.target LIKE ?)'
+        query += ' AND (device_name LIKE ? OR username LIKE ? OR action LIKE ? OR details LIKE ? OR device_id LIKE ?)'
         params.extend([like, like, like, like, like])
-    query += ' ORDER BY a.id DESC LIMIT ?'
+    query += ' ORDER BY ts DESC, src_id DESC LIMIT ?'
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def record_device_access(device_id, device_ip, ts, event_type, username, details, raw_message):
+    """collector/syslog_listener.py가 장비의 syslog(%SEC_LOGIN-*)를 파싱한
+    뒤 호출. device_id는 device_ip로 devices 테이블을 찾아 매칭되면 호출
+    쪽에서 채워 넘기고, 매칭 안 되면 None(그래도 device_ip는 항상 남음)."""
+    conn = get_db()
+    conn.execute(
+        'INSERT INTO device_access_log(device_id,device_ip,ts,event_type,username,details,raw_message) '
+        'VALUES (?,?,?,?,?,?,?)',
+        (device_id, device_ip, ts, event_type, username, details, raw_message))
+    conn.commit()
+    conn.close()
 
 
 def write_audit(username, action, target=None, details=None, source_ip=None):
@@ -2431,16 +2491,24 @@ def run_metrics_retention():
 # by age alone.
 INCIDENT_RETENTION_DAYS = 90
 AUDIT_LOG_RETENTION_DAYS = 365
+# device_access_log(장비 syslog 기반 접속 기록)도 같은 "아직 조치할 일이
+# 남았는지"라는 개념이 없어 나이로만 지운다는 점에서 audit_log와 같은
+# 종류지만, 등록된 모든 장비의 로그인/로그아웃마다 한 행씩 쌓여(사람이
+# 직접 하는 관리자 작업보다 훨씬 자주 발생) audit_log보다 훨씬 빨리
+# 불어날 수 있어 더 짧은 보존 기간을 둠.
+DEVICE_ACCESS_LOG_RETENTION_DAYS = 180
 
 
 def run_incident_retention():
     now = int(time.time() * 1000)
     incident_cutoff = now - INCIDENT_RETENTION_DAYS * 86400 * 1000
     audit_cutoff = now - AUDIT_LOG_RETENTION_DAYS * 86400 * 1000
+    access_log_cutoff = now - DEVICE_ACCESS_LOG_RETENTION_DAYS * 86400 * 1000
     conn = get_db()
     try:
         conn.execute("DELETE FROM incidents WHERE status!='open' AND ts<?", (incident_cutoff,))
         conn.execute('DELETE FROM audit_log WHERE ts<?', (audit_cutoff,))
+        conn.execute('DELETE FROM device_access_log WHERE ts<?', (access_log_cutoff,))
         conn.commit()
     finally:
         conn.close()

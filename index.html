@@ -2944,17 +2944,24 @@ const DEVICE_HISTORY_ACTION_LABEL = {
   DEVICE_REBOOT: '재부팅', DEVICE_REBOOT_FAILED: '재부팅 실패',
   AGENT_TOKEN_REISSUE: '에이전트 토큰 재발급', AGENT_TOKEN_REVOKE: '에이전트 토큰 폐기',
   TEST_SNMP: 'SNMP 연결 테스트',
+  // 사용자 요청("PuTTY로 직접 접속했는데 접속이력이 보이질 않아")으로 추가된
+  // device_access_log(syslog 기반, collector/syslog_listener.py) 쪽 이벤트.
+  LOGIN_SUCCESS: '로그인 성공', LOGIN_FAILED: '로그인 실패', LOGOUT: '로그아웃',
 };
-let deviceHistoryOldestId = null;
+// 'audit'(InfraSight 사이트를 거친 작업) vs 'syslog'(PuTTY 등 장비 직접
+// 접속, syslog로 수신) -- 둘을 한 타임라인에 섞어 보여주므로 각 행이
+// 어느 쪽인지 구분할 수 있어야 한다.
+const DEVICE_HISTORY_SRC_LABEL = {audit: 'InfraSight', syslog: '장비 직접접속'};
+let deviceHistoryOldestTs = null;
 async function renderDeviceHistory(append){
   const body = $('#dev-history-body');
   const moreBtn = $('#dev-history-more-btn');
   if(!body) return;
-  if(!append) deviceHistoryOldestId = null;
+  if(!append) deviceHistoryOldestTs = null;
   const params = new URLSearchParams();
   const q = ($('#dev-history-search')?.value||'').trim();
   if(q) params.set('q', q);
-  if(append && deviceHistoryOldestId) params.set('beforeId', deviceHistoryOldestId);
+  if(append && deviceHistoryOldestTs) params.set('beforeTs', deviceHistoryOldestTs);
   const qs = params.toString() ? `?${params.toString()}` : '';
   const r = await apiFetch(`/api/devices/history${qs}`);
   if(!r.ok){ if(!append) body.innerHTML = '<div class="empty-note">불러오기 실패</div>'; return; }
@@ -2964,16 +2971,17 @@ async function renderDeviceHistory(append){
   const rowsHtml = entries.map(h=>`
     <tr>
       <td style="font-size:11px;white-space:nowrap">${fmtWhen(h.ts)}</td>
+      <td class="mono" style="font-size:11px">${escapeHtml(DEVICE_HISTORY_SRC_LABEL[h.src]||h.src)}</td>
       <td class="mono">${escapeHtml(h.username||'-')}</td>
-      <td class="name">${escapeHtml(h.device_name || h.target || '-')}</td>
-      <td class="mono">${escapeHtml(DEVICE_HISTORY_ACTION_LABEL[h.action]||h.action)}</td>
+      <td class="name">${escapeHtml(h.device_name || h.device_id || '-')}</td>
+      <td class="mono"${h.action==='LOGIN_FAILED'?' style="color:var(--crit)"':''}>${escapeHtml(DEVICE_HISTORY_ACTION_LABEL[h.action]||h.action)}</td>
       <td style="font-size:11px">${escapeHtml(h.details||'-')}</td>
     </tr>`).join('');
   const tableHtml = `<div class="table-wrap"><table class="data reg-device-table">
-    <thead><tr><th>시각</th><th>사용자</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
+    <thead><tr><th>시각</th><th>경로</th><th>사용자</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
     <tbody>${rowsHtml}</tbody></table></div>`;
   if(append){ body.insertAdjacentHTML('beforeend', tableHtml); } else { body.innerHTML = tableHtml; }
-  if(entries.length) deviceHistoryOldestId = entries[entries.length-1].id;
+  if(entries.length) deviceHistoryOldestTs = entries[entries.length-1].ts;
   moreBtn.style.display = entries.length >= 50 ? '' : 'none';
 }
 function renderIncidents(){
