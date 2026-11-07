@@ -11,7 +11,7 @@ import threading
 import time
 
 import storage
-from applog import app_logger
+from applog import app_logger, safe_log_value
 from collector import cisco_syslog_parser
 
 _device_ip_cache = {}
@@ -43,11 +43,28 @@ def _listen_loop(sock):
         except OSError:
             return  # socket closed (shutdown) -- exit the thread cleanly
         recv_ts = int(time.time() * 1000)
+        # 진단용(2026-11-08, "허용규칙 하고 cisco에서 설정도 넣었는데
+        # 보이질 않아"): 매치가 안 되는 패킷은 cisco_syslog_parser.parse()가
+        # 조용히 빈 리스트를 돌려주는 게 정상 동작(위 docstring)이라, 지금까지
+        # 는 "패킷이 아예 안 왔다"와 "왔는데 형식이 안 맞았다"를 구분할
+        # 방법이 로그에 전혀 없었다. 받은 원문을 매치 여부와 무관하게 항상
+        # 한 줄 남겨서(안전하게 safe_log_value로 개행 무력화, 길이도 잘라
+        # 로그 비대화 방지) 이 둘을 구분할 수 있게 한다 -- NetFlow/sFlow
+        # 쪽이 파싱 실패만 기록하는 것과 달리, syslog는 "매치 안 됨"이
+        # 대부분이라 실패 로그만으로는 수신 자체를 확인할 수 없어서 의도적으로
+        # 더 상세히 남김.
+        try:
+            raw_text = data.decode('utf-8', errors='replace')
+        except Exception:
+            raw_text = repr(data)
+        app_logger.info('syslog_listener: received from %s: %s', addr, safe_log_value(raw_text[:400]))
         try:
             events = cisco_syslog_parser.parse(data, addr, recv_ts)
         except Exception:
             app_logger.exception('syslog_listener: unexpected error parsing packet from %s', addr)
             continue
+        if not events:
+            app_logger.info('syslog_listener: no known pattern matched (not a login/logout message, or format differs)')
         for ev in events:
             device_id = _device_ip_cache.get(ev['exporter_ip'])
             try:
