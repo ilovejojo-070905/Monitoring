@@ -1304,6 +1304,52 @@ def test_device_access_log_unmatched_ip_falls_back_to_ip():
         conn.close()
 
 
+def test_junos_syslog_login_success():
+    # 사용자 요청("cisco 장비 말고 다른 장비들도 접속 했을 때 접속 이력
+    # 보이게 해줘")으로 추가된 collector/junos_syslog_parser.py -- Junos의
+    # sshd는 OpenSSH 표준 문구 그대로라 Cisco의 %SEC_LOGIN과는 완전히
+    # 다른 포맷. 이 표준 OpenSSH 문구 자체는 신뢰도가 높지만(모듈
+    # docstring 참고), 실제 Junos 장비의 live syslog로는 검증하지 못했다.
+    from collector import junos_syslog_parser as jsp
+    line = 'mgd[12345]: sshd[54321]: Accepted password for root from 192.168.30.36 port 54321 ssh2'
+    events = jsp.parse(line.encode('utf-8'), '192.168.30.253', 1700000000000)
+    check('N10 Junos SSH LOGIN_SUCCESS is parsed with username/source/port',
+          len(events) == 1 and events[0]['event_type'] == 'LOGIN_SUCCESS' and events[0]['username'] == 'root'
+          and '192.168.30.36' in events[0]['details'] and '54321' in events[0]['details'], events)
+
+
+def test_junos_syslog_login_failed():
+    from collector import junos_syslog_parser as jsp
+    line = 'mgd[12345]: sshd[54321]: Failed password for root from 192.168.30.36 port 54322 ssh2'
+    events = jsp.parse(line.encode('utf-8'), '192.168.30.253', 1700000000000)
+    check('N11 Junos SSH LOGIN_FAILED is parsed with username/source/port',
+          len(events) == 1 and events[0]['event_type'] == 'LOGIN_FAILED' and events[0]['username'] == 'root'
+          and '192.168.30.36' in events[0]['details'], events)
+
+
+def test_junos_syslog_ignores_unrelated_messages():
+    from collector import junos_syslog_parser as jsp
+    line = 'mgd[12345]: UI_CMD_LINE: User root is executing "show interfaces terse"'
+    events = jsp.parse(line.encode('utf-8'), '192.168.30.253', 1700000000000)
+    check('N12 a non-login Junos syslog message is ignored (empty list, not an error)', events == [], events)
+
+
+def test_syslog_listener_tries_multiple_vendor_parsers():
+    # syslog_listener._PARSERS가 벤더별 파서를 순서대로 시도해서, 같은
+    # UDP/514 포트로 들어온 Cisco 메시지와 Junos 메시지가 둘 다 올바르게
+    # (서로 엉뚱한 파서에 걸리지 않고) 매치되는지 확인.
+    from collector import syslog_listener as sl
+    cisco_line = ('%SEC_LOGIN-5-LOGIN_SUCCESS: Login Success [user: admin] [Source: 1.2.3.4] '
+                  '[localport: 23] at 00:00:00 UTC Mon Mar 1 2026')
+    junos_line = 'sshd[1]: Accepted password for root from 5.6.7.8 port 1234 ssh2'
+    found_cisco, found_junos = [], []
+    for parser_module in sl._PARSERS:
+        found_cisco.extend(parser_module.parse(cisco_line.encode('utf-8'), '192.168.30.250', 1700000000000))
+        found_junos.extend(parser_module.parse(junos_line.encode('utf-8'), '192.168.30.253', 1700000000000))
+    check('N13 both a Cisco-formatted and a Junos-formatted message are matched by exactly one parser each',
+          len(found_cisco) == 1 and len(found_junos) == 1, (found_cisco, found_junos))
+
+
 # ======================================================================
 # Q. DB 동시접근/디스크실패/백업/SLA 신뢰성 (운영 DB 검토 7개)
 # 안전 규칙: 이 섹션의 테스트는 절대 운영 DB(storage.DB_PATH가 가리키는
@@ -1805,6 +1851,8 @@ def main():
         test_cisco_syslog_login_success, test_cisco_syslog_login_failed, test_cisco_syslog_logout,
         test_cisco_syslog_ignores_unrelated_messages, test_device_access_log_merges_with_audit_log_history,
         test_device_access_log_unmatched_ip_falls_back_to_ip,
+        test_junos_syslog_login_success, test_junos_syslog_login_failed, test_junos_syslog_ignores_unrelated_messages,
+        test_syslog_listener_tries_multiple_vendor_parsers,
         test_db_concurrent_writes_no_lock_errors, test_metrics_aggregation_idempotent_on_rerun,
         test_scheduler_job_survives_disk_full_write_failure, test_backup_integrity_check_rejects_corrupt_file,
         test_backup_failure_triggers_incident_and_health_log, test_restore_verifies_separate_copy_before_touching_live_db,

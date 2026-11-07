@@ -1,18 +1,29 @@
-"""Cisco syslog UDP 수신기(사용자 요청: "PuTTY로 직접 접속했는데 접속이력이
-보이질 않아"). collector/flow_listener.py와 같은 구조(상시 recvfrom()
-소켓을 daemon thread에서 돌림)를 그대로 따르되, 로그인/로그아웃은
-트래픽 바이트 수처럼 집계할 값이 아니라 발생한 사건 하나하나가 그대로
-의미있는 기록이라, flow_listener.flush()처럼 메모리에 모았다가 1분마다
-플러시하지 않고 파싱되는 즉시 바로 DB에 쓴다(이벤트 발생 빈도 자체가
-NetFlow/sFlow 패킷보다 훨씬 낮아 매번 바로 써도 부담이 되지 않음).
-"""
+"""장비 syslog UDP 수신기(사용자 요청: "PuTTY로 직접 접속했는데 접속이력이
+보이질 않아", 이어서 "cisco 장비 말고 다른 장비들도 접속했을 때 접속
+이력 보이게 해줘"). collector/flow_listener.py와 같은 구조(상시
+recvfrom() 소켓을 daemon thread에서 돌림)를 그대로 따르되, 로그인/
+로그아웃은 트래픽 바이트 수처럼 집계할 값이 아니라 발생한 사건 하나하나가
+그대로 의미있는 기록이라, flow_listener.flush()처럼 메모리에 모았다가
+1분마다 플러시하지 않고 파싱되는 즉시 바로 DB에 쓴다(이벤트 발생 빈도
+자체가 NetFlow/sFlow 패킷보다 훨씬 낮아 매번 바로 써도 부담이 되지 않음).
+
+벤더마다 메시지 포맷이 완전히 다른데(Cisco는 %SEC_LOGIN류 독자 포맷,
+Junos는 OpenSSH 표준 문구) NetFlow/sFlow처럼 포트로 구분할 수 없다 --
+syslog는 모든 벤더가 같은 UDP/514 하나로 들어온다. 그래서 한 패킷을
+_PARSERS에 등록된 벤더별 파서 모듈에 순서대로 넘겨 첫 번째로 매치되는
+파서를 쓴다(각 벤더 포맷이 서로 겹칠 여지가 거의 없어 순서 민감도가
+낮음). 아직 파서가 없는 벤더(HP Comware/ArubaOS-Switch 등)는 전부
+매치에 실패해 _listen_loop의 "no known pattern matched" 진단 로그로
+원문이 그대로 남으므로, 그 로그를 보고 다음 벤더 파서를 추가하면 된다."""
 import socket
 import threading
 import time
 
 import storage
 from applog import app_logger, safe_log_value
-from collector import cisco_syslog_parser
+from collector import cisco_syslog_parser, junos_syslog_parser
+
+_PARSERS = (cisco_syslog_parser, junos_syslog_parser)
 
 _device_ip_cache = {}
 _sock = None
@@ -58,11 +69,16 @@ def _listen_loop(sock):
         except Exception:
             raw_text = repr(data)
         app_logger.info('syslog_listener: received from %s: %s', addr, safe_log_value(raw_text[:400]))
-        try:
-            events = cisco_syslog_parser.parse(data, addr, recv_ts)
-        except Exception:
-            app_logger.exception('syslog_listener: unexpected error parsing packet from %s', addr)
-            continue
+        events = []
+        for parser_module in _PARSERS:
+            try:
+                events = parser_module.parse(data, addr, recv_ts)
+            except Exception:
+                app_logger.exception('syslog_listener: unexpected error in %s parsing packet from %s',
+                                      parser_module.__name__, addr)
+                continue
+            if events:
+                break
         if not events:
             app_logger.info('syslog_listener: no known pattern matched (not a login/logout message, or format differs)')
         for ev in events:
