@@ -1892,10 +1892,8 @@ def load_audit_log(limit=200, before_id=None, action=None, username=None, target
     target: 특정 장비(device_id)로 좁혀서 조회.
     actions: action이 이 목록에 속하는 것만 조회(IN 절) -- action(단일
     일치) 필터와는 별개로, server.py api_devices_history(이벤트/장애
-    관리 화면의 "접속 및 설정 이력" 카드)가 장비 관련 action 종류 전체를
-    한 번에 걸러서 쓴다. 이 경로는 전체 감사 로그(api_audit_log)와 달리
-    OPERATOR도 볼 수 있게 허용하는데, "다른 모든 사용자의 전체 행적"이
-    아니라 장비 등록/설정/제어라는 한정된 종류의 작업만 보여주기 때문."""
+    관리 화면의 "접속/설정 이력" 탭, ADMIN 전용)가 장비 관련 action
+    종류 전체를 한 번에 걸러서 쓴다."""
     limit = max(1, min(limit, 500))
     conn = get_db()
     q = 'SELECT * FROM audit_log WHERE 1=1'

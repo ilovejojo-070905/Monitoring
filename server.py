@@ -2422,14 +2422,10 @@ def api_set_maintenance(device_id):
 
 # 사용자 요청: "등록된 장비에 접속 및 설정한 이력을 볼 수 있게 해달라" --
 # 처음엔 장비 상세창에 카드로 넣었다가, "상세창에 하지 말고 이벤트/장애
-# 관리에 만들어달라"는 후속 요청으로 그 화면(view-incidents)으로 옮김.
-# audit_log는 처음부터 이 action들을 target=device_id로 기록해왔지만,
-# 이걸 모아서 보여주는 라우트가 없어서 ADMIN 전용 전체 감사 로그 화면
-# (/api/audit-log, SMTP/카카오 설정 등 장비와 무관한 다른 모든 사용자의
-# 전체 행적까지 포함)을 뒤져야만 했다. 아래 목록만 추려서 보여주는 건
-# 그보다 범위가 훨씬 좁아 OPERATOR까지 허용 -- 장비를 등록/관리할 수
-# 있는 사람(OPERATOR+)이 "누가 이 장비들을 언제 건드렸는지" 보는 것이
-# 그보다 더 민감하지 않다는 판단.
+# 관리에 만들어달라"는 후속 요청으로 그 화면(view-incidents)의 "미해결"
+# 옆에 별도 탭으로 옮겼고, 이어서 "관리자만 볼 수 있게 해달라"는 요청으로
+# ADMIN 전용으로 바뀜(index.html 쪽 탭 버튼도 CURRENT_ROLE==='ADMIN'일
+# 때만 보임 -- 여기서도 같은 등급으로 한 번 더 막는다).
 DEVICE_HISTORY_ACTIONS = (
     'REGISTER_DEVICE', 'UPDATE_DEVICE', 'DELETE_DEVICE', 'BULK_DELETE_DEVICES',
     'SET_VENDOR_PROFILE', 'SET_MAINTENANCE',
@@ -2441,7 +2437,7 @@ DEVICE_HISTORY_ACTIONS = (
 
 
 @app.get('/api/devices/history')
-@require_role('OPERATOR')
+@require_role('ADMIN')
 def api_devices_history():
     limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
     before_id = request.args.get('beforeId', type=int)

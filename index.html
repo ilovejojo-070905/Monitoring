@@ -2894,19 +2894,19 @@ function renderIncidentsSkeleton(){
           <button class="chip-btn" data-f="warn">주의</button>
           <button class="chip-btn" data-f="info">정보</button>
           <button class="chip-btn" data-f="open">미해결</button>
+          <button class="chip-btn" data-f="history" id="inc-filter-history" style="display:none">접속/설정 이력</button>
         </div>
-        <div class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <div class="search-box" id="inc-search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="inc-search" placeholder="장비명 / 영역 / 내용 검색"></div>
       </div>
-      <div class="table-wrap"><table class="data reg-device-table">
+      <div class="table-wrap" id="inc-events-wrap"><table class="data reg-device-table">
         <thead><tr><th>심각도</th><th>시각</th><th>영역</th><th>대상</th><th>내용</th><th>상태</th><th></th></tr></thead>
         <tbody id="inc-tbody"></tbody>
       </table></div>
-    </div>
-    <div class="card" id="dev-history-card" style="display:none">
-      <div class="card-head"><div><h3>접속 및 설정 이력</h3><span class="sub">등록된 장비의 등록/설정 변경/제어 명령 기록</span></div></div>
-      <div id="dev-history-body"></div>
-      <div style="text-align:center;margin-top:10px"><button type="button" class="btn" id="dev-history-more-btn" style="display:none">더 보기</button></div>
+      <div id="inc-history-wrap" style="display:none">
+        <div id="dev-history-body"></div>
+        <div style="text-align:center;margin-top:10px"><button type="button" class="btn" id="dev-history-more-btn" style="display:none">더 보기</button></div>
+      </div>
     </div>
   `;
   $$('#inc-filters .chip-btn').forEach(b=> b.addEventListener('click', ()=>{
@@ -2916,12 +2916,15 @@ function renderIncidentsSkeleton(){
   $('#inc-search').addEventListener('input', renderIncidents);
   $('#dev-history-more-btn').addEventListener('click', ()=>renderDeviceHistory(true));
 }
-// 장비 상세창이 아니라 이 화면(view-incidents)에 두기로 한 이유는
-// 사용자 요청("상세창에 하지 말고 이벤트/장애 관리에 만들어줘") 그대로.
-// 카드는 스켈레톤 단계(initSkeletons(), 로그인 전 -- CURRENT_ROLE이 아직
-// 없음)에선 항상 숨겨져 있다가, 로그인 후 실제 role을 아는 renderIncidents()
-// 최초 호출 시점에만 켠다 -- renderSecurity()의 감사 로그 카드와 같은 패턴.
-let deviceHistoryInited = false;
+// "접속/설정 이력" 탭은 ADMIN 전용(사용자 요청: "관리자만 볼 수 있게 해줘").
+// 탭 버튼 자체는 스켈레톤 단계(initSkeletons(), 로그인 전 -- CURRENT_ROLE이
+// 아직 없음)에선 항상 숨겨져 있다가, 로그인 후 실제 role을 아는
+// renderIncidents() 최초 호출 시점에만 켠다 -- renderSecurity()의 감사
+// 로그 카드와 같은 패턴. incFilter는 ADMIN이 이 탭을 눌렀을 때만 'history'가
+// 되므로(버튼이 없으면 누를 수 없다), 서버도 같은 등급(ADMIN)으로
+// 한 번 더 막는다.
+let incHistoryTabInited = false;
+let incHistoryActive = false;
 const DEVICE_HISTORY_ACTION_LABEL = {
   REGISTER_DEVICE: '장비 등록', UPDATE_DEVICE: '장비 정보 수정', DELETE_DEVICE: '장비 삭제',
   BULK_DELETE_DEVICES: '장비 일괄 삭제',
@@ -2961,6 +2964,29 @@ async function renderDeviceHistory(append){
   moreBtn.style.display = entries.length >= 50 ? '' : 'none';
 }
 function renderIncidents(){
+  // ADMIN에게만 "접속/설정 이력" 탭을 보여주는 전환은 로그인 후 role을
+  // 아는 이 함수의 최초 호출 시점에 한 번만 한다 -- renderSecurity()의
+  // 감사 로그 카드와 같은 패턴(스켈레톤은 로그인 전에 그려져 role을 모름).
+  if(!incHistoryTabInited){
+    incHistoryTabInited = true;
+    if(CURRENT_ROLE === 'ADMIN'){
+      const tabBtn = $('#inc-filter-history');
+      if(tabBtn) tabBtn.style.display = '';
+    }
+  }
+  const isHistory = incFilter === 'history';
+  $('#inc-events-wrap').style.display = isHistory ? 'none' : '';
+  $('#inc-history-wrap').style.display = isHistory ? '' : 'none';
+  $('#inc-search-box').style.display = isHistory ? 'none' : '';
+  if(isHistory){
+    // renderIncidents()는 이 화면이 열려있는 동안 ~2.2초마다 다시 불리므로
+    // (다른 화면과 같은 폴링 재렌더), 이력 탭에 머무는 동안 매번 다시
+    // 불러오지 않도록 탭에 "처음 들어올 때"만 호출한다. 탭을 벗어났다가
+    // 다시 들어오면 새로 불러온다.
+    if(!incHistoryActive){ incHistoryActive = true; renderDeviceHistory(); }
+    return;
+  }
+  incHistoryActive = false;
   let rows = INCIDENTS;
   if(incFilter==='crit') rows = rows.filter(i=>i.severity==='crit');
   if(incFilter==='warn') rows = rows.filter(i=>i.severity==='warn');
@@ -2984,14 +3010,6 @@ function renderIncidents(){
     await syncState();
     renderIncidents(); refreshBadges();
   }));
-  if(!deviceHistoryInited){
-    deviceHistoryInited = true;
-    if(CURRENT_ROLE_RANK >= 1){
-      const card = $('#dev-history-card');
-      if(card) card.style.display = '';
-      renderDeviceHistory();
-    }
-  }
 }
 
 /* ================= REGISTER ================= */
