@@ -2898,14 +2898,14 @@ function renderIncidentsSkeleton(){
         </div>
         <div class="search-box" id="inc-search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="inc-search" placeholder="장비명 / 영역 / 내용 검색"></div>
+        <div class="search-box" id="dev-history-search-box" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="dev-history-search" placeholder="장비명 / 사용자 / 작업 / 상세 검색"></div>
       </div>
       <div class="table-wrap" id="inc-events-wrap"><table class="data reg-device-table">
         <thead><tr><th>심각도</th><th>시각</th><th>영역</th><th>대상</th><th>내용</th><th>상태</th><th></th></tr></thead>
         <tbody id="inc-tbody"></tbody>
       </table></div>
       <div id="inc-history-wrap" style="display:none">
-        <div class="search-box" id="dev-history-search-box" style="margin-bottom:10px;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="dev-history-search" placeholder="장비명 / 사용자 / 작업 / 상세 검색"></div>
         <div id="dev-history-body"></div>
         <div style="text-align:center;margin-top:10px"><button type="button" class="btn" id="dev-history-more-btn" style="display:none">더 보기</button></div>
       </div>
@@ -2990,13 +2990,16 @@ function renderIncidents(){
   const isHistory = incFilter === 'history';
   $('#inc-events-wrap').style.display = isHistory ? 'none' : '';
   $('#inc-history-wrap').style.display = isHistory ? '' : 'none';
-  // display:none이었을 때 버그: .card-head는 display:flex + justify-content:
-  // space-between인데, 검색창을 display:none으로 완전히 없애버리면 칩 행이
-  // (이제 남은 마지막 flex 아이템이 되어) 오른쪽 끝으로 밀려났다 -- "접속/
-  // 설정 이력 누르면 오른쪽으로 이동한다"는 신고 그대로. visibility만
-  // 숨겨서 자리는 그대로 차지하게 둔다(공간은 비어 보이지만 칩 위치는
-  // 고정됨, 클릭/포커스도 visibility:hidden이라 자동으로 막힘).
-  $('#inc-search-box').style.visibility = isHistory ? 'hidden' : 'visible';
+  // 검색창을 "미해결" 등 이벤트 필터와 같은 자리(card-head 안, 칩 행
+  // 오른쪽)에 두기로 함(사용자 요청: "검색창이 한줄 밑으로 내려가 미해결
+  // 검색창 같은 자리로 해줘"). 이벤트용(#inc-search-box)과 이력용
+  // (#dev-history-search-box)을 같은 자리에 둔 두 개의 형제 엘리먼트로
+  // 만들고 서로 반대로 toggle -- 항상 둘 중 정확히 하나만 보이므로
+  // card-head의 flex 아이템 개수(제목/칩 행/검색창 1개)가 그대로 유지돼
+  // display:none을 써도 칩 행이 오른쪽으로 밀리지 않는다(이전엔 검색창
+  // 하나만 display:none으로 완전히 없앴다가 칩 행이 밀렸었음).
+  $('#inc-search-box').style.display = isHistory ? 'none' : '';
+  $('#dev-history-search-box').style.display = isHistory ? '' : 'none';
   if(isHistory){
     // renderIncidents()는 이 화면이 열려있는 동안 ~2.2초마다 다시 불리므로
     // (다른 화면과 같은 폴링 재렌더), 이력 탭에 머무는 동안 매번 다시
