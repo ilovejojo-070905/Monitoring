@@ -2904,6 +2904,8 @@ function renderIncidentsSkeleton(){
         <tbody id="inc-tbody"></tbody>
       </table></div>
       <div id="inc-history-wrap" style="display:none">
+        <div class="search-box" id="dev-history-search-box" style="margin-bottom:10px;max-width:320px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="dev-history-search" placeholder="장비명 / 사용자 / 작업 / 상세 검색"></div>
         <div id="dev-history-body"></div>
         <div style="text-align:center;margin-top:10px"><button type="button" class="btn" id="dev-history-more-btn" style="display:none">더 보기</button></div>
       </div>
@@ -2915,6 +2917,14 @@ function renderIncidentsSkeleton(){
   }));
   $('#inc-search').addEventListener('input', renderIncidents);
   $('#dev-history-more-btn').addEventListener('click', ()=>renderDeviceHistory(true));
+  // 서버로 매번 다시 쿼리하는 검색이라(이벤트 쪽 검색과 달리 이미 불러온
+  // 배열을 그냥 다시 필터링하는 게 아님), 입력 중 매 키 입력마다 요청을
+  // 보내지 않게 짧은 디바운스를 둔다.
+  let devHistorySearchTimer = null;
+  $('#dev-history-search').addEventListener('input', ()=>{
+    if(devHistorySearchTimer) clearTimeout(devHistorySearchTimer);
+    devHistorySearchTimer = setTimeout(()=> renderDeviceHistory(), 300);
+  });
 }
 // "접속/설정 이력" 탭은 ADMIN 전용(사용자 요청: "관리자만 볼 수 있게 해줘").
 // 탭 버튼 자체는 스켈레톤 단계(initSkeletons(), 로그인 전 -- CURRENT_ROLE이
@@ -2941,21 +2951,24 @@ async function renderDeviceHistory(append){
   const moreBtn = $('#dev-history-more-btn');
   if(!body) return;
   if(!append) deviceHistoryOldestId = null;
-  const qs = append && deviceHistoryOldestId ? `?beforeId=${deviceHistoryOldestId}` : '';
+  const params = new URLSearchParams();
+  const q = ($('#dev-history-search')?.value||'').trim();
+  if(q) params.set('q', q);
+  if(append && deviceHistoryOldestId) params.set('beforeId', deviceHistoryOldestId);
+  const qs = params.toString() ? `?${params.toString()}` : '';
   const r = await apiFetch(`/api/devices/history${qs}`);
   if(!r.ok){ if(!append) body.innerHTML = '<div class="empty-note">불러오기 실패</div>'; return; }
   const j = await r.json();
   const entries = j.entries || [];
   if(!append && !entries.length){ body.innerHTML = '<div class="empty-note">기록이 없습니다</div>'; moreBtn.style.display='none'; return; }
-  const rowsHtml = entries.map(h=>{
-    const entity = findEntity(h.target);
-    return `<tr>
+  const rowsHtml = entries.map(h=>`
+    <tr>
       <td style="font-size:11px;white-space:nowrap">${fmtWhen(h.ts)}</td>
       <td class="mono">${escapeHtml(h.username||'-')}</td>
-      <td class="name">${escapeHtml(entity ? entity.name : (h.target||'-'))}</td>
+      <td class="name">${escapeHtml(h.device_name || h.target || '-')}</td>
       <td class="mono">${escapeHtml(DEVICE_HISTORY_ACTION_LABEL[h.action]||h.action)}</td>
       <td style="font-size:11px">${escapeHtml(h.details||'-')}</td>
-    </tr>`;}).join('');
+    </tr>`).join('');
   const tableHtml = `<div class="table-wrap"><table class="data reg-device-table">
     <thead><tr><th>시각</th><th>사용자</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
     <tbody>${rowsHtml}</tbody></table></div>`;
@@ -6618,6 +6631,14 @@ function switchView(name){
   const SEARCH_INPUT_ID = {servers:'srv-search', database:'db-search', network:'net-search', incidents:'inc-search'};
   if(SEARCH_INPUT_ID[name] && currentView!==name){
     const s = $('#'+SEARCH_INPUT_ID[name]); if(s) s.value = '';
+  }
+  // 접속/설정 이력 탭의 검색창도 같은 원칙(위 주석) -- 입력값을 비우고,
+  // incHistoryActive도 같이 꺼서(탭에 "처음 들어올 때"만 불러오는 가드)
+  // 다시 들어왔을 때 빈 검색어로 새로 불러오게 한다. 안 그러면 검색창만
+  // 비워진 채 이전 검색 결과가 그대로 남아있게 된다.
+  if(name==='incidents' && currentView!==name){
+    const hs = $('#dev-history-search'); if(hs) hs.value = '';
+    incHistoryActive = false;
   }
   currentView = name;
   $$('.view').forEach(v=> v.classList.toggle('active', v.dataset.view===name));

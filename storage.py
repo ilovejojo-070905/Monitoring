@@ -1879,7 +1879,7 @@ def unlock_user(username):
     conn.close()
 
 
-def load_audit_log(limit=200, before_id=None, action=None, username=None, target=None, actions=None):
+def load_audit_log(limit=200, before_id=None, action=None, username=None):
     """신규 기능(2026-10-17, "감사 로그에... 기록하고 조회 권한을
     제한한다"): write_audit는 처음부터 있었지만 이걸 다시 읽어오는 경로가
     단 하나도 없었음 -- DB 파일을 직접 열거나 logs/security.log를 텍스트로
@@ -1888,12 +1888,7 @@ def load_audit_log(limit=200, before_id=None, action=None, username=None, target
     게이트한다 -- 다른 모든 사용자의 행적이 담긴 기록이라 OPERATOR보다도
     더 민감함.
     before_id: 커서 기반 페이지네이션(이 id보다 작은 것만) -- 한번에 다
-    긁어오지 않고 "더 보기"로 과거까지 거슬러 올라갈 수 있게.
-    target: 특정 장비(device_id)로 좁혀서 조회.
-    actions: action이 이 목록에 속하는 것만 조회(IN 절) -- action(단일
-    일치) 필터와는 별개로, server.py api_devices_history(이벤트/장애
-    관리 화면의 "접속/설정 이력" 탭, ADMIN 전용)가 장비 관련 action
-    종류 전체를 한 번에 걸러서 쓴다."""
+    긁어오지 않고 "더 보기"로 과거까지 거슬러 올라갈 수 있게."""
     limit = max(1, min(limit, 500))
     conn = get_db()
     q = 'SELECT * FROM audit_log WHERE 1=1'
@@ -1907,15 +1902,42 @@ def load_audit_log(limit=200, before_id=None, action=None, username=None, target
     if username:
         q += ' AND username = ?'
         params.append(username)
-    if target:
-        q += ' AND target = ?'
-        params.append(target)
-    if actions:
-        q += f' AND action IN ({",".join("?" * len(actions))})'
-        params.extend(actions)
     q += ' ORDER BY id DESC LIMIT ?'
     params.append(limit)
     rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def load_device_history(limit=50, before_id=None, actions=None, q=None):
+    """이벤트/장애 관리 화면의 "접속/설정 이력" 탭(ADMIN 전용, server.py
+    api_devices_history)용 전용 쿼리. load_audit_log()의 범용 쿼리로는
+    대상 장비의 "이름"으로 검색할 수 없다 -- audit_log.target은
+    device_id일 뿐 이름을 모른다. devices 테이블과 LEFT JOIN(INNER JOIN이면
+    이미 삭제된 장비의 과거 기록이 통째로 사라짐)해서 장비명/사용자/작업/
+    상세 내용을 한 검색창으로 한꺼번에 찾을 수 있게 한다.
+    actions: 보여줄 action 종류 한정(IN 절) -- server.py의
+    DEVICE_HISTORY_ACTIONS.
+    q: 장비명/사용자/작업/상세 중 하나라도 포함하면 매치(LIKE, 대소문자
+    무시)."""
+    limit = max(1, min(limit, 500))
+    conn = get_db()
+    query = '''SELECT a.*, d.name AS device_name FROM audit_log a
+               LEFT JOIN devices d ON d.id = a.target WHERE 1=1'''
+    params = []
+    if before_id is not None:
+        query += ' AND a.id < ?'
+        params.append(before_id)
+    if actions:
+        query += f' AND a.action IN ({",".join("?" * len(actions))})'
+        params.extend(actions)
+    if q:
+        like = f'%{q}%'
+        query += ' AND (d.name LIKE ? OR a.username LIKE ? OR a.action LIKE ? OR a.details LIKE ? OR a.target LIKE ?)'
+        params.extend([like, like, like, like, like])
+    query += ' ORDER BY a.id DESC LIMIT ?'
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

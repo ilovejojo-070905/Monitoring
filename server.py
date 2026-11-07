@@ -2441,7 +2441,8 @@ DEVICE_HISTORY_ACTIONS = (
 def api_devices_history():
     limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
     before_id = request.args.get('beforeId', type=int)
-    entries = storage.load_audit_log(limit=limit, before_id=before_id, actions=DEVICE_HISTORY_ACTIONS)
+    q = (request.args.get('q') or '').strip() or None
+    entries = storage.load_device_history(limit=limit, before_id=before_id, actions=DEVICE_HISTORY_ACTIONS, q=q)
     return jsonify({'entries': entries})
 
 
