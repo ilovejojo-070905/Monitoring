@@ -2977,7 +2977,13 @@ function renderIncidents(){
   const isHistory = incFilter === 'history';
   $('#inc-events-wrap').style.display = isHistory ? 'none' : '';
   $('#inc-history-wrap').style.display = isHistory ? '' : 'none';
-  $('#inc-search-box').style.display = isHistory ? 'none' : '';
+  // display:none이었을 때 버그: .card-head는 display:flex + justify-content:
+  // space-between인데, 검색창을 display:none으로 완전히 없애버리면 칩 행이
+  // (이제 남은 마지막 flex 아이템이 되어) 오른쪽 끝으로 밀려났다 -- "접속/
+  // 설정 이력 누르면 오른쪽으로 이동한다"는 신고 그대로. visibility만
+  // 숨겨서 자리는 그대로 차지하게 둔다(공간은 비어 보이지만 칩 위치는
+  // 고정됨, 클릭/포커스도 visibility:hidden이라 자동으로 막힘).
+  $('#inc-search-box').style.visibility = isHistory ? 'hidden' : 'visible';
   if(isHistory){
     // renderIncidents()는 이 화면이 열려있는 동안 ~2.2초마다 다시 불리므로
     // (다른 화면과 같은 폴링 재렌더), 이력 탭에 머무는 동안 매번 다시
