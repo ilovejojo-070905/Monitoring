@@ -6195,6 +6195,52 @@ function remoteConnect(protocol, host, user, deviceName){
     remoteConnectFailToast(deviceName, protocol, host, err.message);
   }
 }
+// 장비 상세창 "접속 및 설정 이력" 카드용 캐시. drawPingDevice()는 드로어가
+// 열려있는 동안 ~2.2초마다 다시 호출되는데(위 refreshOpenDrawer 설명 참고),
+// 매번 그대로 API를 또 부르면 낭비이자 서버 부담이라 agentReissueCache와
+// 같은 방식으로 장비 id별 결과를 들고 있다가 TTL이 지났을 때만 다시
+// 요청한다. 새로 받아온 결과는 다음 자연스러운 재호출(최대 ~2.2초 후) 때
+// 반영되므로 수동으로 다시 그릴 필요가 없다.
+const deviceHistoryCache = {};
+const DEVICE_HISTORY_TTL_MS = 15000;
+function ensureDeviceHistoryLoaded(deviceId){
+  const c = deviceHistoryCache[deviceId];
+  if(c && (c.loading || Date.now() - c.loadedAt < DEVICE_HISTORY_TTL_MS)) return;
+  const prevEntries = c ? c.entries : null;
+  deviceHistoryCache[deviceId] = {entries: prevEntries, loading: true, loadedAt: c ? c.loadedAt : 0};
+  apiFetch(`/api/devices/${encodeURIComponent(deviceId)}/history?limit=30`)
+    .then(r => r.ok ? r.json() : null)
+    .then(j => { deviceHistoryCache[deviceId] = {entries: j ? (j.entries||[]) : prevEntries, loading: false, loadedAt: Date.now()}; })
+    .catch(() => { deviceHistoryCache[deviceId] = {entries: prevEntries, loading: false, loadedAt: Date.now()}; });
+}
+const DEVICE_HISTORY_ACTION_LABEL = {
+  REGISTER_DEVICE: '장비 등록', UPDATE_DEVICE: '장비 정보 수정', DELETE_DEVICE: '장비 삭제',
+  SET_VENDOR_PROFILE: '벤더 프로필 변경', SET_MAINTENANCE: '점검 모드 설정',
+  INTERFACE_SHUTDOWN: '인터페이스 비활성화', INTERFACE_SHUTDOWN_FAILED: '인터페이스 비활성화 실패',
+  INTERFACE_NO_SHUTDOWN: '인터페이스 활성화', INTERFACE_NO_SHUTDOWN_FAILED: '인터페이스 활성화 실패',
+  DEVICE_REBOOT: '재부팅', DEVICE_REBOOT_FAILED: '재부팅 실패',
+  AGENT_TOKEN_REISSUE: '에이전트 토큰 재발급', AGENT_TOKEN_REVOKE: '에이전트 토큰 폐기',
+  TEST_SNMP: 'SNMP 연결 테스트',
+};
+function deviceHistoryCardHtml(deviceId){
+  if(CURRENT_ROLE_RANK < 1) return '';
+  ensureDeviceHistoryLoaded(deviceId);
+  const hc = deviceHistoryCache[deviceId];
+  const entries = (hc && hc.entries) || null;
+  const rowsHtml = entries && entries.length ? entries.map(h=>`
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;font-size:11.5px;padding:5px 2px;border-bottom:1px solid var(--border)">
+      <span style="color:var(--text-faint);white-space:nowrap;flex:none">${fmtWhen(h.ts)}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <b style="color:var(--text-dim)">${escapeHtml(DEVICE_HISTORY_ACTION_LABEL[h.action]||h.action)}</b>
+        ${h.details ? `<span style="color:var(--text-faint)"> · ${escapeHtml(h.details)}</span>` : ''}
+      </span>
+      <span class="mono" style="color:var(--text-faint);white-space:nowrap;flex:none">${escapeHtml(h.username||'-')}</span>
+    </div>`).join('') : `<div class="empty-note" style="font-size:11.5px">${entries ? '기록이 없습니다' : '불러오는 중...'}</div>`;
+  return `
+    <div class="card"><div class="card-head"><h3>접속 및 설정 이력</h3><span class="sub">이 장비에 등록/설정 변경/제어 명령이 기록된 내역 (최근 30건)</span></div>
+      <div style="max-height:220px;overflow-y:auto">${rowsHtml}</div>
+    </div>`;
+}
 function drawPingDevice(e, catLabel){
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
   const drawerBodyEl = $('#drawerBody');
@@ -6301,6 +6347,7 @@ function drawPingDevice(e, catLabel){
       ${ifaceCard}
     </div>` : `
     <div style="display:flex;flex-direction:column;gap:10px">${envCard}${responseTimeCard}</div>`}
+    ${deviceHistoryCardHtml(e.id)}
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
         ? 'SNMP로 장치 정보와 응답시간을 실측합니다. 인터페이스·CPU·메모리·배터리 등은 장비가 해당 MIB를 지원할 때만 표시됩니다.'

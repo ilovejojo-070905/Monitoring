@@ -1879,7 +1879,7 @@ def unlock_user(username):
     conn.close()
 
 
-def load_audit_log(limit=200, before_id=None, action=None, username=None):
+def load_audit_log(limit=200, before_id=None, action=None, username=None, target=None):
     """신규 기능(2026-10-17, "감사 로그에... 기록하고 조회 권한을
     제한한다"): write_audit는 처음부터 있었지만 이걸 다시 읽어오는 경로가
     단 하나도 없었음 -- DB 파일을 직접 열거나 logs/security.log를 텍스트로
@@ -1888,7 +1888,12 @@ def load_audit_log(limit=200, before_id=None, action=None, username=None):
     게이트한다 -- 다른 모든 사용자의 행적이 담긴 기록이라 OPERATOR보다도
     더 민감함.
     before_id: 커서 기반 페이지네이션(이 id보다 작은 것만) -- 한번에 다
-    긁어오지 않고 "더 보기"로 과거까지 거슬러 올라갈 수 있게."""
+    긁어오지 않고 "더 보기"로 과거까지 거슬러 올라갈 수 있게.
+    target: 특정 장비(device_id)로 좁혀서 조회 -- 장비 상세창의 "접속 및
+    설정 이력" 카드(server.py api_device_history)가 쓴다. 이 경로는
+    전체 감사 로그(api_audit_log)와 달리 OPERATOR도 볼 수 있게 허용하는데,
+    "다른 모든 사용자의 전체 행적"이 아니라 자신이 이미 관리 권한을 가진
+    장비 하나로 한정되기 때문."""
     limit = max(1, min(limit, 500))
     conn = get_db()
     q = 'SELECT * FROM audit_log WHERE 1=1'
@@ -1902,6 +1907,9 @@ def load_audit_log(limit=200, before_id=None, action=None, username=None):
     if username:
         q += ' AND username = ?'
         params.append(username)
+    if target:
+        q += ' AND target = ?'
+        params.append(target)
     q += ' ORDER BY id DESC LIMIT ?'
     params.append(limit)
     rows = conn.execute(q, params).fetchall()

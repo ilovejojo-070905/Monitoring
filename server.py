@@ -2420,6 +2420,28 @@ def api_set_maintenance(device_id):
     return jsonify({'ok': True})
 
 
+@app.get('/api/devices/<device_id>/history')
+@require_role('OPERATOR')
+def api_device_history(device_id):
+    # 사용자 요청: "등록된 장비에 접속 및 설정한 이력을 볼 수 있게 해달라."
+    # audit_log는 처음부터 REGISTER_DEVICE/UPDATE_DEVICE/SET_VENDOR_PROFILE/
+    # SET_MAINTENANCE/INTERFACE_SHUTDOWN(+NO_SHUTDOWN/벌크/실패)/
+    # DEVICE_REBOOT/AGENT_TOKEN_REISSUE·REVOKE 전부를 target=device_id로
+    # 기록해왔지만, 이걸 device_id로 좁혀 보여주는 라우트가 없어서
+    # ADMIN 전용 전체 감사 로그 화면(/api/audit-log)을 뒤져야만 했다.
+    # 전체 로그와 달리 한 장비로 한정된 조회라 OPERATOR까지 허용 --
+    # 장비 상세창을 열 수 있는 사람(OPERATOR+)은 이미 그 장비를 관리할
+    # 권한이 있으므로, "누가 이 장비를 언제 건드렸는지"를 보는 것이 그보다
+    # 더 민감하지 않다.
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
+    before_id = request.args.get('beforeId', type=int)
+    entries = storage.load_audit_log(limit=limit, before_id=before_id, target=device_id)
+    return jsonify({'entries': entries})
+
+
 @app.get('/api/devices/<device_id>/metrics')
 @require_role('VIEWER')
 def api_device_metrics(device_id):
