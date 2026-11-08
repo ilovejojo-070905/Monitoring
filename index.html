@@ -26,6 +26,13 @@
     --accent-soft:rgba(124,92,255,.13)
 ;
     --accent-gradient:linear-gradient(135deg,#7c5cff 0%,#22d3ee 100%);
+    /* 사용자 요청("전체 위험 주의 정보 미해결 등 이런 클릭하는 박스 전부
+       선택 시 다른 색상으로 해줘 ... 지금 색상이 너무 별로야")으로 칩
+       버튼(.chip-btn.active)만 기존 보라-청록 그라데이션 대신 쓰는
+       단색 블루. 다른 곳(로그인 버튼, 로고 등)의 --accent-gradient는
+       그대로 둔다 -- 칩 버튼에 한정된 요청이었음. */
+    --chip-active:#2f6fed;
+    --chip-active-shadow:rgba(47,111,237,.35);
     --good:#00b087;
     --good-soft:rgba(0,176,135,.13);
     --warn:#e6960f;
@@ -257,7 +264,7 @@
   .gauge-row .g-item > span{font-size:11px;color:var(--text-faint)}
 
   .chip-btn{background:var(--sidebar-bg);border:1px solid transparent;color:#fff;font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;transition:all .15s}
-  .chip-btn.active{background:var(--accent-gradient);color:#fff;border-color:transparent;box-shadow:0 4px 14px rgba(124,92,255,.3)}
+  .chip-btn.active{background:var(--chip-active);color:#fff;border-color:transparent;box-shadow:0 4px 14px var(--chip-active-shadow)}
   .chip-row{display:flex;gap:8px;flex-wrap:wrap}
 
   .search-box{display:flex;align-items:center;gap:8px;background:var(--surface-2);border:1px solid var(--border);border-radius:20px;padding:6px 12px;min-width:220px;transition:border-color .15s,box-shadow .15s}
