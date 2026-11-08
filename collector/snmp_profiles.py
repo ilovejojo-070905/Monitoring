@@ -632,24 +632,37 @@ def resolve_profile(vendor_profile, sys_descr):
     2.1.2.1-octeon3-u(r68981-b28)") -- 그래서 'axgate' 키워드로는 못 잡고
     이 두 조각을 같이 봐야 한다. 'aos-' 하나만 보면 다른 벤더의 sysDescr과
     우연히 겹칠 위험이 있어서 'octeon'까지 같이 확인."""
+    return PROFILES[resolve_profile_name(vendor_profile, sys_descr)]
+
+
+def resolve_profile_name(vendor_profile, sys_descr):
+    """resolve_profile()과 같은 판단이지만 프로필 dict 대신 벤더 키 이름
+    문자열을 돌려준다 -- device_control.PROFILES가 같은 키 이름을 쓰는
+    CLI 제어 프로필이라(예: 'hp-comware', 'hp'), devices.vendor_profile
+    컬럼이 'generic'으로 남아 있어도 sysDescr로 자동 인식된 실제 벤더를
+    그쪽에서도 그대로 재사용할 수 있게 분리(2026-11-08, collector/
+    ping_collector.py의 check_remote_ports가 Comware/ArubaOS-Switch를
+    구분하는 데 씀 -- "HPE Arbua는 접속 하지도 않았는데 왜 로그인 이력이
+    남아" 원인 수정 중 발견: 두 장비 모두 devices.vendor_profile이 실제론
+    'generic'으로 저장돼 있어서, 그 컬럼 값만 보고는 구분이 안 됐었음)."""
     if vendor_profile and vendor_profile != 'generic':
-        return PROFILES.get(vendor_profile, PROFILES['generic'])
+        return vendor_profile if vendor_profile in PROFILES else 'generic'
     if sys_descr:
         descr = sys_descr.lower()
         if 'nx-os' in descr or 'nexus' in descr:
-            return PROFILES['cisco-nxos']
+            return 'cisco-nxos'
         if 'cisco' in descr:
-            return PROFILES['cisco']
+            return 'cisco'
         if 'aos-' in descr and 'octeon' in descr:
-            return PROFILES['axgate']
+            return 'axgate'
         if 'comware' in descr:
-            return PROFILES['hp-comware']
+            return 'hp-comware'
         if 'aruba' in descr and 'procurve' not in descr:
-            return PROFILES['aruba-cx']
+            return 'aruba-cx'
         if 'procurve' in descr or 'aruba' in descr or 'hewlett-packard' in descr or 'hpe' in descr:
-            return PROFILES['hp']
+            return 'hp'
         if 'dell' in descr or 'powerconnect' in descr:
-            return PROFILES['dell']
+            return 'dell'
         if 'juniper' in descr or 'junos' in descr:
-            return PROFILES['juniper']
-    return PROFILES['generic']
+            return 'juniper'
+    return 'generic'

@@ -17,7 +17,7 @@ from apscheduler.jobstores.base import JobLookupError
 
 import storage
 from collector import state, health, metrics
-from collector import local_collector, ping_collector, snmp_collector, agent_collector
+from collector import local_collector, ping_collector, snmp_collector, agent_collector, snmp_profiles
 from collector import flow_listener
 from collector import syslog_listener
 from collector import maintenance
@@ -95,7 +95,15 @@ def _run_job(device_id):
         # 확인한다. 자체 쓰로틀(REMOTE_PORT_RECHECK_SEC)이 있어 매 틱마다
         # 실제로 포트를 열어보진 않는다.
         if device_row['category'] == 'net':
-            ping_collector.check_remote_ports(entity, device_row['ip'], device_row.get('vendor_profile'))
+            # devices.vendor_profile 컬럼은 수동으로 지정 안 하면 'generic'
+            # 그대로 남아 있을 수 있어서(실제 운영 DB에서 HPE 5500/Arbua
+            # 둘 다 'generic'으로 확인됨), 그 컬럼만 보고는 Comware/
+            # ArubaOS-Switch를 구분 못 해 check_remote_ports의 고정-Telnet
+            # 처리가 전혀 안 먹혔다 -- snmp_profiles의 sysDescr 기반 자동
+            # 인식(resolve_profile_name)까지 같이 써야 실제 벤더가 잡힌다.
+            resolved_profile = snmp_profiles.resolve_profile_name(
+                device_row.get('vendor_profile'), entity.get('sysDescr'))
+            ping_collector.check_remote_ports(entity, device_row['ip'], resolved_profile)
         health.record_tick_success('collector')
         # Alert design section [4]/[5]: a device that was mid-outage due to a
         # collector-internal error (not a clean reachability failure) just

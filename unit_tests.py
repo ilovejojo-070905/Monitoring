@@ -1989,6 +1989,30 @@ def test_check_remote_ports_does_not_live_probe_telnet_for_comware_and_aruba():
         pc.tcp_check = orig_tcp_check
 
 
+def test_scheduler_resolves_vendor_via_sysdescr_when_db_column_is_generic():
+    # 버그 수정의 핵심 원인(2026-11-08): 위 T1/T2는 check_remote_ports에
+    # vendor_profile='hp-comware'/'hp'를 "이미 정확히 넘겨준다"는 가정
+    # 아래의 테스트였는데, 실제 운영 DB를 조회해보니 HPE 5500/Arbua 둘 다
+    # devices.vendor_profile 컬럼이 'generic' 그대로였다(사용자가 수동으로
+    # 지정한 적이 없었음) -- 그래서 1차 수정(T1/T2)을 배포했는데도 실제
+    # 운영에서는 여전히 라이브 포트 체크가 돌고 있었다. 진짜 수정은
+    # collector/scheduler.py가 device_row['vendor_profile']을 그대로 넘기지
+    # 말고, snmp_profiles.resolve_profile_name()으로 sysDescr 기반 자동
+    # 인식까지 거친 뒤 넘기는 것 -- 그게 실제로 'generic'을 'hp-comware'로
+    # 바꿔주는지 여기서 직접 확인한다.
+    from collector import snmp_profiles as sp
+    resolved = sp.resolve_profile_name(
+        'generic', 'HP Comware Platform Software ... Hewlett-Packard Development Company, L.P.')
+    check('T4 a device whose vendor_profile column is still "generic" is correctly auto-detected '
+          'as hp-comware from its sysDescr (the actual production root cause)',
+          resolved == 'hp-comware', resolved)
+
+    resolved2 = sp.resolve_profile_name(
+        'generic', 'HP J9776A 2530-24G Switch, revision YA.16.06.0006 (Formerly ProCurve)')
+    check('T5 a device whose vendor_profile column is still "generic" is correctly auto-detected '
+          'as hp (ArubaOS-Switch classic) from its sysDescr', resolved2 == 'hp', resolved2)
+
+
 def test_check_remote_ports_still_live_probes_other_vendors():
     # 위 고정값 처리가 cisco/juniper/generic 등 다른 벤더에는 영향이
     # 없는지 확인(이 벤더들은 라이브 포트 체크로 실제 상태를 반영해야
@@ -2042,6 +2066,7 @@ def main():
         test_health_subsystems_do_not_cross_contaminate, test_health_record_tick_error_backward_compatible_single_arg,
         test_health_disk_check_reports_real_free_space, test_escalation_and_alert_retry_ticks_report_to_alerts_subsystem,
         test_check_remote_ports_does_not_live_probe_telnet_for_comware_and_aruba,
+        test_scheduler_resolves_vendor_via_sysdescr_when_db_column_is_generic,
         test_check_remote_ports_still_live_probes_other_vendors,
     ):
         try:
