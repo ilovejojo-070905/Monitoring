@@ -183,40 +183,75 @@ def build_pdf(report_type, start_ms, end_ms, device_id=None, group=None):
     else:
         # 사용자 보고("네트워크 상태보고서를 pdf로 받았는데 엉망이야" --
         # IP(예: "192.168.30.250")가 "192.16/8.30.2/50"처럼 글자 단위로
-        # 줄바꿈돼 깨져 보임): 기존엔 '내용' 컬럼이 없는 보고서(네트워크/
-        # 자원 사용률)에서도 무조건 0번째 컬럼(장비명)에 폭의 절반 가까이를
-        # 몰아주고 나머지 컬럼은 전부 똑같이 아주 좁게 나눴다. 네트워크
-        # 보고서는 컬럼이 7개라 그 좁은 몫이 182mm/7*0.5 ~= 15mm 밖에
-        # 안 돼서 "192.168.30.250"나 "13시간 58분" 같은(공백 없이 길거나
-        # 한글이라 실제로 넓은) 값이 들어갈 공간이 없어 글자 단위로
-        # 쪼개졌다. '내용' 같은 장문 컬럼이 없을 땐 억지로 한 컬럼만
-        # 넓히지 않고, 각 컬럼의 실제 내용 길이(한글은 폭이 넓어 2배로
-        # 계산)에 비례해서 폭을 나눠준다 -- IP/MTTR/MTBF처럼 실제로 긴
-        # 값이 있는 컬럼은 그만큼 넓어지고, 퍼센트/횟수처럼 짧은 값만
-        # 있는 컬럼은 좁아도 된다.
+        # 줄바꿈돼 깨져 보임 / "상태 보고서 전부 pdf 상태 확인해서
+        # 수정해줘" -- 장애 이력 보고서도 시각("2026-11-08 21:51")과
+        # 장비/출처("DESKTOP-938NHR6")가 똑같이 글자 단위로 깨짐):
+        # 기존엔 '내용' 컬럼이 있는 보고서(장애 이력)는 그 컬럼에 폭의
+        # 절반을 몰아주고 나머지 전부를 똑같이(컬럼 수로 균등) 나눴고,
+        # '내용' 컬럼이 없는 보고서(네트워크/자원 사용률)는 0번째
+        # 컬럼(장비명)에 몰아주고 나머지를 균등 분배했다. 두 경우 다
+        # "나머지"가 컬럼이 많아지면(7개) 턱없이 좁아져서(15mm 안팎)
+        # 실제로 긴 값(IP, 날짜+시각, 긴 장비명, 한글이라 넓은 MTTR/MTBF)
+        # 이 들어갈 공간이 없어 글자 단위로 깨졌다.
+        #
+        # 모든 보고서에 공통으로 "각 컬럼의 실제 내용 길이(헤더/모든 행의
+        # 최댓값, 한글 등 2배 폭 문자는 가중)에 비례해 폭 배분" 방식을
+        # 적용하되, 아무리 짧은 컬럼도 MIN_MM 밑으로는 안 내려가게 바닥을
+        # 깔고(그래야 '분류'처럼 원래 아주 짧은 컬럼도 안전 마진이 생김),
+        # '내용'처럼 유독 긴 컬럼 하나가 MAX_FRACTION을 넘겨 나머지를
+        # 다 잡아먹지 않게 상한도 둔다. 상한을 넘겨 깎인 만큼은 아직 여유가
+        # 있는 컬럼들에 비례 배분한다.
         usable_mm = 210 - 28
         n = len(columns)
+        MIN_MM = 15.0
+        MAX_FRACTION = 0.42
 
         def _display_len(s):
             # unicodedata.east_asian_width: 'W'(Wide)/'F'(Fullwidth) 글자
             # (한글 음절 포함)는 라틴 문자/숫자 폭의 약 2배로 계산.
             return sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in str(s))
 
-        if '내용' in columns:
-            wide_idx = columns.index('내용')
-            widths = [usable_mm / n] * n
-            extra = widths[wide_idx] * (n - 1) * 0.5 / n
-            for i in range(n):
-                widths[i] = widths[i] - extra if i != wide_idx else widths[i] + extra * (n - 1)
-        else:
-            col_weights = []
-            for ci in range(n):
-                longest = _display_len(columns[ci])
-                for row in rows:
-                    longest = max(longest, _display_len(row[ci]))
-                col_weights.append(max(longest, 3))  # floor so no column collapses to ~0
-            total_weight = sum(col_weights)
-            widths = [usable_mm * w / total_weight for w in col_weights]
+        col_weights = []
+        for ci in range(n):
+            longest = _display_len(columns[ci])
+            for row in rows:
+                longest = max(longest, _display_len(row[ci]))
+            col_weights.append(max(longest, 3))  # floor so no column collapses to ~0
+        total_weight = sum(col_weights)
+        widths = [usable_mm * w / total_weight for w in col_weights]
+
+        # 1차: MIN_MM 바닥 적용, 부족분은 이미 MIN_MM 이상인 컬럼들에서
+        # 비례적으로 빌려온다.
+        deficit = 0.0
+        flexible_idx = []
+        for i in range(n):
+            if widths[i] < MIN_MM:
+                deficit += MIN_MM - widths[i]
+                widths[i] = MIN_MM
+            else:
+                flexible_idx.append(i)
+        if deficit > 0 and flexible_idx:
+            flex_total = sum(widths[i] for i in flexible_idx)
+            if flex_total > 0:
+                for i in flexible_idx:
+                    widths[i] -= deficit * (widths[i] / flex_total)
+
+        # 2차: MAX_FRACTION 상한 적용, 초과분은 상한에 안 걸린 컬럼들에
+        # 비례적으로 돌려준다.
+        max_mm = usable_mm * MAX_FRACTION
+        excess = 0.0
+        capped = set()
+        for i in range(n):
+            if widths[i] > max_mm:
+                excess += widths[i] - max_mm
+                widths[i] = max_mm
+                capped.add(i)
+        if excess > 0:
+            remaining_idx = [i for i in range(n) if i not in capped]
+            remaining_total = sum(widths[i] for i in remaining_idx)
+            if remaining_total > 0:
+                for i in remaining_idx:
+                    widths[i] += excess * (widths[i] / remaining_total)
         # XML 마크업 주입 대응(validation.escape_pdf_text 주석 참고) -- reportlab의
         # Paragraph는 문자열을 그대로 마크업으로 해석하고 자동 이스케이프하지 않는다.
         table_data = [columns] + [[Paragraph(validation.escape_pdf_text(str(c)), meta_style) for c in row] for row in rows]
