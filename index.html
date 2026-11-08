@@ -435,8 +435,11 @@
   .sev-strip{width:3px;border-radius:3px;display:inline-block;height:16px;vertical-align:middle;margin-right:8px;box-shadow:0 0 6px currentColor}
   .btn{background:var(--surface-2);border:1px solid var(--border);color:var(--text);font-size:11.5px;font-weight:600;padding:6px 12px;border-radius:var(--radius-sm);transition:all .15s}
   .btn:hover{background:var(--surface-hover);border-color:var(--border-strong)}
-  .btn.primary{background:var(--accent-gradient);border-color:transparent;color:#fff;box-shadow:0 4px 18px rgba(124,92,255,.35)}
-  .btn.primary:hover{filter:brightness(1.12);box-shadow:0 6px 26px rgba(124,92,255,.5);transform:translateY(-1px)}
+  /* 사용자 요청("장비등록, 수정, 저장 버튼도 색상 변경 해줘")으로 칩
+     버튼(.chip-btn.active)에 이어 주 작업 버튼(장비 등록/수정/저장 등
+     거의 모든 .btn.primary)도 같은 단색 블루(--chip-active)로 통일. */
+  .btn.primary{background:var(--chip-active);border-color:transparent;color:#fff;box-shadow:0 4px 18px var(--chip-active-shadow)}
+  .btn.primary:hover{filter:brightness(1.12);box-shadow:0 6px 26px var(--chip-active-shadow);transform:translateY(-1px)}
   .btn:disabled{opacity:.4;cursor:default}
   .remote-list-btn{background:#1e3a66;border-color:#1e3a66;color:#fff}
   .remote-list-btn:hover{background:#2a4d85;border-color:#2a4d85}
