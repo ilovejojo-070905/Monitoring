@@ -2046,17 +2046,40 @@ def test_check_remote_ports_does_not_live_probe_telnet_for_comware_and_aruba():
 
     pc.tcp_check = guard
     try:
-        entity = {}
+        entity = {'reachable': True}
         pc.check_remote_ports(entity, '127.0.0.1', vendor_profile='hp-comware')
-        check('T1 Comware(hp-comware profile): telnetOpen is a static True, port 23 is never live-probed',
+        check('T1 Comware(hp-comware profile), device reachable: telnetOpen is a static True, '
+              'port 23 is never live-probed',
               entity.get('telnetOpen') is True, entity)
 
-        entity2 = {}
+        entity2 = {'reachable': True}
         pc.check_remote_ports(entity2, '127.0.0.1', vendor_profile='hp')
-        check('T2 ArubaOS-Switch(hp profile): telnetOpen is a static True, port 23 is never live-probed',
+        check('T2 ArubaOS-Switch(hp profile), device reachable: telnetOpen is a static True, '
+              'port 23 is never live-probed',
               entity2.get('telnetOpen') is True, entity2)
     finally:
         pc.tcp_check = orig_tcp_check
+
+
+def test_check_remote_ports_live_probes_telnet_when_hp_device_is_down():
+    # 버그 수정(2026-11-09, "스위치 다 응답없음인데 HPE만 원격 telnet이
+    # 보여"): 위 T1/T2의 고정값 처리가 entity['reachable']과 상관없이 항상
+    # True였어서, HPE 장비가 실제로는 응답없음(다운)인데도 Telnet 버튼이
+    # 계속 떠 있었다. entity['reachable']=False(sample_ping/sample_snmp가
+    # 매 틱 갱신하는 실제 생존 여부)일 때는 고정값을 쓰지 말고 다른
+    # 벤더처럼 실제 포트를 열어봐야 한다(닫힌 포트라 False가 나와야 함).
+    from collector import ping_collector as pc
+    entity = {'reachable': False}
+    pc.check_remote_ports(entity, '127.0.0.1', vendor_profile='hp-comware')
+    check('T1b Comware(hp-comware profile), device NOT reachable: telnetOpen comes from a real '
+          'probe (False, not the stale static True) so the button correctly disappears',
+          entity.get('telnetOpen') is False, entity)
+
+    entity2 = {'reachable': False}
+    pc.check_remote_ports(entity2, '127.0.0.1', vendor_profile='hp')
+    check('T2b ArubaOS-Switch(hp profile), device NOT reachable: telnetOpen comes from a real '
+          'probe (False, not the stale static True) so the button correctly disappears',
+          entity2.get('telnetOpen') is False, entity2)
 
 
 def test_scheduler_resolves_vendor_via_sysdescr_when_db_column_is_generic():
@@ -2137,6 +2160,7 @@ def main():
         test_health_subsystems_do_not_cross_contaminate, test_health_record_tick_error_backward_compatible_single_arg,
         test_health_disk_check_reports_real_free_space, test_escalation_and_alert_retry_ticks_report_to_alerts_subsystem,
         test_check_remote_ports_does_not_live_probe_telnet_for_comware_and_aruba,
+        test_check_remote_ports_live_probes_telnet_when_hp_device_is_down,
         test_scheduler_resolves_vendor_via_sysdescr_when_db_column_is_generic,
         test_check_remote_ports_still_live_probes_other_vendors,
     ):

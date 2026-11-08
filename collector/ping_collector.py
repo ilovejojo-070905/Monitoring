@@ -151,7 +151,13 @@ def check_remote_ports(entity, ip, vendor_profile=None):
     if now - last < REMOTE_PORT_RECHECK_SEC:
         return
     ssh_open, _ = tcp_check(ip, 22, 0.5)
-    if vendor_profile in _STATIC_TELNET_OPEN_VENDOR_PROFILES:
+    # 버그 수정(2026-11-09, "스위치 다 응답없음인데 HPE만 원격 telnet이
+    # 보여"): 위 고정값 처리가 장비의 실제 생존 여부(entity['reachable'],
+    # sample_ping/sample_snmp가 매 틱 갱신)와 상관없이 무조건 True였다 --
+    # HPE 장비가 응답없음(다운)이어도 Telnet 버튼이 계속 떠 있었음. 장비가
+    # 다운일 때는 고정값을 쓰지 말고 다른 벤더처럼 실제 포트를 열어봐서
+    # (당연히 실패해 False) 버튼이 사라지게 한다.
+    if vendor_profile in _STATIC_TELNET_OPEN_VENDOR_PROFILES and entity.get('reachable'):
         telnet_open = True
     else:
         telnet_open, _ = tcp_check(ip, 23, 0.5)
