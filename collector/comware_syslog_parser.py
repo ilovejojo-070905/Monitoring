@@ -75,7 +75,7 @@ def parse(data, exporter_ip, recv_ts_ms):
     if m:
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'LOGIN_SUCCESS',
-            'username': m.group('user').strip(),
+            'username': m.group('user').strip(), 'source_ip': m.group('ip'),
             'details': f"{m.group('ip')}에서 접속",
             'raw_message': text.strip(),
         }]
@@ -84,7 +84,7 @@ def parse(data, exporter_ip, recv_ts_ms):
     if m:
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'LOGOUT',
-            'username': m.group('user').strip(),
+            'username': m.group('user').strip(), 'source_ip': m.group('ip'),
             'details': f"{m.group('ip')}에서 로그아웃",
             'raw_message': text.strip(),
         }]
@@ -102,7 +102,7 @@ def parse(data, exporter_ip, recv_ts_ms):
     if m:
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'CONFIG_CHANGED',
-            'username': m.group('user').strip(),
+            'username': m.group('user').strip(), 'source_ip': m.group('src').strip(),
             'details': f"{m.group('src').strip()}에서 설정 변경 ({m.group('cmd').strip()})",
             'raw_message': text.strip(),
         }]

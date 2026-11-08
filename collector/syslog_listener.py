@@ -90,7 +90,8 @@ def _listen_loop(sock):
                 storage.record_device_access(
                     device_id=device_id, device_ip=ev['exporter_ip'], ts=ev['ts'],
                     event_type=ev['event_type'], username=ev.get('username'),
-                    details=ev.get('details'), raw_message=ev['raw_message'])
+                    details=ev.get('details'), raw_message=ev['raw_message'],
+                    source_ip=ev.get('source_ip'))
             except Exception:
                 app_logger.exception('syslog_listener: failed to record event from %s', addr)
 

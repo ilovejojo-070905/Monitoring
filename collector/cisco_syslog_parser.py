@@ -78,7 +78,7 @@ def parse(data, exporter_ip, recv_ts_ms):
     if m:
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'LOGIN_SUCCESS',
-            'username': m.group('user'),
+            'username': m.group('user'), 'source_ip': m.group('src'),
             'details': f"{m.group('src')}에서 접속 (포트 {m.group('port')})",
             'raw_message': text.strip(),
         }]
@@ -87,7 +87,7 @@ def parse(data, exporter_ip, recv_ts_ms):
     if m:
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'LOGIN_FAILED',
-            'username': m.group('user'),
+            'username': m.group('user'), 'source_ip': m.group('src'),
             'details': f"{m.group('src')}에서 접속 실패 - {m.group('reason').strip()} (포트 {m.group('port')})",
             'raw_message': text.strip(),
         }]
@@ -97,7 +97,7 @@ def parse(data, exporter_ip, recv_ts_ms):
         src = m.group('src').strip() or '-'
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'LOGOUT',
-            'username': m.group('user'),
+            'username': m.group('user'), 'source_ip': src if src != '-' else None,
             'details': f"{src}에서 접속 종료 - {m.group('reason').strip()} ({m.group('line')})",
             'raw_message': text.strip(),
         }]
@@ -114,7 +114,7 @@ def parse(data, exporter_ip, recv_ts_ms):
             username, line = None, m.group('who')
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'CONFIG_CHANGED',
-            'username': username,
+            'username': username, 'source_ip': src if src != '-' else None,
             'details': f"{src}에서 설정 변경 ({line})",
             'raw_message': text.strip(),
         }]

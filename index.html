@@ -2899,7 +2899,7 @@ function renderIncidentsSkeleton(){
         <div class="search-box" id="inc-search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="inc-search" placeholder="장비명 / 영역 / 내용 검색"></div>
         <div class="search-box" id="dev-history-search-box" style="display:none;min-width:260px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input id="dev-history-search" placeholder="장비명 / 사용자 / 상세 검색"></div>
+          <input id="dev-history-search" placeholder="장비명 / 사용자 / IP / 상세 검색"></div>
       </div>
       <div class="table-wrap" id="inc-events-wrap"><table class="data reg-device-table">
         <thead><tr><th>심각도</th><th>시각</th><th>영역</th><th>대상</th><th>내용</th><th>상태</th><th></th></tr></thead>
@@ -2974,12 +2974,13 @@ async function renderDeviceHistory(append){
       <td style="font-size:11px;white-space:nowrap">${fmtWhen(h.ts)}</td>
       <td class="mono" style="font-size:11px">${escapeHtml(DEVICE_HISTORY_SRC_LABEL[h.src]||h.src)}</td>
       <td class="mono">${escapeHtml(h.username||'-')}</td>
+      <td class="mono" style="font-size:11px">${escapeHtml(h.source_ip||'-')}</td>
       <td class="name">${escapeHtml(h.device_name || h.device_id || '-')}</td>
       <td class="mono"${h.action==='LOGIN_FAILED'?' style="color:var(--crit)"':''}>${escapeHtml(DEVICE_HISTORY_ACTION_LABEL[h.action]||h.action)}</td>
       <td style="font-size:11px">${escapeHtml(h.details||'-')}</td>
     </tr>`).join('');
   const tableHtml = `<div class="table-wrap"><table class="data reg-device-table">
-    <thead><tr><th>시각</th><th>경로</th><th>사용자</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
+    <thead><tr><th>시각</th><th>경로</th><th>사용자</th><th>IP</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
     <tbody>${rowsHtml}</tbody></table></div>`;
   if(append){ body.insertAdjacentHTML('beforeend', tableHtml); } else { body.innerHTML = tableHtml; }
   if(entries.length) deviceHistoryOldestTs = entries[entries.length-1].ts;

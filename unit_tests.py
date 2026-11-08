@@ -1211,6 +1211,8 @@ def test_cisco_syslog_login_success():
     check('N1 LOGIN_SUCCESS is parsed with username/source/port',
           len(events) == 1 and events[0]['event_type'] == 'LOGIN_SUCCESS' and events[0]['username'] == 'admin'
           and '192.168.1.50' in events[0]['details'] and '22' in events[0]['details'], events)
+    check('N1b LOGIN_SUCCESS also exposes source_ip as its own field (not just embedded in details)',
+          events[0]['source_ip'] == '192.168.1.50', events)
 
 
 def test_cisco_syslog_login_failed():
@@ -1256,11 +1258,13 @@ def test_device_access_log_merges_with_audit_log_history():
     conn.commit()
     conn.close()
     try:
-        storage.write_audit('unittest_tester', 'REGISTER_DEVICE', target=dev, details='unittest')
+        storage.write_audit('unittest_tester', 'REGISTER_DEVICE', target=dev, details='unittest',
+                             source_ip='203.0.113.36')
         storage.record_device_access(device_id=dev, device_ip='203.0.113.99', ts=now_ms + 1000,
                                       event_type='LOGIN_SUCCESS', username='admin',
                                       details='203.0.113.50에서 접속 (포트 22)',
-                                      raw_message='%SEC_LOGIN-5-LOGIN_SUCCESS: ...')
+                                      raw_message='%SEC_LOGIN-5-LOGIN_SUCCESS: ...',
+                                      source_ip='203.0.113.50')
         entries = storage.load_device_history(limit=50, actions=('REGISTER_DEVICE',), q='UnitTestSyslogMergeDev')
         srcs = {e['src'] for e in entries}
         check('N5 UNION returns both audit and syslog rows for the same device', srcs == {'audit', 'syslog'}, entries)
@@ -1271,6 +1275,11 @@ def test_device_access_log_merges_with_audit_log_history():
               syslog_row['device_name'] == 'UnitTestSyslogMergeDev', syslog_row)
         check('N8 syslog row carries its own username (device-local account, not an InfraSight account)',
               syslog_row['username'] == 'admin', syslog_row)
+        check('N8b syslog row exposes source_ip as its own column (사용자 요청: "메뉴에 IP라고 따로 만들어서 표시")',
+              syslog_row['source_ip'] == '203.0.113.50', syslog_row)
+        audit_row = next(e for e in entries if e['src'] == 'audit')
+        check('N8c audit row also exposes source_ip (InfraSight 쪽 접속 IP, audit_log.source_ip 그대로 노출)',
+              audit_row['source_ip'] == '203.0.113.36', audit_row)
     finally:
         conn = storage.get_db()
         conn.execute("DELETE FROM devices WHERE id=?", (dev,))
@@ -1316,6 +1325,8 @@ def test_junos_syslog_login_success():
     check('N10 Junos SSH LOGIN_SUCCESS is parsed with username/source/port',
           len(events) == 1 and events[0]['event_type'] == 'LOGIN_SUCCESS' and events[0]['username'] == 'root'
           and '192.168.30.36' in events[0]['details'] and '54321' in events[0]['details'], events)
+    check('N10b Junos LOGIN_SUCCESS also exposes source_ip as its own field',
+          events[0]['source_ip'] == '192.168.30.36', events)
 
 
 def test_junos_syslog_login_failed():
@@ -1392,6 +1403,8 @@ def test_cisco_syslog_config_logged_command():
     check('N22 Cisco CONFIG_CHANGED via archive-log-config captures the actual typed command',
           len(events) == 1 and events[0]['event_type'] == 'CONFIG_CHANGED' and events[0]['username'] == 'admin'
           and events[0]['details'] == 'interface range GigabitEthernet1/0/1 - 10', events)
+    check('N22b this trap carries no source IP at all -- source_ip must not be fabricated',
+          events[0].get('source_ip') is None, events)
 
 
 def test_comware_syslog_login_failed():
@@ -1404,6 +1417,8 @@ def test_comware_syslog_login_failed():
     check('N16 Comware LOGIN_FAILED is parsed (no username/source in this trap -- confirmed absent in the real message)',
           len(events) == 1 and events[0]['event_type'] == 'LOGIN_FAILED' and events[0]['username'] is None
           and 'VTY' in events[0]['details'] and '3' in events[0]['details'], events)
+    check('N16b this trap carries no source IP at all -- source_ip must not be fabricated',
+          events[0].get('source_ip') is None, events)
 
 
 def test_comware_syslog_logout():
@@ -1422,6 +1437,8 @@ def test_comware_syslog_config_changed():
     check('N18 Comware CONFIG_CHANGED captures user/source IP/command from the real trap format',
           len(events) == 1 and events[0]['event_type'] == 'CONFIG_CHANGED' and events[0]['username'] == 'admin'
           and '192.168.30.36' in events[0]['details'] and 'info-center loghost' in events[0]['details'], events)
+    check('N18b Comware CONFIG_CHANGED also exposes source_ip as its own field',
+          events[0]['source_ip'] == '192.168.30.36', events)
 
 
 def test_comware_syslog_login_success():
@@ -1436,6 +1453,8 @@ def test_comware_syslog_login_success():
     check('N20 Comware LOGIN_SUCCESS captures username and source IP from the real trap format',
           len(events) == 1 and events[0]['event_type'] == 'LOGIN_SUCCESS' and events[0]['username'] == 'admin'
           and events[0]['details'] == '192.168.30.36에서 접속', events)
+    check('N20c Comware LOGIN_SUCCESS also exposes source_ip as its own field',
+          events[0]['source_ip'] == '192.168.30.36', events)
     # 같은 이벤트의 짝인 /4/LOGIN(사용자명만, IP 없음) 쪽은 중복 기록을
     # 막기 위해 의도적으로 매치시키지 않는다.
     line2 = ('<188>Apr 28 12:35:54 2000 Main_Switch_1 %%10SHELL/4/LOGIN(t):   '
@@ -1457,6 +1476,8 @@ def test_comware_syslog_logout_with_username():
     check('N21 Comware LOGOUT with username/source IP (SHELL_LOGOUT variant) is parsed',
           len(events) == 1 and events[0]['event_type'] == 'LOGOUT' and events[0]['username'] == 'admin'
           and events[0]['details'] == '192.168.30.36에서 로그아웃', events)
+    check('N21b Comware LOGOUT(rich) also exposes source_ip as its own field',
+          events[0]['source_ip'] == '192.168.30.36', events)
 
 
 def test_arubaswitch_syslog_login_success():
@@ -1468,6 +1489,8 @@ def test_arubaswitch_syslog_login_success():
     check('N19 ArubaOS-Switch LOGIN_SUCCESS is parsed (no username -- shared manager password, confirmed absent in the real message)',
           len(events) == 1 and events[0]['event_type'] == 'LOGIN_SUCCESS' and events[0]['username'] is None
           and 'TELNET' in events[0]['details'] and 'MANAGER' in events[0]['details'], events)
+    check('N19b ArubaOS-Switch LOGIN_SUCCESS also exposes source_ip as its own field (even though username is None)',
+          events[0]['source_ip'] == '192.168.30.36', events)
 
 
 # ======================================================================

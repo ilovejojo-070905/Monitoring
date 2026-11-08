@@ -38,7 +38,7 @@ def parse(data, exporter_ip, recv_ts_ms):
     if m:
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'LOGIN_SUCCESS',
-            'username': m.group('user'),
+            'username': m.group('user'), 'source_ip': m.group('src'),
             'details': f"{m.group('src')}에서 접속 (SSH {m.group('method')}, 포트 {m.group('port')})",
             'raw_message': text.strip(),
         }]
@@ -47,7 +47,7 @@ def parse(data, exporter_ip, recv_ts_ms):
     if m:
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'LOGIN_FAILED',
-            'username': m.group('user'),
+            'username': m.group('user'), 'source_ip': m.group('src'),
             'details': f"{m.group('src')}에서 접속 실패 (SSH {m.group('method')}, 포트 {m.group('port')})",
             'raw_message': text.strip(),
         }]

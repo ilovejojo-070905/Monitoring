@@ -39,7 +39,7 @@ def parse(data, exporter_ip, recv_ts_ms):
     if m:
         return [{
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'LOGIN_SUCCESS',
-            'username': None,
+            'username': None, 'source_ip': m.group('src'),
             'details': f"{m.group('src')}에서 접속 ({m.group('proto')}, {m.group('mode')} 모드)",
             'raw_message': text.strip(),
         }]

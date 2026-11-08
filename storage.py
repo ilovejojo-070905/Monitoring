@@ -266,7 +266,8 @@ def init_db():
         event_type TEXT NOT NULL,
         username TEXT,
         details TEXT,
-        raw_message TEXT NOT NULL
+        raw_message TEXT NOT NULL,
+        source_ip TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_device_access_log ON device_access_log(device_id, ts)')
     conn.execute('''CREATE TABLE IF NOT EXISTS credentials(
@@ -755,6 +756,14 @@ def migrate_db():
             "INSERT INTO device_links(from_device_id,to_device_id,link_type,local_port,remote_port,discovered_at) "
             "SELECT from_device_id,to_device_id,link_type,'',remote_port,discovered_at FROM device_links_old")
         conn.execute('DROP TABLE device_links_old')
+    # 사용자 요청(2026-11-08, "접속 이력에 상세 메뉴에 IP가 표시는데는,
+    # 메뉴에 IP라고 따로 만들어서 표시 해줘"): 지금까지는 syslog로 받은
+    # 접속자 IP가 details 텍스트 안에만 녹아 있어서 별도 컬럼으로 뽑을 수
+    # 없었다 -- 위 CREATE TABLE은 신규 설치에만 적용되므로 이미 돌고 있는
+    # 운영 DB에는 ALTER TABLE로 추가.
+    existing_access_log = {r['name'] for r in conn.execute('PRAGMA table_info(device_access_log)').fetchall()}
+    if 'source_ip' not in existing_access_log:
+        conn.execute('ALTER TABLE device_access_log ADD COLUMN source_ip TEXT')
     conn.commit()
     conn.close()
 
@@ -1964,13 +1973,13 @@ def load_device_history(limit=50, before_ts=None, actions=None, q=None):
     cte = f'''
         SELECT a.id AS src_id, 'audit' AS src, a.ts AS ts, a.action AS action,
                a.target AS device_id, d.name AS device_name, a.username AS username,
-               a.details AS details
+               a.details AS details, a.source_ip AS source_ip
         FROM audit_log a LEFT JOIN devices d ON d.id = a.target
         {f'WHERE a.action IN ({actions_ph})' if actions_ph else ''}
         UNION ALL
         SELECT dal.id AS src_id, 'syslog' AS src, dal.ts AS ts, dal.event_type AS action,
                dal.device_id AS device_id, COALESCE(d2.name, dal.device_ip) AS device_name,
-               dal.username AS username, dal.details AS details
+               dal.username AS username, dal.details AS details, dal.source_ip AS source_ip
         FROM device_access_log dal LEFT JOIN devices d2 ON d2.id = dal.device_id
     '''
     params = list(actions) if actions else []
@@ -1980,8 +1989,9 @@ def load_device_history(limit=50, before_ts=None, actions=None, q=None):
         params.append(before_ts)
     if q:
         like = f'%{q}%'
-        query += ' AND (device_name LIKE ? OR username LIKE ? OR action LIKE ? OR details LIKE ? OR device_id LIKE ?)'
-        params.extend([like, like, like, like, like])
+        query += (' AND (device_name LIKE ? OR username LIKE ? OR action LIKE ? OR details LIKE ? '
+                   'OR device_id LIKE ? OR source_ip LIKE ?)')
+        params.extend([like, like, like, like, like, like])
     query += ' ORDER BY ts DESC, src_id DESC LIMIT ?'
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
@@ -1989,15 +1999,18 @@ def load_device_history(limit=50, before_ts=None, actions=None, q=None):
     return [dict(r) for r in rows]
 
 
-def record_device_access(device_id, device_ip, ts, event_type, username, details, raw_message):
+def record_device_access(device_id, device_ip, ts, event_type, username, details, raw_message, source_ip=None):
     """collector/syslog_listener.py가 장비의 syslog(%SEC_LOGIN-*)를 파싱한
     뒤 호출. device_id는 device_ip로 devices 테이블을 찾아 매칭되면 호출
-    쪽에서 채워 넘기고, 매칭 안 되면 None(그래도 device_ip는 항상 남음)."""
+    쪽에서 채워 넘기고, 매칭 안 되면 None(그래도 device_ip는 항상 남음).
+    source_ip: 접속한 쪽의 IP(장비 자신의 IP인 device_ip와는 다름) --
+    벤더/이벤트 종류에 따라 원본 트랩 자체에 없을 수 있어(예: Comware의
+    LOGINAUTHFAIL) None일 수 있다."""
     conn = get_db()
     conn.execute(
-        'INSERT INTO device_access_log(device_id,device_ip,ts,event_type,username,details,raw_message) '
-        'VALUES (?,?,?,?,?,?,?)',
-        (device_id, device_ip, ts, event_type, username, details, raw_message))
+        'INSERT INTO device_access_log(device_id,device_ip,ts,event_type,username,details,raw_message,source_ip) '
+        'VALUES (?,?,?,?,?,?,?,?)',
+        (device_id, device_ip, ts, event_type, username, details, raw_message, source_ip))
     conn.commit()
     conn.close()
 
