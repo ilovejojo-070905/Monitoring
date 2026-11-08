@@ -90,11 +90,11 @@
   ::-webkit-scrollbar{width:10px;height:10px}
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:8px}
-  /* 사용자 요청("스크롤 마우스 클릭하면 클릭했다고 표시 나게 해줘 ...
-     색상이 좀 더 찐해진다던지"): 스크롤바를 누르고 끄는 동안(:active)
-     --chip-active(칩/주요 버튼과 같은 파란색)로 더 짙게, 그냥 올렸을
-     때(:hover)는 살짝만 진하게. */
-  ::-webkit-scrollbar-thumb:hover{background:var(--text-faint)}
+  /* 사용자 요청("스크롤바 마우스 올리면 진하게, 누르고 끄는 동안도
+     진하게 해줘 ... 색상이 좀 더 찐해진다던지"): 올렸을 때(:hover)도
+     눈에 띄게 진한 회색으로, 누르고 끄는 동안(:active)은 거기서 한 번
+     더 --chip-active(칩/주요 버튼과 같은 파란색)로 가장 진하게. */
+  ::-webkit-scrollbar-thumb:hover{background:var(--text-dim)}
   ::-webkit-scrollbar-thumb:active{background:var(--chip-active)}
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
@@ -751,7 +751,7 @@
       <button class="drawer-close" id="drawerClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
     </div>
   </div>
-  <div class="drawer-body" id="drawerBody"></div>
+  <div class="drawer-body" id="drawerBody" data-scroll-key="drawer-body"></div>
 </div>
 
 <div class="overlay" id="ifaceOverlay"></div>
@@ -6303,6 +6303,13 @@ function miniCardHtml(title, sub, bodyHtml){
     </div>`;
 }
 function drawServer(s){
+  // 사용자 보고("windows 이벤트 로그 / 설치된 프로그램 스크롤도 자동으로
+  // 제자리로 돌아가"): drawPingDevice()와 달리 이 함수는 지금까지
+  // #drawerBody를 다시 그리기 전/후에 스크롤 위치를 전혀 챙겨주지
+  // 않았다 -- 두 미니카드(Windows 이벤트 로그/설치된 프로그램)에 붙인
+  // data-scroll-key를 captureScrollPositions()/restoreScrollPositions()
+  // (drawPingDevice 위에 정의됨)가 찾아서 저장·복원한다.
+  const scrollState = captureScrollPositions();
   $('#drawerTitle').textContent = s.name;
   $('#drawerRole').textContent = `${s.role||'-'} · ${s.ip||'-'} · ${osLabel(s.os)}`;
   const evtErrCount = (s.eventErrors||[]).filter(e=>e.level==='error').length;
@@ -6382,12 +6389,12 @@ function drawServer(s){
     </div>
     <div style="${grid2}">
       ${miniCardHtml('Windows 이벤트 로그', evtSub, `
-        <div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;max-height:150px;overflow-y:auto">
+        <div data-scroll-key="win-events" style="display:flex;flex-direction:column;gap:5px;margin-top:8px;max-height:150px;overflow-y:auto">
           ${(s.eventErrors||[]).slice(0,8).map(e=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0"><span class="pill ${e.level==='error'?'crit':'warn'}" style="font-size:9px;padding:1px 5px;margin-right:4px"><span class="dot"></span>${e.level==='error'?'오류':'경고'}</span>${escapeHtml(e.source)}</span><span class="mono" style="color:var(--text-faint);flex:none;font-size:10px">${fmtWhen(e.time)}</span></div>`).join('') || '<span style="font-size:12px;color:var(--text-faint)">최근 오류/경고 없음</span>'}
         </div>
       `)}
       ${miniCardHtml('설치된 프로그램', `${(s.installedPrograms||[]).length}개 · 최신순`, `
-        <div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;max-height:150px;overflow-y:auto">
+        <div data-scroll-key="installed-programs" style="display:flex;flex-direction:column;gap:5px;margin-top:8px;max-height:150px;overflow-y:auto">
           ${(s.installedPrograms||[]).slice(0,8).map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(p.name)}</span><span class="mono" style="color:var(--text-faint);flex:none;font-size:10px">${escapeHtml(p.version||'-')}</span></div>`).join('') || '<span style="font-size:12px;color:var(--text-faint)">데이터 없음</span>'}
         </div>
       `)}
@@ -6397,6 +6404,7 @@ function drawServer(s){
     {label:'CPU', data:s.hist.cpu.map(fmt1), color:'#7c5cff'},
     {label:'MEM', data:s.hist.mem.map(fmt1), color:'#00e6a8'},
   ], {showX:false, max:100});
+  restoreScrollPositions(scrollState);
 }
 function fmtMbps(v){
   v = v||0;
@@ -6435,25 +6443,32 @@ function remoteConnect(protocol, host, user, deviceName){
     remoteConnectFailToast(deviceName, protocol, host, err.message);
   }
 }
+// 사용자 요청("windows 이벤트 로그 / 설치된 프로그램 스크롤도 자동으로
+// 제자리로 돌아가, 앞으로 모든 스크롤은 제자리로 돌아가지 않게 해줘"):
+// 스크롤 가능한 영역마다 prevXxxScroll 변수를 하나씩 따로 챙겨주던
+// 기존 방식은 새 영역이 생길 때마다 똑같은 코드를 또 추가해야 해서
+// 하나씩 빠뜨리기 쉬웠다(Windows 이벤트 로그/설치된 프로그램이 바로
+// 이렇게 빠져서 제자리로 돌아갔던 것). 대신 스크롤 가능한 요소에
+// data-scroll-key="고유이름"만 붙이면, 통째로 다시 그리기 전/후에 이
+// 두 함수가 문서 전체의 data-scroll-key 요소를 한꺼번에 찾아 scrollTop/
+// scrollLeft를 저장·복원한다 -- 앞으로 새 스크롤 영역을 추가할 때도
+// data-scroll-key 속성 하나만 붙이면 자동으로 보존된다.
+function captureScrollPositions(){
+  const state = {};
+  document.querySelectorAll('[data-scroll-key]').forEach(el=>{
+    if(el.scrollTop || el.scrollLeft) state[el.dataset.scrollKey] = {t: el.scrollTop, l: el.scrollLeft};
+  });
+  return state;
+}
+function restoreScrollPositions(state){
+  document.querySelectorAll('[data-scroll-key]').forEach(el=>{
+    const s = state[el.dataset.scrollKey];
+    if(s){ el.scrollTop = s.t; el.scrollLeft = s.l; }
+  });
+}
 function drawPingDevice(e, catLabel){
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
-  const drawerBodyEl = $('#drawerBody');
-  const prevBodyScroll = drawerBodyEl ? drawerBodyEl.scrollTop : 0;
-  const prevIfaceEl = document.getElementById('iface-list');
-  const prevIfaceScroll = prevIfaceEl ? prevIfaceEl.scrollTop : 0;
-  const prevEnvEl = document.getElementById('env-sensor-list');
-  const prevEnvScroll = prevEnvEl ? prevEnvEl.scrollTop : 0;
-  // 사용자 보고("인터페이스 목록 아래 스크롤은 다시 제자리로 자동으로
-  // 움직이고"): 위의 prevIfaceScroll은 #iface-list 자체의 세로 스크롤만
-  // 저장한다 -- 각 행 안의 이름/설명 가로 스크롤(.iface-name-scroll)은
-  // 여기서 저장해준 적이 없어서, 이 함수가 폴링마다(또는 체크박스 토글 등
-  // 액션 직후) #drawerBody를 통째로 다시 그릴 때마다 전부 0으로
-  // 리셋됐다. idx로 키를 삼아 저장해뒀다가 아래에서 복원.
-  const prevNameScrollByIdx = {};
-  document.querySelectorAll('.iface-row').forEach(row=>{
-    const ns = row.querySelector('.iface-name-scroll');
-    if(ns && ns.scrollLeft) prevNameScrollByIdx[row.dataset.idx] = ns.scrollLeft;
-  });
+  const scrollState = captureScrollPositions();
   $('#drawerTitle').textContent = e.name;
   $('#drawerRole').textContent = `${catLabel} · ${e.ip||'-'}`;
   const isSnmp = e.mode==='snmp';
@@ -6503,14 +6518,14 @@ function drawPingDevice(e, catLabel){
   const ifaceCard = ifaces.length ? `
     <div class="card" style="min-width:0;height:425px;display:flex;flex-direction:column"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
       ${bulkToolbar}
-      <div id="iface-list" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
+      <div id="iface-list" data-scroll-key="iface-list" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
         ${ifaces.map(f=>{
           const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
           const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
           return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
           <span style="display:flex;align-items:center;gap:7px;min-width:0;padding-right:10px">
             ${bulkEligible ? `<label class="iface-bulk-checkbox-wrap" style="flex:none;display:flex;align-items:center;padding:6px;margin:-6px;cursor:pointer"><input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="cursor:pointer"></label>` : ''}
-            <span class="iface-name-scroll" style="overflow-x:auto;white-space:nowrap;min-width:0">
+            <span class="iface-name-scroll" data-scroll-key="iface-name-${escapeHtml(f.idx)}" style="overflow-x:auto;white-space:nowrap;min-width:0">
               <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
               ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
             </span>
@@ -6530,7 +6545,7 @@ function drawPingDevice(e, catLabel){
   const envStateLabel = s => ({normal:'정상', warning:'주의', critical:'위험', shutdown:'차단', notPresent:'미설치', unknown:'알수없음'})[s] || s;
   const envCard = hasEnv ? `
     <div class="card" style="min-width:0;display:flex;flex-direction:column;height:192px"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
-      <div id="env-sensor-list" style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto">
+      <div id="env-sensor-list" data-scroll-key="env-sensor-list" style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto">
         ${(e.envTemps||[]).filter(t=>t.state!=='notPresent').map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(t.description||'온도 센서')}${t.valueC!=null ? ` · ${fmt0(t.valueC)}°C` : ''}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(t.state)};color:${envStateColor(t.state)}"><span class="dot" style="background:${envStateColor(t.state)}"></span>${envStateLabel(t.state)}</span></div>`).join('')}
         ${(e.envFans||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>팬 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
         ${(e.envSupplies||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>전원 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
@@ -6726,15 +6741,7 @@ function drawPingDevice(e, catLabel){
       }
     });
   });
-  if(drawerBodyEl) drawerBodyEl.scrollTop = prevBodyScroll;
-  const newIfaceEl = document.getElementById('iface-list');
-  if(newIfaceEl) newIfaceEl.scrollTop = prevIfaceScroll;
-  const newEnvEl = document.getElementById('env-sensor-list');
-  if(newEnvEl) newEnvEl.scrollTop = prevEnvScroll;
-  document.querySelectorAll('.iface-row').forEach(row=>{
-    const saved = prevNameScrollByIdx[row.dataset.idx];
-    if(saved){ const ns = row.querySelector('.iface-name-scroll'); if(ns) ns.scrollLeft = saved; }
-  });
+  restoreScrollPositions(scrollState);
   if(hasTraffic){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
   }
