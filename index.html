@@ -2944,7 +2944,7 @@ function renderFacility(){
 /* ================= INCIDENTS ================= */
 let incFilter = 'all';
 let incPage = 1;
-const INC_PAGE_SIZE = 20;
+const INC_PAGE_SIZE = 10;
 function renderIncidentsSkeleton(){
   const el = $('#view-incidents');
   el.innerHTML = `
@@ -3017,7 +3017,7 @@ const DEVICE_HISTORY_ACTION_LABEL = {
 // 어느 쪽인지 구분할 수 있어야 한다.
 const DEVICE_HISTORY_SRC_LABEL = {audit: 'InfraSight', syslog: '장비 직접접속'};
 let devHistoryPage = 1;
-const DEV_HISTORY_PAGE_SIZE = 50;
+const DEV_HISTORY_PAGE_SIZE = 10;
 async function renderDeviceHistory(){
   const body = $('#dev-history-body');
   const pagEl = $('#dev-history-pagination');
