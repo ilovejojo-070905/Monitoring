@@ -89,7 +89,12 @@
   .tabular{font-variant-numeric:tabular-nums}
   ::-webkit-scrollbar{width:10px;height:10px}
   ::-webkit-scrollbar-track{background:transparent}
-  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:8px}
+  /* 사용자 보고("상세창 스크롤이 마우스 올리지 않으면 보이질 않아"):
+     기본값이 --border-strong(rgba(30,41,59,.16), 거의 안 보이는 옅은
+     회색)이라 마우스를 올리기 전까진 스크롤바 자체가 안 보이는 것처럼
+     느껴졌다. 평소에도 바로 보이는 --text-faint로 올림(진하게 만드는
+     :hover/:active는 그 아래 그대로). */
+  ::-webkit-scrollbar-thumb{background:var(--text-faint);border-radius:8px}
   /* 사용자 요청("마우스를 올리면 눈에 띄게 진한 회색으로, 누르고 끄는
      동안도 진한 회색으로 바꿔줘"): 파란색(--chip-active) 대신 회색
      계열로 통일 -- 올렸을 때(:hover)는 진한 회색, 누르고 끄는
