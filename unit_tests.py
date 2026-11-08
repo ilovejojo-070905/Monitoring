@@ -1420,6 +1420,40 @@ def test_cisco_syslog_config_logged_command():
           events[0].get('source_ip') is None, events)
 
 
+def test_infer_session_source_ip():
+    # 사용자 보고("접속/이력 ... cisco 접속해서 설정 변경했는데 IP가
+    # 보이질 않는게 잇어"): CFGLOG_LOGGEDCMD 트랩 자체엔 IP가 없어서
+    # (N22b) 상세에 IP가 안 보였다. 그 설정 변경을 가능하게 한 세션을 연
+    # LOGIN_SUCCESS의 source_ip를 storage.infer_session_source_ip()로
+    # 재사용하는지 확인.
+    dev = 'unittest_infer_sip_dev'
+    now_ms = int(time.time() * 1000)
+    conn = storage.get_db()
+    conn.execute("DELETE FROM device_access_log WHERE device_id=?", (dev,))
+    conn.commit()
+    conn.close()
+    try:
+        storage.record_device_access(device_id=dev, device_ip='203.0.113.200', ts=now_ms,
+                                      event_type='LOGIN_SUCCESS', username='admin',
+                                      details='203.0.113.77에서 접속', raw_message='login',
+                                      source_ip='203.0.113.77')
+        result = storage.infer_session_source_ip(dev, 'admin', now_ms + 5000)
+        check('N22c infer_session_source_ip reuses the session-opening LOGIN_SUCCESS source_ip',
+              result == '203.0.113.77', result)
+        check('N22d infer_session_source_ip does not match a different username (no cross-session leak)',
+              storage.infer_session_source_ip(dev, 'someone_else', now_ms + 5000) is None, None)
+        storage.record_device_access(device_id=dev, device_ip='203.0.113.200', ts=now_ms + 2000,
+                                      event_type='LOGOUT', username='admin',
+                                      details='203.0.113.77에서 로그아웃', raw_message='logout')
+        check('N22e after a LOGOUT, the session is considered closed -- no longer inferred',
+              storage.infer_session_source_ip(dev, 'admin', now_ms + 5000) is None, None)
+    finally:
+        conn = storage.get_db()
+        conn.execute("DELETE FROM device_access_log WHERE device_id=?", (dev,))
+        conn.commit()
+        conn.close()
+
+
 def test_comware_syslog_login_failed():
     # 실측(2026-11-07, 실제 등록된 HPE 5500 192.168.30.251)에서 캡처된
     # 실제 원문 그대로.
@@ -2091,6 +2125,7 @@ def main():
         test_comware_syslog_login_failed, test_comware_syslog_logout, test_comware_syslog_config_changed,
         test_comware_syslog_login_success, test_comware_syslog_logout_with_username,
         test_cisco_syslog_config_logged_command,
+        test_infer_session_source_ip,
         test_arubaswitch_syslog_login_success,
         test_db_concurrent_writes_no_lock_errors, test_metrics_aggregation_idempotent_on_rerun,
         test_scheduler_job_survives_disk_full_write_failure, test_backup_integrity_check_rejects_corrupt_file,

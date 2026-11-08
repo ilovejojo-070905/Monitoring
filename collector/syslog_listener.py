@@ -86,12 +86,24 @@ def _listen_loop(sock):
             app_logger.info('syslog_listener: no known pattern matched (not a login/logout message, or format differs)')
         for ev in events:
             device_id = _device_ip_cache.get(ev['exporter_ip'])
+            source_ip = ev.get('source_ip')
+            # 사용자 보고("cisco 접속해서 설정 변경했는데 IP가 보이질
+            # 않는게 잇어"): Cisco의 CFGLOG_LOGGEDCMD(CONFIG_CHANGED) 트랩
+            # 자체엔 IP가 없다(cisco_syslog_parser.py 참고) -- 이 세션을
+            # 연 LOGIN_SUCCESS의 source_ip를 storage.infer_session_source_ip()
+            # 로 재사용. 로그인 기록이 없거나 이미 로그아웃됐으면 그대로
+            # None.
+            if source_ip is None and ev['event_type'] == 'CONFIG_CHANGED' and device_id and ev.get('username'):
+                try:
+                    source_ip = storage.infer_session_source_ip(device_id, ev['username'], ev['ts'])
+                except Exception:
+                    app_logger.exception('syslog_listener: failed to infer session source_ip for %s', addr)
             try:
                 storage.record_device_access(
                     device_id=device_id, device_ip=ev['exporter_ip'], ts=ev['ts'],
                     event_type=ev['event_type'], username=ev.get('username'),
                     details=ev.get('details'), raw_message=ev['raw_message'],
-                    source_ip=ev.get('source_ip'))
+                    source_ip=source_ip)
             except Exception:
                 app_logger.exception('syslog_listener: failed to record event from %s', addr)
 

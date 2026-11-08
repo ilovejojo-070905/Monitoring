@@ -2032,6 +2032,40 @@ def count_device_history(actions=None, q=None):
     return row['c']
 
 
+def infer_session_source_ip(device_id, username, before_ts):
+    """사용자 보고("접속/이력 ... cisco 접속해서 설정 변경했는데 IP가
+    보이질 않는게 잇어"): Cisco의 %PARSER-5-CFGLOG_LOGGEDCMD(설정 변경
+    한 줄 한 줄을 기록하는 그 트랩, cisco_syslog_parser.py 참고)는 원본
+    메시지 자체에 접속 IP가 전혀 없다 -- 날조할 수도 없고 그렇다고
+    항상 공백으로 둘 이유도 없다. 바로 그 설정 변경을 가능하게 한
+    세션을 연 LOGIN_SUCCESS 이벤트는 source_ip를 갖고 있으므로, "이
+    device_id+username으로 가장 최근에 로그인 성공했고 아직 로그아웃
+    기록이 없는 세션"의 source_ip를 그대로 재사용한다 -- 추측이 아니라
+    실제 같은 세션의 로그인 기록에서 가져오는 값. 조건에 맞는 로그인이
+    없거나 그 사이 로그아웃이 있었으면(세션이 이미 끝났으면) None을
+    돌려줘서 엉뚱한 IP를 붙이지 않는다."""
+    if not device_id or not username:
+        return None
+    conn = get_db()
+    try:
+        login = conn.execute(
+            "SELECT ts, source_ip FROM device_access_log WHERE device_id=? AND username=? "
+            "AND event_type='LOGIN_SUCCESS' AND source_ip IS NOT NULL AND ts<=? "
+            "ORDER BY ts DESC LIMIT 1",
+            (device_id, username, before_ts)).fetchone()
+        if not login:
+            return None
+        logout = conn.execute(
+            "SELECT 1 FROM device_access_log WHERE device_id=? AND username=? "
+            "AND event_type='LOGOUT' AND ts>? AND ts<=? LIMIT 1",
+            (device_id, username, login['ts'], before_ts)).fetchone()
+        if logout:
+            return None
+        return login['source_ip']
+    finally:
+        conn.close()
+
+
 def record_device_access(device_id, device_ip, ts, event_type, username, details, raw_message, source_ip=None):
     """collector/syslog_listener.py가 장비의 syslog(%SEC_LOGIN-*)를 파싱한
     뒤 호출. device_id는 device_ip로 devices 테이블을 찾아 매칭되면 호출
