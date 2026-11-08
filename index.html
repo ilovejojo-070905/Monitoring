@@ -6446,14 +6446,11 @@ function drawPingDevice(e, catLabel){
       <button type="button" class="btn" id="iface-bulk-up-btn" ${ifaceBulkSelection.size===0?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">선택 활성화</button>
     </div>` : '';
   // 사용자 보고("cisco 인터페이스 디스크립션을 길게 변경했는데 인터페이스
-  // 목록에 짤려서 보여, 이걸 볼 수 있게 스크롤 만들어줘")와 후속 요청
-  // ("인터페이스 1/0/1만 그렇게 하지 말고 전체 적용해줘" -- 처음엔
-  // 이름/설명 부분만 overflow-x:auto로 좁게 스크롤되게 했는데, 사용자가
-  // "줄 전체가 함께 스크롤"되길 원해서 .iface-row 자체를 overflow-x:auto로
-  // 바꾸고 그 안의 두 <span>(이름/설명 쪽, 상태/버튼 쪽)을 둘 다
-  // flex:none으로 고정 -- 내용이 넘치면 줄 전체(상태 pill/버튼 포함)가
-  // 한 덩어리로 가로 스크롤된다. 이미 모든 인터페이스에 공통으로 적용되는
-  // 템플릿이라, 설명이 짧은 인터페이스는 스크롤할 내용 자체가 없을 뿐임.
+  // 목록에 짤려서 보여, 이걸 볼 수 있게 스크롤 만들어줘"): 이름/설명
+  // 영역이 overflow:hidden + text-overflow:ellipsis라 길면 그냥 잘려서
+  // 끝부분을 볼 방법이 없었다. 그 영역만 가로 스크롤 가능하게
+  // (overflow-x:auto) 바꿔서 드래그/휠로 끝까지 읽을 수 있게 함(아래
+  // ifaces.map의 두 번째 <span> 참고).
   const ifaceCard = ifaces.length ? `
     <div class="card" style="min-width:0;height:425px;display:flex;flex-direction:column"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
       ${bulkToolbar}
@@ -6461,10 +6458,10 @@ function drawPingDevice(e, catLabel){
         ${ifaces.map(f=>{
           const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
           const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
-          return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;overflow-x:auto;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
-          <span style="display:flex;align-items:center;gap:7px;flex:none;padding-right:10px">
+          return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
+          <span style="display:flex;align-items:center;gap:7px;min-width:0;padding-right:10px">
             ${bulkEligible ? `<label class="iface-bulk-checkbox-wrap" style="flex:none;display:flex;align-items:center;padding:6px;margin:-6px;cursor:pointer"><input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="cursor:pointer"></label>` : ''}
-            <span style="white-space:nowrap">
+            <span style="overflow-x:auto;white-space:nowrap;min-width:0">
               <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
               ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
             </span>
