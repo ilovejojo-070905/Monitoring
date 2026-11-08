@@ -6177,6 +6177,7 @@ function closeDrawer(){
   openDrawerId = null;
   ifaceBulkSelection = new Set();
   ifaceBulkSelectionDeviceId = null;
+  ifaceListPointerActive = false;
   closeIfaceModal();
   $('#overlay').classList.remove('show'); $('#drawer').classList.remove('show');
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
@@ -6202,6 +6203,32 @@ let ifaceModalState = null;
 // (openDrawerFor에서 비교) 그냥 비운다.
 let ifaceBulkSelection = new Set();
 let ifaceBulkSelectionDeviceId = null;
+// 사용자 보고("인터페이스 목록 스크롤 마우스 클릭 후 움직임이 부드럽지
+// 못하고 이상해" / "세로 스크롤은 아직 마우스 클릭 후 계속 움직이지
+// 않아"): 진짜 원인은 폴링 간격이 1초(pollTick, 기존 주석의 "2.2초"는
+// 2026-11-03에 1초로 단축된 뒤 갱신 안 된 설명임)라는 데 있었다.
+// refreshOpenDrawer()가 매초 #drawerBody를 통째로 새로 그리는데, 사용자가
+// #iface-list 안에서 마우스를 누른 채 끌어 스크롤하는 중(가로 드래그든,
+// 세로 스크롤바 드래그든) 이 리라이트가 끼어들면 드래그가 참조하던 DOM
+// 노드가 통째로 교체돼버려서 그 시점부터 스크롤이 먹통이 된다 -- 1초
+// 안에 드래그가 안 끝나면 거의 항상 걸림. 포인터가 눌려있는 동안은
+// 다음 섹션의 pollTick이 refreshOpenDrawer()를 건너뛰게 해서, 드래그가
+// 끝날 때까지 그 DOM을 가만히 둔다(뗀 직후 다음 틱에 바로 따라잡음).
+let ifaceListPointerActive = false;
+let ifaceListPointerSafetyTimer = null;
+document.addEventListener('mousedown', ev=>{
+  if(ev.target && ev.target.closest && ev.target.closest('#iface-list')){
+    ifaceListPointerActive = true;
+    // 드래그 중 창 포커스가 다른 창으로 넘어가는 등 드물게 mouseup을
+    // 놓치는 경우에도 영영 멈춰있지 않도록 안전장치로 긴 타임아웃을 둔다.
+    clearTimeout(ifaceListPointerSafetyTimer);
+    ifaceListPointerSafetyTimer = setTimeout(()=>{ ifaceListPointerActive = false; }, 10000);
+  }
+});
+document.addEventListener('mouseup', ()=>{
+  ifaceListPointerActive = false;
+  clearTimeout(ifaceListPointerSafetyTimer);
+});
 // drawPingDevice()가 #drawerBody 전체를 새로 쓰기 때문에, openDrawerFor()가
 // 바깥에서 덧붙인 환경센서/수집상태 줄도 같이 지워진다 -- 인터페이스 행
 // 클릭/체크박스 토글/일괄 제어 성공 직후 즉시 다시 그릴 때마다 똑같이
@@ -6965,7 +6992,12 @@ setInterval(tickClock, 1000);
     if(ok){
       refreshBadges();
       VIEWS[currentView].render();
-      refreshOpenDrawer();
+      // ifaceListPointerActive(위 선언부 설명 참고): 인터페이스 목록 안에서
+      // 마우스를 누른 채 드래그로 스크롤하는 중이면 이번 틱의
+      // refreshOpenDrawer()(= #drawerBody 전체 다시 그리기)를 건너뛴다 --
+      // 그 사이 드로어는 잠깐 안 갱신되지만, 손을 떼는 순간 다음 틱에서
+      // 바로 최신 상태로 따라잡는다.
+      if(!ifaceListPointerActive) refreshOpenDrawer();
       renderIfaceModal();
     }
   }
