@@ -1071,6 +1071,15 @@ function applyRoleUI(){
 
 /* ================= backend-driven live state ================= */
 let SERVERS = [], DBS = [], NETS = [], FACS = [], INCIDENTS = [];
+// 사용자 요청("전체 위험 주의 정보 미해결에 메뉴에 IP 목록 넣어줘"): 이벤트/장애
+// 목록(renderIncidents)에는 장비 IP가 따로 없고 deviceId만 있어서, 네 카테고리
+// 배열을 모두 뒤져 IP를 찾아준다. serialize_device()(server.py)가 모든
+// 카테고리에 공통으로 'id'/'ip'를 내려주므로 카테고리 구분 없이 찾으면 된다.
+function deviceIpById(id){
+  if(!id) return null;
+  const d = SERVERS.find(x=>x.id===id) || DBS.find(x=>x.id===id) || NETS.find(x=>x.id===id) || FACS.find(x=>x.id===id);
+  return d ? d.ip : null;
+}
 let DEVICE_LLDP_LINKS = [];
 let SERVER_INFO = { lanIp: location.hostname || 'localhost', port: location.port || '5057' };
 
@@ -2902,7 +2911,7 @@ function renderIncidentsSkeleton(){
           <input id="dev-history-search" placeholder="장비명 / 사용자 / IP / 상세 검색"></div>
       </div>
       <div class="table-wrap" id="inc-events-wrap"><table class="data reg-device-table">
-        <thead><tr><th>심각도</th><th>시각</th><th>영역</th><th>대상</th><th>내용</th><th>상태</th><th></th></tr></thead>
+        <thead><tr><th>심각도</th><th>시각</th><th>영역</th><th>대상</th><th>IP</th><th>내용</th><th>상태</th><th></th></tr></thead>
         <tbody id="inc-tbody"></tbody>
       </table></div>
       <div id="inc-history-wrap" style="display:none">
@@ -3003,10 +3012,20 @@ async function renderDeviceHistory(append){
       <td${detailsTitle?` title="${escapeHtml(detailsTitle)}"`:''}>${escapeHtml(detailsDisplay)}</td>
     </tr>`;
   }).join('');
-  const tableHtml = `<div class="table-wrap"><table class="data reg-device-table">
-    <thead><tr><th>시각</th><th>경로</th><th>사용자</th><th>IP</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
-    <tbody>${rowsHtml}</tbody></table></div>`;
-  if(append){ body.insertAdjacentHTML('beforeend', tableHtml); } else { body.innerHTML = tableHtml; }
+  // 사용자 보고(2026-11-08, "접속/설정이력 더보기 하면 세로 라인이
+  // 맞지 않아"): append일 때 매번 <table>을 통째로 새로 만들어
+  // body.insertAdjacentHTML('beforeend', ...)로 이어붙이면, 각 <table>이
+  // 서로 독립적으로 컬럼 너비를 계산하기 때문에(내용에 따라 자동 폭이
+  // 달라짐) 테이블 경계에서 세로 구분선이 어긋나 보였다. append일 때는
+  // 기존 <tbody>에 행만 추가하고, 테이블/헤더는 처음 한 번만 만든다.
+  if(append){
+    const tbody = body.querySelector('table tbody');
+    if(tbody) tbody.insertAdjacentHTML('beforeend', rowsHtml);
+  } else {
+    body.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+      <thead><tr><th>시각</th><th>경로</th><th>사용자</th><th>IP</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
+      <tbody>${rowsHtml}</tbody></table></div>`;
+  }
   if(entries.length) deviceHistoryOldestTs = entries[entries.length-1].ts;
   moreBtn.style.display = entries.length >= 50 ? '' : 'none';
 }
@@ -3056,10 +3075,11 @@ function renderIncidents(){
       <td class="mono">${i.time.toLocaleTimeString('ko-KR',{hour12:false})}</td>
       <td>${i.category}</td>
       <td class="name">${escapeHtml(i.source)}</td>
+      <td class="mono">${escapeHtml(deviceIpById(i.deviceId)||'-')}</td>
       <td>${escapeHtml(i.message)}${i.duringMaintenance?' <span class="pill neutral" style="font-size:9px;padding:1px 6px" title="점검 중 발생 (알림은 억제되었으나 이벤트는 기록됨)">점검중</span>':''}</td>
       <td><span class="pill neutral">${i.status==='open'?'미해결':i.status==='ack'?'확인됨':'해결됨'}</span></td>
       <td>${i.status==='open' ? `<button class="btn" data-ack="${i.id}">확인</button>` : ''}</td>
-    </tr>`).join('') || `<tr><td colspan="7"><div class="empty-note">해당 조건의 이벤트가 없습니다</div></td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="8"><div class="empty-note">해당 조건의 이벤트가 없습니다</div></td></tr>`;
   $$('#inc-tbody [data-ack]').forEach(b=> b.addEventListener('click', async (e)=>{
     e.stopPropagation();
     await ackIncident(b.dataset.ack);
