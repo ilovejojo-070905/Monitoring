@@ -6405,6 +6405,17 @@ function drawPingDevice(e, catLabel){
   const prevIfaceScroll = prevIfaceEl ? prevIfaceEl.scrollTop : 0;
   const prevEnvEl = document.getElementById('env-sensor-list');
   const prevEnvScroll = prevEnvEl ? prevEnvEl.scrollTop : 0;
+  // 사용자 보고("인터페이스 목록 아래 스크롤은 다시 제자리로 자동으로
+  // 움직이고"): 위의 prevIfaceScroll은 #iface-list 자체의 세로 스크롤만
+  // 저장한다 -- 각 행 안의 이름/설명 가로 스크롤(.iface-name-scroll)은
+  // 여기서 저장해준 적이 없어서, 이 함수가 폴링마다(또는 체크박스 토글 등
+  // 액션 직후) #drawerBody를 통째로 다시 그릴 때마다 전부 0으로
+  // 리셋됐다. idx로 키를 삼아 저장해뒀다가 아래에서 복원.
+  const prevNameScrollByIdx = {};
+  document.querySelectorAll('.iface-row').forEach(row=>{
+    const ns = row.querySelector('.iface-name-scroll');
+    if(ns && ns.scrollLeft) prevNameScrollByIdx[row.dataset.idx] = ns.scrollLeft;
+  });
   $('#drawerTitle').textContent = e.name;
   $('#drawerRole').textContent = `${catLabel} · ${e.ip||'-'}`;
   const isSnmp = e.mode==='snmp';
@@ -6526,18 +6537,44 @@ function drawPingDevice(e, catLabel){
   // 한 번 무시해 상세창이 엉뚱하게 열리지 않게 한다. document에 붙이는
   // mousemove/mouseup 리스너는 각 드래그 동작이 끝나면(mouseup) 바로
   // 제거하므로 재렌더될 때마다 쌓이지 않는다.
+  //
+  // 후속 사용자 보고("세로 스크롤은 아직 마우스 클릭 후 계속 움직이지
+  // 않아 부드럽지 못해"): 위 첫 버전은 mousedown에서 바로 preventDefault를
+  // 걸고 모든 mousemove를 가로(scrollLeft)로만 처리해서, 사용자가 이름
+  // 칸 위에서 세로로 드래그해 #iface-list를 스크롤하려 하면 그 움직임을
+  // 가로 처리기가 가로채 세로 스크롤이 전혀 안 먹혔다(이름 칸이 행 너비
+  // 대부분을 차지해서 거의 항상 이 위에서 드래그가 시작됨). mousedown
+  // 시점엔 아직 preventDefault를 걸지 않고, 첫 움직임에서 |dx|/|dy|를
+  // 비교해 방향을 판단 -- 세로 쪽이 더 크면 그 즉시 우리 리스너를 떼고
+  // 손을 떼서(아무 것도 안 함) 브라우저의 기본 세로 스크롤이 그대로
+  // 동작하게 두고, 가로 쪽이 더 크다고 판단된 경우에만 그때부터
+  // preventDefault + scrollLeft 처리를 시작한다.
   $$('.iface-row', $('#drawerBody')).forEach(row=>{
     let suppressClick = false;
     const nameScroll = row.querySelector('.iface-name-scroll');
     if(nameScroll){
       nameScroll.addEventListener('mousedown', ev=>{
         if(ev.button !== 0) return;
-        ev.preventDefault();
-        const startX = ev.clientX;
+        const startX = ev.clientX, startY = ev.clientY;
         const startScroll = nameScroll.scrollLeft;
-        let moved = false;
+        let moved = false, decided = false, horizontal = false;
         const onMove = mv=>{
           const dx = mv.clientX - startX;
+          const dy = mv.clientY - startY;
+          if(!decided){
+            if(Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+            decided = true;
+            horizontal = Math.abs(dx) > Math.abs(dy);
+            if(!horizontal){
+              // 세로 드래그로 판단 -- 끼어들지 않고 바로 손 뗌(네이티브
+              // 세로 스크롤이 그대로 진행되게 둔다).
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+              return;
+            }
+          }
+          if(!horizontal) return;
+          mv.preventDefault();
           if(Math.abs(dx) > 3) moved = true;
           nameScroll.scrollLeft = startScroll - dx;
         };
@@ -6656,6 +6693,10 @@ function drawPingDevice(e, catLabel){
   if(newIfaceEl) newIfaceEl.scrollTop = prevIfaceScroll;
   const newEnvEl = document.getElementById('env-sensor-list');
   if(newEnvEl) newEnvEl.scrollTop = prevEnvScroll;
+  document.querySelectorAll('.iface-row').forEach(row=>{
+    const saved = prevNameScrollByIdx[row.dataset.idx];
+    if(saved){ const ns = row.querySelector('.iface-name-scroll'); if(ns) ns.scrollLeft = saved; }
+  });
   if(hasTraffic){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
   }
