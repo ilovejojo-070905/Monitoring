@@ -265,6 +265,19 @@
   table.data.reg-device-table thead th{font-size:13px;text-align:center;color:var(--chrome-text)}
   table.data.reg-device-table tbody td{padding:8px 14px;text-align:center}
   table.data.reg-device-table td.name{font-weight:700}
+  /* 사용자 보고("전체 검색창에 검색할 수 없는 정보를 기입하면 메뉴(심각도
+     시각 영역 대상 등)가 움직여 ... 위험 주의 정보 미해결 접속/이력도
+     다"): table.data는 폭 지정이 없는 자동 레이아웃(auto table-layout)이라
+     컬럼 너비가 그 순간의 행 내용에 맞춰 다시 계산된다. 검색 결과가
+     없어지면 tbody가 colspan 하나짜리 "결과 없음" 행으로 바뀌는데, 그
+     한 줄은 각 컬럼에 실제 내용을 안 주므로 헤더 컬럼 너비가(그동안
+     실제 데이터가 주던 기준이 사라져) 다시 계산되면서 헤더 전체가
+     움직여 보였다. 이벤트/장애 목록(#inc-tbody)과 접속/설정 이력 테이블은
+     <colgroup>로 각 컬럼 너비를 퍼센트로 고정하고 table-layout:fixed를
+     줘서, 행이 있든 없든(검색 결과 0건이든) 헤더 너비가 전혀 안
+     바뀌게 한다. */
+  table.fixed-cols-table{table-layout:fixed}
+  table.fixed-cols-table td{overflow:hidden;text-overflow:ellipsis}
 
   .gauge{position:relative;width:104px;height:104px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;filter:drop-shadow(0 0 10px rgba(124,92,255,.25))}
   .gauge::before{content:'';position:absolute;inset:9px;border-radius:50%;background:var(--bg-elevated);backdrop-filter:blur(14px)}
@@ -2962,7 +2975,11 @@ function renderIncidentsSkeleton(){
         <div class="search-box" id="dev-history-search-box" style="display:none;min-width:260px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input id="dev-history-search" placeholder="장비명 / 사용자 / IP / 상세 검색"></div>
       </div>
-      <div class="table-wrap" id="inc-events-wrap"><table class="data reg-device-table">
+      <div class="table-wrap" id="inc-events-wrap"><table class="data reg-device-table fixed-cols-table">
+        <colgroup>
+          <col style="width:8%"><col style="width:9%"><col style="width:8%"><col style="width:14%">
+          <col style="width:11%"><col style="width:34%"><col style="width:8%"><col style="width:8%">
+        </colgroup>
         <thead><tr><th>심각도</th><th>시각</th><th>영역</th><th>대상</th><th>IP</th><th>내용</th><th>상태</th><th></th></tr></thead>
         <tbody id="inc-tbody"></tbody>
       </table></div>
@@ -3066,7 +3083,11 @@ async function renderDeviceHistory(){
       <td${detailsTitle?` title="${escapeHtml(detailsTitle)}"`:''}>${escapeHtml(detailsDisplay)}</td>
     </tr>`;
   }).join('');
-  body.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+  body.innerHTML = `<div class="table-wrap"><table class="data reg-device-table fixed-cols-table">
+    <colgroup>
+      <col style="width:12%"><col style="width:10%"><col style="width:10%"><col style="width:11%">
+      <col style="width:14%"><col style="width:12%"><col style="width:31%">
+    </colgroup>
     <thead><tr><th>시각</th><th>경로</th><th>사용자</th><th>IP</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
     <tbody>${rowsHtml}</tbody></table></div>`;
   // 사용자 요청("접속/설정이력 ... 1/2/3/4 이런식으로 표시할 수 있게
