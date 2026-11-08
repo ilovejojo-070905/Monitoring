@@ -6461,7 +6461,7 @@ function drawPingDevice(e, catLabel){
           return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
           <span style="display:flex;align-items:center;gap:7px;min-width:0;padding-right:10px">
             ${bulkEligible ? `<label class="iface-bulk-checkbox-wrap" style="flex:none;display:flex;align-items:center;padding:6px;margin:-6px;cursor:pointer"><input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="cursor:pointer"></label>` : ''}
-            <span style="overflow-x:auto;white-space:nowrap;min-width:0">
+            <span class="iface-name-scroll" style="overflow-x:auto;white-space:nowrap;min-width:0">
               <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
               ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
             </span>
@@ -6515,8 +6515,43 @@ function drawPingDevice(e, catLabel){
         : '이 장비는 Ping(또는 포트 확인)으로만 모니터링됩니다. 상세 지표가 필요하면 SNMP로 등록하거나, 해당 PC에 InfraSight 에이전트를 설치해 다시 등록하세요.'}</p>
     </div>
   `;
+  // 사용자 보고("인터페이스 목록 스크롤 마우스 클릭 후 움직임이 부드럽지
+  // 못하고 이상해"): .iface-name-scroll(이름/설명 칸, overflow-x:auto)을
+  // 마우스로 눌러 끌면 브라우저 기본 동작은 "가로 스크롤"이 아니라
+  // 텍스트 선택(드래그하며 파란 하이라이트)이었고, 그 뒤 mouseup에서
+  // .iface-row의 click이 그대로 발생해 상세창까지 열려버려 뒤죽박죽으로
+  // 느껴졌다. mousedown에서 기본 동작(텍스트 선택)을 막고 mousemove를
+  // 직접 읽어 scrollLeft를 옮기는 수동 드래그-스크롤로 바꾸고, 실제로
+  // 끌어서 스크롤한 경우에만(3px 넘게 움직였을 때) 뒤이은 row 클릭을
+  // 한 번 무시해 상세창이 엉뚱하게 열리지 않게 한다. document에 붙이는
+  // mousemove/mouseup 리스너는 각 드래그 동작이 끝나면(mouseup) 바로
+  // 제거하므로 재렌더될 때마다 쌓이지 않는다.
   $$('.iface-row', $('#drawerBody')).forEach(row=>{
+    let suppressClick = false;
+    const nameScroll = row.querySelector('.iface-name-scroll');
+    if(nameScroll){
+      nameScroll.addEventListener('mousedown', ev=>{
+        if(ev.button !== 0) return;
+        ev.preventDefault();
+        const startX = ev.clientX;
+        const startScroll = nameScroll.scrollLeft;
+        let moved = false;
+        const onMove = mv=>{
+          const dx = mv.clientX - startX;
+          if(Math.abs(dx) > 3) moved = true;
+          nameScroll.scrollLeft = startScroll - dx;
+        };
+        const onUp = ()=>{
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          if(moved) suppressClick = true;
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    }
     row.addEventListener('click', ()=>{
+      if(suppressClick){ suppressClick = false; return; }
       if(ifaceModalState && ifaceModalState.deviceId===e.id && ifaceModalState.idx===row.dataset.idx){
         closeIfaceModal();
       } else {
