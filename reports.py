@@ -22,6 +22,7 @@ pages with the header repeated on each.
 import io
 import os
 import time
+import unicodedata
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -180,16 +181,42 @@ def build_pdf(report_type, start_ms, end_ms, device_id=None, group=None):
     if not rows:
         elements.append(Paragraph('해당 조건에 데이터가 없습니다.', meta_style))
     else:
-        # Column widths split the usable page width (A4 minus margins) evenly,
-        # except the free-text 내용/장비명 column (if present) gets extra room.
+        # 사용자 보고("네트워크 상태보고서를 pdf로 받았는데 엉망이야" --
+        # IP(예: "192.168.30.250")가 "192.16/8.30.2/50"처럼 글자 단위로
+        # 줄바꿈돼 깨져 보임): 기존엔 '내용' 컬럼이 없는 보고서(네트워크/
+        # 자원 사용률)에서도 무조건 0번째 컬럼(장비명)에 폭의 절반 가까이를
+        # 몰아주고 나머지 컬럼은 전부 똑같이 아주 좁게 나눴다. 네트워크
+        # 보고서는 컬럼이 7개라 그 좁은 몫이 182mm/7*0.5 ~= 15mm 밖에
+        # 안 돼서 "192.168.30.250"나 "13시간 58분" 같은(공백 없이 길거나
+        # 한글이라 실제로 넓은) 값이 들어갈 공간이 없어 글자 단위로
+        # 쪼개졌다. '내용' 같은 장문 컬럼이 없을 땐 억지로 한 컬럼만
+        # 넓히지 않고, 각 컬럼의 실제 내용 길이(한글은 폭이 넓어 2배로
+        # 계산)에 비례해서 폭을 나눠준다 -- IP/MTTR/MTBF처럼 실제로 긴
+        # 값이 있는 컬럼은 그만큼 넓어지고, 퍼센트/횟수처럼 짧은 값만
+        # 있는 컬럼은 좁아도 된다.
         usable_mm = 210 - 28
         n = len(columns)
-        wide_idx = columns.index('내용') if '내용' in columns else (0 if n else None)
-        widths = [usable_mm / n] * n
-        if wide_idx is not None and n > 1:
+
+        def _display_len(s):
+            # unicodedata.east_asian_width: 'W'(Wide)/'F'(Fullwidth) 글자
+            # (한글 음절 포함)는 라틴 문자/숫자 폭의 약 2배로 계산.
+            return sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in str(s))
+
+        if '내용' in columns:
+            wide_idx = columns.index('내용')
+            widths = [usable_mm / n] * n
             extra = widths[wide_idx] * (n - 1) * 0.5 / n
             for i in range(n):
                 widths[i] = widths[i] - extra if i != wide_idx else widths[i] + extra * (n - 1)
+        else:
+            col_weights = []
+            for ci in range(n):
+                longest = _display_len(columns[ci])
+                for row in rows:
+                    longest = max(longest, _display_len(row[ci]))
+                col_weights.append(max(longest, 3))  # floor so no column collapses to ~0
+            total_weight = sum(col_weights)
+            widths = [usable_mm * w / total_weight for w in col_weights]
         # XML 마크업 주입 대응(validation.escape_pdf_text 주석 참고) -- reportlab의
         # Paragraph는 문자열을 그대로 마크업으로 해석하고 자동 이스케이프하지 않는다.
         table_data = [columns] + [[Paragraph(validation.escape_pdf_text(str(c)), meta_style) for c in row] for row in rows]
