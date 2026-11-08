@@ -90,6 +90,12 @@
   ::-webkit-scrollbar{width:10px;height:10px}
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:8px}
+  /* 사용자 요청("스크롤 마우스 클릭하면 클릭했다고 표시 나게 해줘 ...
+     색상이 좀 더 찐해진다던지"): 스크롤바를 누르고 끄는 동안(:active)
+     --chip-active(칩/주요 버튼과 같은 파란색)로 더 짙게, 그냥 올렸을
+     때(:hover)는 살짝만 진하게. */
+  ::-webkit-scrollbar-thumb:hover{background:var(--text-faint)}
+  ::-webkit-scrollbar-thumb:active{background:var(--chip-active)}
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
   /* ---------- shell ---------- */
@@ -109,6 +115,7 @@
   .sidebar::-webkit-scrollbar-track{background:transparent}
   .sidebar::-webkit-scrollbar-thumb{background:var(--sidebar-border);border-radius:3px}
   .sidebar::-webkit-scrollbar-thumb:hover{background:var(--sidebar-text-faint)}
+  .sidebar::-webkit-scrollbar-thumb:active{background:var(--chip-active)}
   .brand{display:flex;align-items:center;gap:12px;padding:6px 10px 22px;}
   .brand-mark{width:42px;height:42px;border-radius:11px;background:#fff;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.4) inset}
   .brand-text b{color:var(--sidebar-text)}
@@ -6177,7 +6184,7 @@ function closeDrawer(){
   openDrawerId = null;
   ifaceBulkSelection = new Set();
   ifaceBulkSelectionDeviceId = null;
-  ifaceListPointerActive = false;
+  uiPointerActive = false;
   closeIfaceModal();
   $('#overlay').classList.remove('show'); $('#drawer').classList.remove('show');
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
@@ -6211,23 +6218,27 @@ let ifaceBulkSelectionDeviceId = null;
 // #iface-list 안에서 마우스를 누른 채 끌어 스크롤하는 중(가로 드래그든,
 // 세로 스크롤바 드래그든) 이 리라이트가 끼어들면 드래그가 참조하던 DOM
 // 노드가 통째로 교체돼버려서 그 시점부터 스크롤이 먹통이 된다 -- 1초
-// 안에 드래그가 안 끝나면 거의 항상 걸림. 포인터가 눌려있는 동안은
-// 다음 섹션의 pollTick이 refreshOpenDrawer()를 건너뛰게 해서, 드래그가
-// 끝날 때까지 그 DOM을 가만히 둔다(뗀 직후 다음 틱에 바로 따라잡음).
-let ifaceListPointerActive = false;
-let ifaceListPointerSafetyTimer = null;
-document.addEventListener('mousedown', ev=>{
-  if(ev.target && ev.target.closest && ev.target.closest('#iface-list')){
-    ifaceListPointerActive = true;
-    // 드래그 중 창 포커스가 다른 창으로 넘어가는 등 드물게 mouseup을
-    // 놓치는 경우에도 영영 멈춰있지 않도록 안전장치로 긴 타임아웃을 둔다.
-    clearTimeout(ifaceListPointerSafetyTimer);
-    ifaceListPointerSafetyTimer = setTimeout(()=>{ ifaceListPointerActive = false; }, 10000);
-  }
+// 안에 드래그가 안 끝나면 거의 항상 걸림.
+//
+// 후속 사용자 요청("사이트에 모든 스크롤도 인터페이스 스크롤처럼
+// 수정해줘"): 같은 문제가 인터페이스 목록에만 있는 게 아니라, 매초
+// VIEWS[currentView].render()로 통째로 다시 그려지는 다른 모든
+// 화면(서버/DB/네트워크/설비 목록, 이벤트 테이블 등)에도 똑같이
+// 적용된다. #iface-list로 한정하지 않고 "문서 어디서든 마우스 버튼이
+// 눌려있는 동안"으로 범위를 넓혀서, 사이트의 어떤 스크롤 영역을
+// 드래그하든 똑같이 보호되게 한다.
+let uiPointerActive = false;
+let uiPointerSafetyTimer = null;
+document.addEventListener('mousedown', ()=>{
+  uiPointerActive = true;
+  // 드래그 중 창 포커스가 다른 창으로 넘어가는 등 드물게 mouseup을
+  // 놓치는 경우에도 영영 멈춰있지 않도록 안전장치로 긴 타임아웃을 둔다.
+  clearTimeout(uiPointerSafetyTimer);
+  uiPointerSafetyTimer = setTimeout(()=>{ uiPointerActive = false; }, 10000);
 });
 document.addEventListener('mouseup', ()=>{
-  ifaceListPointerActive = false;
-  clearTimeout(ifaceListPointerSafetyTimer);
+  uiPointerActive = false;
+  clearTimeout(uiPointerSafetyTimer);
 });
 // drawPingDevice()가 #drawerBody 전체를 새로 쓰기 때문에, openDrawerFor()가
 // 바깥에서 덧붙인 환경센서/수집상태 줄도 같이 지워진다 -- 인터페이스 행
@@ -6991,13 +7002,17 @@ setInterval(tickClock, 1000);
     const ok = await syncState();
     if(ok){
       refreshBadges();
-      VIEWS[currentView].render();
-      // ifaceListPointerActive(위 선언부 설명 참고): 인터페이스 목록 안에서
-      // 마우스를 누른 채 드래그로 스크롤하는 중이면 이번 틱의
-      // refreshOpenDrawer()(= #drawerBody 전체 다시 그리기)를 건너뛴다 --
-      // 그 사이 드로어는 잠깐 안 갱신되지만, 손을 떼는 순간 다음 틱에서
-      // 바로 최신 상태로 따라잡는다.
-      if(!ifaceListPointerActive) refreshOpenDrawer();
+      // uiPointerActive(위 선언부 설명 참고): 사이트 어디서든 마우스
+      // 버튼을 누른 채 드래그로 스크롤하는 중이면 이번 틱의 전체 다시
+      // 그리기(현재 화면 render() + 드로어 refreshOpenDrawer())를 건너뛴다
+      // -- 그 사이 화면은 잠깐 안 갱신되지만, 손을 떼는 순간 다음 틱에서
+      // 바로 최신 상태로 따라잡는다. 사용자 요청("사이트에 모든 스크롤도
+      // 인터페이스 스크롤처럼 수정해줘")으로 인터페이스 목록 한정이던
+      // 범위를 전체 화면으로 넓힘.
+      if(!uiPointerActive){
+        VIEWS[currentView].render();
+        refreshOpenDrawer();
+      }
       renderIfaceModal();
     }
   }
