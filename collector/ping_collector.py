@@ -165,3 +165,95 @@ def check_remote_ports(entity, ip, vendor_profile=None):
         entity['sshOpen'] = ssh_open
         entity['telnetOpen'] = telnet_open
         entity['_remotePortCheckedAt'] = now
+
+
+def tcp_check_detailed(ip, port, timeout_s=1.0):
+    """tcp_check와 똑같이 TCP 연결을 시도하지만, 실패 원인을 구분해서
+    돌려준다(사용자 요청: "서비스하는 포트를 모니터링해서... 문제가 있으면
+    무엇이 문제인지 보여줄 수 있어?"). 연결 거부(호스트는 켜져 있지만 그
+    포트의 서비스만 내려간 경우)와 타임아웃(호스트/네트워크/방화벽 쪽
+    문제로 추정)은 원인이 달라서 구분해야 진단 의미가 있다."""
+    try:
+        start = time.time()
+        with socket.create_connection((ip, port), timeout=timeout_s):
+            return True, round((time.time() - start) * 1000, 1), None
+    except ConnectionRefusedError:
+        return False, None, 'REFUSED'
+    except (socket.timeout, TimeoutError):
+        return False, None, 'TIMEOUT'
+    except OSError:
+        return False, None, 'UNREACHABLE'
+    except Exception:
+        return False, None, 'ERROR'
+
+
+PORT_FAIL_REASON_LABELS = {
+    'REFUSED': '연결 거부 (호스트는 응답하지만 해당 포트의 서비스가 중단된 것으로 추정)',
+    'TIMEOUT': '응답 없음 (타임아웃 -- 네트워크/방화벽 문제로 추정)',
+    'UNREACHABLE': '호스트에 연결할 수 없음',
+    'ERROR': '포트 확인 실패',
+}
+
+SERVICE_PORT_RECHECK_SEC = 5
+_STATUS_RANK = {'good': 0, 'warn': 1, 'crit': 2}
+
+
+def check_service_ports(entity, device_row):
+    """사용자 요청("등록된 서버가 서비스하는 포트를 모니터링해서 정상인지,
+    문제가 있으면 무엇이 문제인지 보여줄 수 있어?"): 서버 등록/수정
+    화면에서 지정한 서비스 포트 목록(fields.servicePorts, [{name, port},
+    ...], validation.validate_service_ports로 검증됨) 각각을 실제로 TCP
+    연결해보고, 포트별 정상/문제 상태와 실패 원인을 entity
+    ['servicePortStatus']에 담는다. 장비 전체 응답없음(REACHABILITY)과는
+    독립적으로 포트 하나하나가 장애 이력/알림 대상이 되도록 event_type에
+    포트 번호를 포함한다(add_incident의 device_id+event_type 조합 dedup이
+    포트별로 자연히 분리됨). check_remote_ports와 같은 이유로 매 틱(기본
+    2초)마다 모든 포트를 다시 열어보지 않고 SERVICE_PORT_RECHECK_SEC마다만
+    갱신한다."""
+    ports = (device_row.get('fields') or {}).get('servicePorts') or []
+    ip = device_row['ip']
+    if not ports or not ip:
+        return
+    now = time.time()
+    last = entity.get('_servicePortCheckedAt') or 0
+    if now - last < SERVICE_PORT_RECHECK_SEC:
+        return
+    prev_statuses = entity.get('servicePortStatus') or {}
+    maint = storage.in_maintenance(device_row)
+    new_statuses = {}
+    for item in ports:
+        try:
+            port = int(item.get('port'))
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= port <= 65535):
+            continue
+        name = (item.get('name') or '').strip() or f'포트 {port}'
+        key = str(port)
+        prev = prev_statuses.get(key) or {}
+        prev_failures = prev.get('consecutiveFailures') or 0
+        prev_status = prev.get('status', 'good')
+        reachable, latency, reason = tcp_check_detailed(ip, port, 1.5)
+        failures = 0 if reachable else prev_failures + 1
+        status = evaluate_status(failures)
+        reason_label = PORT_FAIL_REASON_LABELS.get(reason) if reason else None
+        new_statuses[key] = {
+            'name': name, 'port': port, 'reachable': reachable, 'latencyMs': latency,
+            'reason': reason, 'reasonLabel': reason_label, 'status': status,
+            'consecutiveFailures': failures, 'checkedAt': int(now * 1000),
+        }
+        event_type = f'PORT_DOWN_{port}'
+        if _STATUS_RANK[status] > _STATUS_RANK[prev_status]:
+            storage.add_incident(
+                status, device_row['name'], storage.category_label(device_row['category']),
+                f"{device_row['name']}의 {name}({port}) 포트 응답 없음 -- "
+                f"{reason_label or '확인 실패'} (연속 {failures}회)",
+                device_id=device_row['id'], event_type=event_type, maintenance=maint)
+        elif prev_status != 'good' and status == 'good':
+            storage.add_incident(
+                'info', device_row['name'], storage.category_label(device_row['category']),
+                f"{device_row['name']}의 {name}({port}) 포트 응답 정상 복구",
+                device_id=device_row['id'], event_type=event_type, maintenance=maint)
+    with state.LOCK:
+        entity['servicePortStatus'] = new_statuses
+        entity['_servicePortCheckedAt'] = now

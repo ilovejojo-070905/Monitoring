@@ -34,6 +34,7 @@ import asyncio
 import concurrent.futures
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
@@ -2118,6 +2119,139 @@ def test_check_remote_ports_still_live_probes_other_vendors():
           'telnetOpen' in entity and 'sshOpen' in entity, entity)
 
 
+# ======================================================================
+# U. 서버 서비스 포트별 모니터링 (사용자 요청: "등록된 서버가 서비스하는
+#    포트를 모니터링해서 정상인지, 문제가 있으면 무엇이 문제인지 보여줄
+#    수 있어?")
+# ======================================================================
+
+def _pick_closed_port():
+    """아무것도 듣고 있지 않은 포트 번호 하나를 얻는다(바인드 후 바로
+    닫음) -- 그 포트로 연결을 시도하면 ConnectionRefusedError가 나는지
+    확인하는 테스트용."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def test_validate_service_ports():
+    v = validation.validate_service_ports
+    cleaned = v([{'name': '웹', 'port': 80}, {'name': '', 'port': '443'}])
+    check('U1 valid list is cleaned (string port coerced to int, blank name kept blank)',
+          cleaned == [{'name': '웹', 'port': 80}, {'name': '', 'port': 443}], cleaned)
+
+    for label, bad_input in (
+        ('U2 non-list input raises ValueError', 'not a list'),
+        ('U3 out-of-range port raises ValueError', [{'name': 'x', 'port': 99999}]),
+        ('U4 duplicate port raises ValueError', [{'name': 'x', 'port': 80}, {'name': 'y', 'port': 80}]),
+        ('U5 overlong name raises ValueError', [{'name': 'a' * 41, 'port': 80}]),
+        ('U6 more than MAX_SERVICE_PORTS_PER_DEVICE raises ValueError',
+         [{'name': f'p{i}', 'port': i + 1} for i in range(validation.MAX_SERVICE_PORTS_PER_DEVICE + 1)]),
+    ):
+        try:
+            v(bad_input)
+            check(label, False, bad_input)
+        except ValueError:
+            check(label, True)
+
+
+def test_tcp_check_detailed_distinguishes_refused_from_success():
+    from collector import ping_collector as pc
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(('127.0.0.1', 0))
+    srv.listen(1)
+    open_port = srv.getsockname()[1]
+    try:
+        reachable, latency, reason = pc.tcp_check_detailed('127.0.0.1', open_port, 1.0)
+        check('U7 an actually-listening port is reported reachable with no failure reason',
+              reachable is True and reason is None, (reachable, reason))
+    finally:
+        srv.close()
+
+    # Windows는 닫힌 포트에 대해 리눅스처럼 즉시 RST(REFUSED)를 돌려주지
+    # 않고 방화벽이 조용히 드롭해 타임아웃으로 보일 때가 실측으로 확인됨
+    # -- 플랫폼마다 달라도 "실패했고, 이유가 둘 중 하나로 분류된다"는
+    # 계약만 확인한다(정확히 어느 쪽인지는 OS/방화벽 설정에 달림).
+    closed_port = _pick_closed_port()
+    reachable2, latency2, reason2 = pc.tcp_check_detailed('127.0.0.1', closed_port, 1.0)
+    check('U8 a closed port on a live host is reported unreachable with REFUSED or TIMEOUT '
+          '(exact reason is platform-dependent)',
+          reachable2 is False and reason2 in ('REFUSED', 'TIMEOUT'), (reachable2, reason2))
+
+
+def test_check_service_ports_end_to_end():
+    # 포트 하나가 다운 -> warn -> crit로 악화되며 그 포트 전용 장애
+    # 이력이 열리고(장비 전체 REACHABILITY와는 별개 event_type), 포트가
+    # 다시 살아나면 같은 이력이 복구(resolved)로 닫히는지 전체 과정을
+    # 실제 소켓으로 확인한다.
+    from collector import ping_collector as pc
+    dev_id = 'unittest_service_ports_dev'
+    closed_port = _pick_closed_port()
+    event_type = f'PORT_DOWN_{closed_port}'
+    device_row = {'id': dev_id, 'name': 'UnitTestServicePortsDev', 'ip': '127.0.0.1', 'category': 'server',
+                  'fields': {'servicePorts': [{'name': '웹', 'port': closed_port}]}}
+    entity = {}
+    conn = storage.get_db()
+    conn.execute('DELETE FROM incidents WHERE device_id=?', (dev_id,))
+    conn.commit()
+    conn.close()
+    try:
+        pc.check_service_ports(entity, device_row)
+        st = entity['servicePortStatus'][str(closed_port)]
+        check('U9 first failed check: status is warn (1 consecutive failure), reason classified',
+              st['status'] == 'warn' and st['consecutiveFailures'] == 1
+              and st['reason'] in ('REFUSED', 'TIMEOUT'), st)
+
+        conn = storage.get_db()
+        row = conn.execute('SELECT severity, status FROM incidents WHERE device_id=? AND event_type=?',
+                            (dev_id, event_type)).fetchone()
+        conn.close()
+        check('U10 a warn-level incident was opened for this specific port (not the whole device)',
+              row is not None and row['severity'] == 'warn' and row['status'] == 'open',
+              dict(row) if row else None)
+
+        entity['_servicePortCheckedAt'] = 0  # 틱 쓰로틀 건너뛰어 바로 재확인
+        pc.check_service_ports(entity, device_row)
+        st2 = entity['servicePortStatus'][str(closed_port)]
+        check('U11 second consecutive failure escalates to crit',
+              st2['status'] == 'crit' and st2['consecutiveFailures'] == 2, st2)
+
+        conn = storage.get_db()
+        row2 = conn.execute('SELECT severity FROM incidents WHERE device_id=? AND event_type=?',
+                             (dev_id, event_type)).fetchone()
+        conn.close()
+        check('U12 the same incident row escalated to crit severity (not a second row)',
+              row2 is not None and row2['severity'] == 'crit', dict(row2) if row2 else None)
+
+        recovery_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        recovery_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            recovery_srv.bind(('127.0.0.1', closed_port))
+            recovery_srv.listen(1)
+            entity['_servicePortCheckedAt'] = 0
+            pc.check_service_ports(entity, device_row)
+            st3 = entity['servicePortStatus'][str(closed_port)]
+            check('U13 port comes back up: reachable True, status good, failures reset to 0',
+                  st3['reachable'] is True and st3['status'] == 'good' and st3['consecutiveFailures'] == 0, st3)
+
+            conn = storage.get_db()
+            row3 = conn.execute('SELECT status, resolved_at FROM incidents WHERE device_id=? AND event_type=?',
+                                 (dev_id, event_type)).fetchone()
+            conn.close()
+            check('U14 the incident is closed out as resolved on recovery',
+                  row3 is not None and row3['status'] == 'resolved' and row3['resolved_at'] is not None,
+                  dict(row3) if row3 else None)
+        finally:
+            recovery_srv.close()
+    finally:
+        conn = storage.get_db()
+        conn.execute('DELETE FROM incidents WHERE device_id=?', (dev_id,))
+        conn.commit()
+        conn.close()
+
+
 def main():
     for fn in (
         test_mac_from_oid_suffix, test_collect_mac_vlan_table,
@@ -2161,6 +2295,8 @@ def main():
         test_health_disk_check_reports_real_free_space, test_escalation_and_alert_retry_ticks_report_to_alerts_subsystem,
         test_check_remote_ports_does_not_live_probe_telnet_for_comware_and_aruba,
         test_check_remote_ports_live_probes_telnet_when_hp_device_is_down,
+        test_validate_service_ports, test_tcp_check_detailed_distinguishes_refused_from_success,
+        test_check_service_ports_end_to_end,
         test_scheduler_resolves_vendor_via_sysdescr_when_db_column_is_generic,
         test_check_remote_ports_still_live_probes_other_vendors,
     ):

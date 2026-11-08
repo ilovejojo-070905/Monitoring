@@ -104,6 +104,15 @@ def _run_job(device_id):
             resolved_profile = snmp_profiles.resolve_profile_name(
                 device_row.get('vendor_profile'), entity.get('sysDescr'))
             ping_collector.check_remote_ports(entity, device_row['ip'], resolved_profile)
+        # 사용자 요청("등록된 서버가 서비스하는 포트를 모니터링해서
+        # 정상인지, 문제가 있으면 무엇이 문제인지 보여줄 수 있어?") --
+        # 장비 전체 응답없음(REACHABILITY)과는 별개로, 서버가 등록해둔
+        # 서비스 포트(fields.servicePorts) 하나하나를 독립적으로 확인한다.
+        # ping/agent/snmp 어느 모드든 서버 카테고리면 같이 확인(자체
+        # 쓰로틀 SERVICE_PORT_RECHECK_SEC이 있어 매 틱마다 다시 열어보진
+        # 않음).
+        if device_row['category'] == 'server':
+            ping_collector.check_service_ports(entity, device_row)
         health.record_tick_success('collector')
         # Alert design section [4]/[5]: a device that was mid-outage due to a
         # collector-internal error (not a clean reachability failure) just

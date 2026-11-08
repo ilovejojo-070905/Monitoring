@@ -1197,6 +1197,13 @@ def _register_device_core(category, name, mode, ip, fields):
             return 400, {'error': str(e)}
         if not fields['tags']:
             del fields['tags']
+    if 'servicePorts' in fields:
+        try:
+            fields['servicePorts'] = validation.validate_service_ports(fields['servicePorts'])
+        except ValueError as e:
+            return 400, {'error': str(e)}
+        if not fields['servicePorts']:
+            del fields['servicePorts']
     if 'thresholds' in fields:
         try:
             fields['thresholds'] = validation.validate_thresholds(fields['thresholds'])
@@ -1504,6 +1511,13 @@ def api_update_device(device_id):
             return jsonify({'error': str(e)}), 400
         if not fields['tags']:
             del fields['tags']
+    if 'servicePorts' in fields:
+        try:
+            fields['servicePorts'] = validation.validate_service_ports(fields['servicePorts'])
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        if not fields['servicePorts']:
+            del fields['servicePorts']
     old_thresholds = (device_row.get('fields') or {}).get('thresholds')
     if 'thresholds' in fields:
         try:

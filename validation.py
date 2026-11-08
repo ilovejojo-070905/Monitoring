@@ -140,6 +140,43 @@ def validate_tags(tags):
     return cleaned
 
 
+MAX_SERVICE_PORTS_PER_DEVICE = 15
+MAX_SERVICE_PORT_NAME_LEN = 40
+
+
+def validate_service_ports(ports):
+    """ports: whatever the client sent for fields.servicePorts -- 등록된
+    서버가 실제로 서비스하는 포트 목록(사용자 요청: "등록된 서버가
+    서비스하는 포트를 모니터링해서 정상인지, 문제가 있으면 무엇이 문제인지
+    보여줄 수 있어?"). [{name, port}, ...] 형태를 검증해 정리된 목록을
+    돌려주거나 ValueError(한글 메시지)를 던진다. tags와 같은 패턴(서버가
+    아니라 클라이언트가 보낸 임의 JSON이라 형태부터 가정하지 않음)."""
+    if not isinstance(ports, list):
+        raise ValueError('servicePorts는 목록이어야 합니다')
+    cleaned = []
+    seen_ports = set()
+    for item in ports:
+        if not isinstance(item, dict):
+            raise ValueError('포트 항목 형식이 올바르지 않습니다')
+        port = item.get('port')
+        if not is_valid_port(port):
+            raise ValueError(f'포트 번호는 1~65535 사이의 숫자여야 합니다: {port!r}')
+        port = int(port)
+        name = (item.get('name') or '').strip()
+        if name:
+            if len(name) > MAX_SERVICE_PORT_NAME_LEN:
+                raise ValueError(f'포트 이름은 {MAX_SERVICE_PORT_NAME_LEN}자 이하여야 합니다: "{name}"')
+            if not is_safe_name(name):
+                raise ValueError(f'포트 이름에 사용할 수 없는 문자가 포함되어 있습니다: "{name}"')
+        if port in seen_ports:
+            raise ValueError(f'포트 {port}가 중복 등록되었습니다')
+        seen_ports.add(port)
+        cleaned.append({'name': name, 'port': port})
+    if len(cleaned) > MAX_SERVICE_PORTS_PER_DEVICE:
+        raise ValueError(f'모니터링 포트는 장비당 최대 {MAX_SERVICE_PORTS_PER_DEVICE}개까지입니다')
+    return cleaned
+
+
 _SNMPV3_AUTH_PROTOCOLS = {'MD5', 'SHA'}
 _SNMPV3_PRIV_PROTOCOLS = {'DES', 'AES'}
 

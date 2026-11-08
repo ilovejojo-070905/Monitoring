@@ -3342,6 +3342,12 @@ function renderRegisterSkeleton(){
             <div class="field"><label>역할</label><input type="text" id="f-role-server" placeholder="예: 개발용 PC"></div>
           </div>
 
+          <div data-group="server" style="margin-top:14px">
+            <div class="field-label-row" style="font-size:12px;color:var(--text-faint);margin-bottom:6px">모니터링할 서비스 포트 (선택 -- 이 서버가 실제로 서비스하는 포트별로 정상/문제 여부와 문제 원인을 확인합니다)</div>
+            <div id="f-service-ports-rows"></div>
+            <button type="button" class="btn" id="f-service-ports-add" style="font-size:12px;padding:6px 12px">+ 포트 추가</button>
+          </div>
+
           <div class="form-grid" data-group="db" style="margin-top:14px;display:none">
             <div class="field"><label>엔진</label>
               <select id="f-engine"><option>Oracle</option><option>MySQL</option><option>PostgreSQL</option><option>MS-SQL</option><option>MongoDB</option><option>Redis</option><option>기타</option></select>
@@ -3594,6 +3600,31 @@ function renderRegisterSkeleton(){
     $('#f-snmp-v3-authpw').placeholder = pwPlaceholder;
     $('#f-snmp-v3-privpw').placeholder = pwPlaceholder;
   }
+  // 사용자 요청("등록된 서버가 서비스하는 포트를 모니터링해서 정상인지,
+  // 문제가 있으면 무엇이 문제인지 보여줄 수 있어?"): 서버 등록/수정
+  // 화면에서 이름+포트번호 행을 자유롭게 추가/삭제할 수 있게 한다 --
+  // fields.servicePorts로 저장되어 collector/ping_collector.py의
+  // check_service_ports가 매 틱 실제로 TCP 연결해본다.
+  function addServicePortRow(name, port){
+    const row = document.createElement('div');
+    row.className = 'service-port-row';
+    row.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center';
+    row.innerHTML = `<input type="text" class="sp-name" placeholder="이름 (예: 웹)" maxlength="40" style="flex:1">
+      <input type="number" class="sp-port" placeholder="포트" min="1" max="65535" style="width:100px">
+      <button type="button" class="btn sp-remove" style="padding:6px 10px;flex:none">삭제</button>`;
+    row.querySelector('.sp-name').value = name || '';
+    row.querySelector('.sp-port').value = port || '';
+    row.querySelector('.sp-remove').addEventListener('click', ()=> row.remove());
+    $('#f-service-ports-rows').appendChild(row);
+  }
+  function clearServicePortRows(){ $('#f-service-ports-rows').innerHTML = ''; }
+  function readServicePortRows(){
+    return [...$$('#f-service-ports-rows .service-port-row')].map(row=>({
+      name: row.querySelector('.sp-name').value.trim(),
+      port: parseInt(row.querySelector('.sp-port').value, 10),
+    }));
+  }
+  $('#f-service-ports-add').addEventListener('click', ()=> addServicePortRow());
   function markSnmpUntested(){
     snmpTestPassed = false;
     $('#snmp-test-result').textContent = '';
@@ -3936,6 +3967,7 @@ function renderRegisterSkeleton(){
     $('#f-snmp-community').placeholder = 'public';
     $('#reg-form').reset();
     $('#f-threshold-fields').innerHTML = thresholdFieldsHtml('f-th', {});
+    clearServicePortRows();
     updateFormVisibility();
     markSnmpUntested();
     $('#reg-form-card').classList.remove('modal-mode');
@@ -3991,6 +4023,8 @@ function renderRegisterSkeleton(){
       }
       updateOtherFieldVisibility('f-os','f-os-other');
       $('#f-role-server').value = entity.role||'';
+      clearServicePortRows();
+      (entity.servicePorts||[]).forEach(p=> addServicePortRow(p.name, p.port));
     }
     else if(cat==='db'){
       const engineSelEl = $('#f-engine');
@@ -4092,6 +4126,14 @@ function renderRegisterSkeleton(){
         fields.os = osSel;
       }
       fields.role=$('#f-role-server').value.trim();
+      const servicePortRows = readServicePortRows();
+      const seenSpPorts = new Set();
+      for(const p of servicePortRows){
+        if(!p.port || isNaN(p.port) || p.port < 1 || p.port > 65535){ errEl.textContent = '모니터링 포트 번호는 1~65535 사이의 숫자여야 합니다'; return; }
+        if(seenSpPorts.has(p.port)){ errEl.textContent = `포트 ${p.port}가 중복 등록되었습니다`; return; }
+        seenSpPorts.add(p.port);
+      }
+      if(servicePortRows.length) fields.servicePorts = servicePortRows;
     }
     else if(regCategory==='db'){
       const engineSel = $('#f-engine').value;
@@ -6407,6 +6449,20 @@ function drawServer(s){
         </div>
       </div>
     </div>
+    ${(s.servicePortStatus && Object.keys(s.servicePortStatus).length) ? `
+    <div class="card" style="min-width:0">
+      <div class="card-head"><div><h3>서비스 포트 상태</h3><span class="sub">등록된 포트를 직접 TCP 연결해 실시간 확인</span></div></div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        ${Object.values(s.servicePortStatus).sort((a,b)=>a.port-b.port).map(p=>`
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--surface-2)">
+            <span style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
+              <span class="pill ${p.status}" style="flex:none;font-size:9px;padding:2px 7px"><span class="dot"></span>${statusLabel(p.status)}</span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}<span class="mono" style="color:var(--text-faint)"> : ${p.port}</span></span>
+            </span>
+            <span class="mono" style="font-size:11px;color:${p.reachable?'var(--text-dim)':'var(--crit)'};flex:none;max-width:280px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.reasonLabel||'')}">${p.reachable ? (p.latencyMs!=null ? `${fmt1(p.latencyMs)}ms` : '정상') : escapeHtml(p.reasonLabel||'확인 실패')}</span>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
     <div style="${grid2}">
       ${miniCardHtml('Top 프로세스', 'CPU 사용률 순', `
         <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
@@ -6641,6 +6697,20 @@ function drawPingDevice(e, catLabel){
       ${ifaceCard}
     </div>` : `
     <div style="display:flex;flex-direction:column;gap:10px">${envCard}${responseTimeCard}</div>`}
+    ${(e.servicePortStatus && Object.keys(e.servicePortStatus).length) ? `
+    <div class="card" style="min-width:0">
+      <div class="card-head"><div><h3>서비스 포트 상태</h3><span class="sub">등록된 포트를 직접 TCP 연결해 실시간 확인</span></div></div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+        ${Object.values(e.servicePortStatus).sort((a,b)=>a.port-b.port).map(p=>`
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--surface-2)">
+            <span style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
+              <span class="pill ${p.status}" style="flex:none;font-size:9px;padding:2px 7px"><span class="dot"></span>${statusLabel(p.status)}</span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}<span class="mono" style="color:var(--text-faint)"> : ${p.port}</span></span>
+            </span>
+            <span class="mono" style="font-size:11px;color:${p.reachable?'var(--text-dim)':'var(--crit)'};flex:none;max-width:280px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.reasonLabel||'')}">${p.reachable ? (p.latencyMs!=null ? `${fmt1(p.latencyMs)}ms` : '정상') : escapeHtml(p.reasonLabel||'확인 실패')}</span>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
         ? 'SNMP로 장치 정보와 응답시간을 실측합니다. 인터페이스·CPU·메모리·배터리 등은 장비가 해당 MIB를 지원할 때만 표시됩니다.'
