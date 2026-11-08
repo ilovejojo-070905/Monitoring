@@ -1104,22 +1104,20 @@ function deviceIpById(id){
 }
 // 사용자 요청("전체 위험 주의 정보 미해결 접속/이력 한 화면이 넘어가면
 // 1/2/3/4 이런식으로 표시할 수 있게 해줘"): 이벤트/장애 목록과 접속/설정
-// 이력 탭이 공통으로 쓰는 번호 페이지네이션 렌더러. 페이지가 많으면(7개
-// 초과) 양 끝 + 현재 페이지 주변만 보여주고 나머지는 "…"로 생략한다.
+// 이력 탭이 공통으로 쓰는 번호 페이지네이션 렌더러. 후속 요청("스크린샷
+// 처럼 해당 페이지 번호를 10개씩 표시해줘")으로 현재 페이지가 속한
+// 10개 단위 구간(1~10, 11~20, ...)을 통째로 보여주고, 그 구간 밖의
+// 첫/마지막 페이지는 "…"로 이어 바로 이동할 수 있게 한다.
 function renderPagination(container, page, totalPages, onChange){
   if(!container) return;
   if(totalPages <= 1){ container.innerHTML = ''; return; }
+  const BLOCK = 10;
+  const blockStart = Math.floor((page-1)/BLOCK)*BLOCK + 1;
+  const blockEnd = Math.min(blockStart+BLOCK-1, totalPages);
   const pages = [];
-  if(totalPages <= 7){
-    for(let p=1;p<=totalPages;p++) pages.push(p);
-  } else {
-    pages.push(1);
-    const start = Math.max(2, page-2), end = Math.min(totalPages-1, page+2);
-    if(start > 2) pages.push('…');
-    for(let p=start;p<=end;p++) pages.push(p);
-    if(end < totalPages-1) pages.push('…');
-    pages.push(totalPages);
-  }
+  if(blockStart > 1) pages.push(1, '…');
+  for(let p=blockStart;p<=blockEnd;p++) pages.push(p);
+  if(blockEnd < totalPages) pages.push('…', totalPages);
   const pageBtn = (p, label, disabled)=>
     `<button type="button" class="btn${p===page?' primary':''}" style="padding:4px 11px;min-width:32px;font-size:12px"${disabled?' disabled':''} data-page="${p}">${label}</button>`;
   container.innerHTML = `<div style="display:flex;justify-content:center;align-items:center;gap:6px;flex-wrap:wrap">
