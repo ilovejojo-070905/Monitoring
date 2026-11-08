@@ -1944,31 +1944,10 @@ def load_audit_log(limit=200, before_id=None, action=None, username=None):
     return [dict(r) for r in rows]
 
 
-def load_device_history(limit=50, before_ts=None, actions=None, q=None):
-    """이벤트/장애 관리 화면의 "접속/설정 이력" 탭(ADMIN 전용, server.py
-    api_devices_history)용 전용 쿼리. load_audit_log()의 범용 쿼리로는
-    대상 장비의 "이름"으로 검색할 수 없다 -- audit_log.target은
-    device_id일 뿐 이름을 모른다. devices 테이블과 LEFT JOIN(INNER JOIN이면
-    이미 삭제된 장비의 과거 기록이 통째로 사라짐)해서 장비명/사용자/작업/
-    상세 내용을 한 검색창으로 한꺼번에 찾을 수 있게 한다.
-
-    audit_log(InfraSight 사이트를 거친 작업)와 device_access_log(장비가
-    보낸 syslog 기반 접속 기록, PuTTY 등 직접 접속)를 UNION ALL로 합쳐서
-    하나의 시간순 타임라인으로 보여준다 -- 사용자 요청("PuTTY로 직접
-    접속했는데 접속이력이 보이질 않아")으로 추가됨. 두 테이블의 PK(id)가
-    서로 독립적이라 페이지네이션 커서로 쓸 수 없으므로(값이 겹칠 수 있음)
-    ts(밀리초)를 커서로 쓴다 -- 같은 ms에 기록이 여럿이면 경계에서 한두
-    건 중복/누락될 수 있지만("더 보기" 페이지네이션일 뿐이라 치명적이지
-    않음), audit_log 쪽 before_id처럼 완전히 정확한 커서보다 두 테이블을
-    섞어 보여주는 쪽이 사용자 요청의 핵심이라 이 정도 트레이드오프는
-    감안함.
-    actions: audit_log 쪽에서 보여줄 action 종류 한정(IN 절) -- server.py의
-    DEVICE_HISTORY_ACTIONS. device_access_log 쪽은 모든 행이 이미
-    "접속 이력"이라는 단 하나의 목적으로만 쌓이므로 별도 필터가 필요 없음.
-    q: 장비명/사용자/작업/상세 중 하나라도 포함하면 매치(LIKE, 대소문자
-    무시)."""
-    limit = max(1, min(limit, 500))
-    conn = get_db()
+def _device_history_cte(actions):
+    """load_device_history()/count_device_history()가 공유하는 UNION ALL
+    본문을 한 곳에서만 관리하기 위해 뽑아냄(아래 두 함수의 독스트링 참고).
+    (cte_sql, params) 튜플을 돌려준다."""
     actions_ph = ",".join("?" * len(actions)) if actions else None
     cte = f'''
         SELECT a.id AS src_id, 'audit' AS src, a.ts AS ts, a.action AS action,
@@ -1983,20 +1962,74 @@ def load_device_history(limit=50, before_ts=None, actions=None, q=None):
         FROM device_access_log dal LEFT JOIN devices d2 ON d2.id = dal.device_id
     '''
     params = list(actions) if actions else []
+    return cte, params
+
+
+def _device_history_q_clause(q):
+    """load_device_history()/count_device_history()가 공유하는 검색어(q)
+    WHERE 절 조각. (sql_fragment, params) 튜플을 돌려주며, q가 없으면
+    ('', [])."""
+    if not q:
+        return '', []
+    like = f'%{q}%'
+    frag = (' AND (device_name LIKE ? OR username LIKE ? OR action LIKE ? OR details LIKE ? '
+            'OR device_id LIKE ? OR source_ip LIKE ?)')
+    return frag, [like, like, like, like, like, like]
+
+
+def load_device_history(limit=50, offset=0, actions=None, q=None):
+    """이벤트/장애 관리 화면의 "접속/설정 이력" 탭(ADMIN 전용, server.py
+    api_devices_history)용 전용 쿼리. load_audit_log()의 범용 쿼리로는
+    대상 장비의 "이름"으로 검색할 수 없다 -- audit_log.target은
+    device_id일 뿐 이름을 모른다. devices 테이블과 LEFT JOIN(INNER JOIN이면
+    이미 삭제된 장비의 과거 기록이 통째로 사라짐)해서 장비명/사용자/작업/
+    상세 내용을 한 검색창으로 한꺼번에 찾을 수 있게 한다.
+
+    audit_log(InfraSight 사이트를 거친 작업)와 device_access_log(장비가
+    보낸 syslog 기반 접속 기록, PuTTY 등 직접 접속)를 UNION ALL로 합쳐서
+    하나의 시간순 타임라인으로 보여준다 -- 사용자 요청("PuTTY로 직접
+    접속했는데 접속이력이 보이질 않아")으로 추가됨.
+
+    offset/limit: 번호 페이지네이션(1/2/3/4...) 지원을 위한 통상적인
+    OFFSET 방식 -- 사용자 요청("접속/설정이력 ... 한 화면이 넘어가면
+    1/2/3/4 이런식으로 표시할 수 있게 해줘")으로 기존 ts 커서 기반
+    "더 보기" 방식에서 전환. 페이지 번호를 직접 눌러 임의 페이지로
+    이동할 수 있어야 하므로 커서 방식(이전 페이지의 마지막 ts가 있어야
+    다음 페이지를 구할 수 있음)으로는 불가능했다.
+    actions: audit_log 쪽에서 보여줄 action 종류 한정(IN 절) -- server.py의
+    DEVICE_HISTORY_ACTIONS. device_access_log 쪽은 모든 행이 이미
+    "접속 이력"이라는 단 하나의 목적으로만 쌓이므로 별도 필터가 필요 없음.
+    q: 장비명/사용자/작업/상세 중 하나라도 포함하면 매치(LIKE, 대소문자
+    무시)."""
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    conn = get_db()
+    cte, params = _device_history_cte(actions)
     query = f'SELECT * FROM ({cte}) WHERE 1=1'
-    if before_ts is not None:
-        query += ' AND ts < ?'
-        params.append(before_ts)
-    if q:
-        like = f'%{q}%'
-        query += (' AND (device_name LIKE ? OR username LIKE ? OR action LIKE ? OR details LIKE ? '
-                   'OR device_id LIKE ? OR source_ip LIKE ?)')
-        params.extend([like, like, like, like, like, like])
-    query += ' ORDER BY ts DESC, src_id DESC LIMIT ?'
+    q_frag, q_params = _device_history_q_clause(q)
+    query += q_frag
+    params += q_params
+    query += ' ORDER BY ts DESC, src_id DESC LIMIT ? OFFSET ?'
     params.append(limit)
+    params.append(offset)
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def count_device_history(actions=None, q=None):
+    """load_device_history()와 같은 필터(actions/q)로 전체 건수만 센다 --
+    접속/설정 이력 탭의 번호 페이지네이션이 총 페이지 수를 표시하려면
+    전체 건수를 알아야 해서 추가."""
+    conn = get_db()
+    cte, params = _device_history_cte(actions)
+    query = f'SELECT COUNT(*) c FROM ({cte}) WHERE 1=1'
+    q_frag, q_params = _device_history_q_clause(q)
+    query += q_frag
+    params += q_params
+    row = conn.execute(query, params).fetchone()
+    conn.close()
+    return row['c']
 
 
 def record_device_access(device_id, device_ip, ts, event_type, username, details, raw_message, source_ip=None):

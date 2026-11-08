@@ -1080,6 +1080,36 @@ function deviceIpById(id){
   const d = SERVERS.find(x=>x.id===id) || DBS.find(x=>x.id===id) || NETS.find(x=>x.id===id) || FACS.find(x=>x.id===id);
   return d ? d.ip : null;
 }
+// 사용자 요청("전체 위험 주의 정보 미해결 접속/이력 한 화면이 넘어가면
+// 1/2/3/4 이런식으로 표시할 수 있게 해줘"): 이벤트/장애 목록과 접속/설정
+// 이력 탭이 공통으로 쓰는 번호 페이지네이션 렌더러. 페이지가 많으면(7개
+// 초과) 양 끝 + 현재 페이지 주변만 보여주고 나머지는 "…"로 생략한다.
+function renderPagination(container, page, totalPages, onChange){
+  if(!container) return;
+  if(totalPages <= 1){ container.innerHTML = ''; return; }
+  const pages = [];
+  if(totalPages <= 7){
+    for(let p=1;p<=totalPages;p++) pages.push(p);
+  } else {
+    pages.push(1);
+    const start = Math.max(2, page-2), end = Math.min(totalPages-1, page+2);
+    if(start > 2) pages.push('…');
+    for(let p=start;p<=end;p++) pages.push(p);
+    if(end < totalPages-1) pages.push('…');
+    pages.push(totalPages);
+  }
+  const pageBtn = (p, label, disabled)=>
+    `<button type="button" class="btn${p===page?' primary':''}" style="padding:4px 11px;min-width:32px;font-size:12px"${disabled?' disabled':''} data-page="${p}">${label}</button>`;
+  container.innerHTML = `<div style="display:flex;justify-content:center;align-items:center;gap:6px;flex-wrap:wrap">
+    ${pageBtn(page-1, '‹', page<=1)}
+    ${pages.map(p=> p==='…' ? `<span style="color:var(--text-faint);padding:0 2px">…</span>` : pageBtn(p, p, false)).join('')}
+    ${pageBtn(page+1, '›', page>=totalPages)}
+  </div>`;
+  container.querySelectorAll('[data-page]').forEach(b=> b.addEventListener('click', ()=>{
+    const p = parseInt(b.dataset.page, 10);
+    if(p>=1 && p<=totalPages && p!==page) onChange(p);
+  }));
+}
 let DEVICE_LLDP_LINKS = [];
 let SERVER_INFO = { lanIp: location.hostname || 'localhost', port: location.port || '5057' };
 
@@ -2891,6 +2921,8 @@ function renderFacility(){
 
 /* ================= INCIDENTS ================= */
 let incFilter = 'all';
+let incPage = 1;
+const INC_PAGE_SIZE = 20;
 function renderIncidentsSkeleton(){
   const el = $('#view-incidents');
   el.innerHTML = `
@@ -2914,25 +2946,25 @@ function renderIncidentsSkeleton(){
         <thead><tr><th>심각도</th><th>시각</th><th>영역</th><th>대상</th><th>IP</th><th>내용</th><th>상태</th><th></th></tr></thead>
         <tbody id="inc-tbody"></tbody>
       </table></div>
+      <div id="inc-pagination" style="margin-top:12px"></div>
       <div id="inc-history-wrap" style="display:none">
         <div id="dev-history-body"></div>
-        <div style="text-align:center;margin-top:10px"><button type="button" class="btn" id="dev-history-more-btn" style="display:none">더 보기</button></div>
+        <div id="dev-history-pagination" style="margin-top:12px"></div>
       </div>
     </div>
   `;
   $$('#inc-filters .chip-btn').forEach(b=> b.addEventListener('click', ()=>{
     $$('#inc-filters .chip-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active');
-    incFilter = b.dataset.f; renderIncidents();
+    incFilter = b.dataset.f; incPage = 1; renderIncidents();
   }));
-  $('#inc-search').addEventListener('input', renderIncidents);
-  $('#dev-history-more-btn').addEventListener('click', ()=>renderDeviceHistory(true));
+  $('#inc-search').addEventListener('input', ()=>{ incPage = 1; renderIncidents(); });
   // 서버로 매번 다시 쿼리하는 검색이라(이벤트 쪽 검색과 달리 이미 불러온
   // 배열을 그냥 다시 필터링하는 게 아님), 입력 중 매 키 입력마다 요청을
   // 보내지 않게 짧은 디바운스를 둔다.
   let devHistorySearchTimer = null;
   $('#dev-history-search').addEventListener('input', ()=>{
     if(devHistorySearchTimer) clearTimeout(devHistorySearchTimer);
-    devHistorySearchTimer = setTimeout(()=> renderDeviceHistory(), 300);
+    devHistorySearchTimer = setTimeout(()=>{ devHistoryPage = 1; renderDeviceHistory(); }, 300);
   });
 }
 // "접속/설정 이력" 탭은 ADMIN 전용(사용자 요청: "관리자만 볼 수 있게 해줘").
@@ -2962,22 +2994,24 @@ const DEVICE_HISTORY_ACTION_LABEL = {
 // 접속, syslog로 수신) -- 둘을 한 타임라인에 섞어 보여주므로 각 행이
 // 어느 쪽인지 구분할 수 있어야 한다.
 const DEVICE_HISTORY_SRC_LABEL = {audit: 'InfraSight', syslog: '장비 직접접속'};
-let deviceHistoryOldestTs = null;
-async function renderDeviceHistory(append){
+let devHistoryPage = 1;
+const DEV_HISTORY_PAGE_SIZE = 50;
+async function renderDeviceHistory(){
   const body = $('#dev-history-body');
-  const moreBtn = $('#dev-history-more-btn');
+  const pagEl = $('#dev-history-pagination');
   if(!body) return;
-  if(!append) deviceHistoryOldestTs = null;
   const params = new URLSearchParams();
   const q = ($('#dev-history-search')?.value||'').trim();
   if(q) params.set('q', q);
-  if(append && deviceHistoryOldestTs) params.set('beforeTs', deviceHistoryOldestTs);
+  params.set('limit', DEV_HISTORY_PAGE_SIZE);
+  params.set('offset', (devHistoryPage-1)*DEV_HISTORY_PAGE_SIZE);
   const qs = params.toString() ? `?${params.toString()}` : '';
   const r = await apiFetch(`/api/devices/history${qs}`);
-  if(!r.ok){ if(!append) body.innerHTML = '<div class="empty-note">불러오기 실패</div>'; return; }
+  if(!r.ok){ body.innerHTML = '<div class="empty-note">불러오기 실패</div>'; if(pagEl) pagEl.innerHTML=''; return; }
   const j = await r.json();
   const entries = j.entries || [];
-  if(!append && !entries.length){ body.innerHTML = '<div class="empty-note">기록이 없습니다</div>'; moreBtn.style.display='none'; return; }
+  const total = j.total || 0;
+  if(!entries.length){ body.innerHTML = '<div class="empty-note">기록이 없습니다</div>'; if(pagEl) pagEl.innerHTML=''; return; }
   const rowsHtml = entries.map(h=>{
     // IP는 이제 전용 컬럼으로 따로 보이므로(사용자 요청: "IP 목록이
     // 추가 되었으니깐, 상세에서 ip 정보는 보이질 않게 해줘"), 상세 텍스트가
@@ -3012,22 +3046,13 @@ async function renderDeviceHistory(append){
       <td${detailsTitle?` title="${escapeHtml(detailsTitle)}"`:''}>${escapeHtml(detailsDisplay)}</td>
     </tr>`;
   }).join('');
-  // 사용자 보고(2026-11-08, "접속/설정이력 더보기 하면 세로 라인이
-  // 맞지 않아"): append일 때 매번 <table>을 통째로 새로 만들어
-  // body.insertAdjacentHTML('beforeend', ...)로 이어붙이면, 각 <table>이
-  // 서로 독립적으로 컬럼 너비를 계산하기 때문에(내용에 따라 자동 폭이
-  // 달라짐) 테이블 경계에서 세로 구분선이 어긋나 보였다. append일 때는
-  // 기존 <tbody>에 행만 추가하고, 테이블/헤더는 처음 한 번만 만든다.
-  if(append){
-    const tbody = body.querySelector('table tbody');
-    if(tbody) tbody.insertAdjacentHTML('beforeend', rowsHtml);
-  } else {
-    body.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
-      <thead><tr><th>시각</th><th>경로</th><th>사용자</th><th>IP</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
-      <tbody>${rowsHtml}</tbody></table></div>`;
-  }
-  if(entries.length) deviceHistoryOldestTs = entries[entries.length-1].ts;
-  moreBtn.style.display = entries.length >= 50 ? '' : 'none';
+  body.innerHTML = `<div class="table-wrap"><table class="data reg-device-table">
+    <thead><tr><th>시각</th><th>경로</th><th>사용자</th><th>IP</th><th>대상 장비</th><th>작업</th><th>상세</th></tr></thead>
+    <tbody>${rowsHtml}</tbody></table></div>`;
+  // 사용자 요청("접속/설정이력 ... 1/2/3/4 이런식으로 표시할 수 있게
+  // 해줘")으로 ts 커서 기반 "더 보기" 대신 번호 페이지네이션으로 전환.
+  const totalPages = Math.max(1, Math.ceil(total / DEV_HISTORY_PAGE_SIZE));
+  renderPagination(pagEl, devHistoryPage, totalPages, (p)=>{ devHistoryPage = p; renderDeviceHistory(); });
 }
 function renderIncidents(){
   // ADMIN에게만 "접속/설정 이력" 탭을 보여주는 전환은 로그인 후 role을
@@ -3042,6 +3067,7 @@ function renderIncidents(){
   }
   const isHistory = incFilter === 'history';
   $('#inc-events-wrap').style.display = isHistory ? 'none' : '';
+  $('#inc-pagination').style.display = isHistory ? 'none' : '';
   $('#inc-history-wrap').style.display = isHistory ? '' : 'none';
   // 검색창을 "미해결" 등 이벤트 필터와 같은 자리(card-head 안, 칩 행
   // 오른쪽)에 두기로 함(사용자 요청: "검색창이 한줄 밑으로 내려가 미해결
@@ -3058,7 +3084,7 @@ function renderIncidents(){
     // (다른 화면과 같은 폴링 재렌더), 이력 탭에 머무는 동안 매번 다시
     // 불러오지 않도록 탭에 "처음 들어올 때"만 호출한다. 탭을 벗어났다가
     // 다시 들어오면 새로 불러온다.
-    if(!incHistoryActive){ incHistoryActive = true; renderDeviceHistory(); }
+    if(!incHistoryActive){ incHistoryActive = true; devHistoryPage = 1; renderDeviceHistory(); }
     return;
   }
   incHistoryActive = false;
@@ -3069,7 +3095,16 @@ function renderIncidents(){
   if(incFilter==='open') rows = rows.filter(i=>i.status==='open');
   const q = ($('#inc-search')?.value||'').toLowerCase();
   if(q) rows = rows.filter(i=> i.message.toLowerCase().includes(q) || i.source.toLowerCase().includes(q) || (i.category||'').toLowerCase().includes(q));
-  $('#inc-tbody').innerHTML = rows.slice(0,80).map(i=>`
+  // 사용자 요청("전체 위험 주의 정보 미해결 ... 1/2/3/4 이런식으로 표시할
+  // 수 있게 해줘")으로 기존 앞 80개만 보여주던 하드컷 대신 번호
+  // 페이지네이션으로 전환(INCIDENTS 자체는 /api/state가 최신 200개만
+  // 내려주므로 여기선 그 범위 안에서 페이지를 나눈다).
+  const incTotalPages = Math.max(1, Math.ceil(rows.length / INC_PAGE_SIZE));
+  if(incPage > incTotalPages) incPage = incTotalPages;
+  if(incPage < 1) incPage = 1;
+  const pageRows = rows.slice((incPage-1)*INC_PAGE_SIZE, incPage*INC_PAGE_SIZE);
+  renderPagination($('#inc-pagination'), incPage, incTotalPages, (p)=>{ incPage = p; renderIncidents(); });
+  $('#inc-tbody').innerHTML = pageRows.map(i=>`
     <tr>
       <td><span class="pill ${i.severity==='crit'?'crit':i.severity==='warn'?'warn':'good'}"><span class="dot"></span>${i.severity==='crit'?'위험':i.severity==='warn'?'주의':'정보'}</span></td>
       <td class="mono">${i.time.toLocaleTimeString('ko-KR',{hour12:false})}</td>

@@ -2446,13 +2446,14 @@ DEVICE_HISTORY_ACTIONS = (
 @require_role('ADMIN')
 def api_devices_history():
     limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
-    # audit_log와 device_access_log(syslog 기반 접속 기록)를 합친 결과라
-    # 커서가 더 이상 하나의 테이블 PK(id)가 아니라 ts(ms) -- storage.
-    # load_device_history()의 UNION 설명 참고.
-    before_ts = request.args.get('beforeTs', type=int)
+    # 사용자 요청("접속/설정이력 ... 1/2/3/4 이런식으로 표시할 수 있게
+    # 해줘")으로 ts 커서 기반 "더 보기" 대신 통상적인 offset 페이지네이션으로
+    # 전환 -- storage.load_device_history()의 offset/limit 설명 참고.
+    offset = validation.clamp_int(request.args.get('offset'), 0, 10_000_000, 0)
     q = (request.args.get('q') or '').strip() or None
-    entries = storage.load_device_history(limit=limit, before_ts=before_ts, actions=DEVICE_HISTORY_ACTIONS, q=q)
-    return jsonify({'entries': entries})
+    entries = storage.load_device_history(limit=limit, offset=offset, actions=DEVICE_HISTORY_ACTIONS, q=q)
+    total = storage.count_device_history(actions=DEVICE_HISTORY_ACTIONS, q=q)
+    return jsonify({'entries': entries, 'total': total})
 
 
 @app.get('/api/devices/<device_id>/metrics')

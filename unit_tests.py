@@ -1280,6 +1280,19 @@ def test_device_access_log_merges_with_audit_log_history():
         audit_row = next(e for e in entries if e['src'] == 'audit')
         check('N8c audit row also exposes source_ip (InfraSight 쪽 접속 IP, audit_log.source_ip 그대로 노출)',
               audit_row['source_ip'] == '203.0.113.36', audit_row)
+        # 사용자 요청("접속/설정이력 ... 1/2/3/4 이런식으로 표시할 수 있게
+        # 해줘")으로 추가된 offset 페이지네이션 + 전체 건수 집계.
+        total = storage.count_device_history(actions=('REGISTER_DEVICE',), q='UnitTestSyslogMergeDev')
+        check('N8d count_device_history() returns the total matching row count (ignores limit/offset)',
+              total == 2, total)
+        page1 = storage.load_device_history(limit=1, offset=0, actions=('REGISTER_DEVICE',),
+                                             q='UnitTestSyslogMergeDev')
+        page2 = storage.load_device_history(limit=1, offset=1, actions=('REGISTER_DEVICE',),
+                                             q='UnitTestSyslogMergeDev')
+        check('N8e offset=0,limit=1 returns just the newest (syslog) row',
+              len(page1) == 1 and page1[0]['src'] == 'syslog', page1)
+        check('N8f offset=1,limit=1 returns the next row (audit) with no overlap/gap vs page1',
+              len(page2) == 1 and page2[0]['src'] == 'audit' and page2[0]['src_id'] != page1[0]['src_id'], (page1, page2))
     finally:
         conn = storage.get_db()
         conn.execute("DELETE FROM devices WHERE id=?", (dev,))
