@@ -2979,6 +2979,19 @@ async function renderDeviceHistory(append){
     if(h.source_ip && detailsDisplay.startsWith(h.source_ip+'에서')){
       detailsDisplay = detailsDisplay.slice((h.source_ip+'에서').length).trim();
     }
+    // 사용자 보고(2026-11-08, "HPE 인터페이스 비활성화를 많이 했는데
+    // 설정 이력 상세가 너무 길어져서 불편해"): 일괄 비활성화/활성화는
+    // 인터페이스 이름을 ", "로 전부 이어붙여 details에 저장한다
+    // (server.py의 api_interface_bulk_shutdown 등) -- 여러 개를 한 번에
+    // 끄면 한 줄이 끝없이 길어진다. 목록 자체(저장된 원본 details)는
+    // 그대로 두고, 화면에 보여줄 때만 앞 1개 + "외 N개"로 줄이고
+    // 전체 목록은 title(마우스오버 툴팁)로 그대로 보여준다.
+    let detailsTitle = '';
+    const parts = detailsDisplay.split(', ');
+    if(parts.length > 3){
+      detailsTitle = detailsDisplay;
+      detailsDisplay = `${parts[0]} 외 ${parts.length - 1}개`;
+    }
     return `
     <tr>
       <td style="white-space:nowrap">${fmtWhen(h.ts)}</td>
@@ -2987,7 +3000,7 @@ async function renderDeviceHistory(append){
       <td class="mono">${escapeHtml(h.source_ip||'-')}</td>
       <td class="name">${escapeHtml(h.device_name || h.device_id || '-')}</td>
       <td class="mono"${h.action==='LOGIN_FAILED'?' style="color:var(--crit)"':''}>${escapeHtml(DEVICE_HISTORY_ACTION_LABEL[h.action]||h.action)}</td>
-      <td>${escapeHtml(detailsDisplay)}</td>
+      <td${detailsTitle?` title="${escapeHtml(detailsTitle)}"`:''}>${escapeHtml(detailsDisplay)}</td>
     </tr>`;
   }).join('');
   const tableHtml = `<div class="table-wrap"><table class="data reg-device-table">
@@ -6370,7 +6383,7 @@ function drawPingDevice(e, catLabel){
           const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
           const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
           return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
-          <span style="display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden;padding-right:10px">
+          <span style="display:flex;align-items:center;gap:7px;min-width:0;padding-right:10px">
             ${bulkEligible ? `<label class="iface-bulk-checkbox-wrap" style="flex:none;display:flex;align-items:center;padding:6px;margin:-6px;cursor:pointer"><input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="cursor:pointer"></label>` : ''}
             <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
               <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
