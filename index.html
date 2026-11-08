@@ -90,12 +90,12 @@
   ::-webkit-scrollbar{width:10px;height:10px}
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:8px}
-  /* 사용자 요청("스크롤바 마우스 올리면 진하게, 누르고 끄는 동안도
-     진하게 해줘 ... 색상이 좀 더 찐해진다던지"): 올렸을 때(:hover)도
-     눈에 띄게 진한 회색으로, 누르고 끄는 동안(:active)은 거기서 한 번
-     더 --chip-active(칩/주요 버튼과 같은 파란색)로 가장 진하게. */
+  /* 사용자 요청("마우스를 올리면 눈에 띄게 진한 회색으로, 누르고 끄는
+     동안도 진한 회색으로 바꿔줘"): 파란색(--chip-active) 대신 회색
+     계열로 통일 -- 올렸을 때(:hover)는 진한 회색, 누르고 끄는
+     동안(:active)은 그보다 한 번 더 진한(가장 어두운) 회색. */
   ::-webkit-scrollbar-thumb:hover{background:var(--text-dim)}
-  ::-webkit-scrollbar-thumb:active{background:var(--chip-active)}
+  ::-webkit-scrollbar-thumb:active{background:var(--text)}
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
   /* ---------- shell ---------- */
@@ -115,7 +115,7 @@
   .sidebar::-webkit-scrollbar-track{background:transparent}
   .sidebar::-webkit-scrollbar-thumb{background:var(--sidebar-border);border-radius:3px}
   .sidebar::-webkit-scrollbar-thumb:hover{background:var(--sidebar-text-faint)}
-  .sidebar::-webkit-scrollbar-thumb:active{background:var(--chip-active)}
+  .sidebar::-webkit-scrollbar-thumb:active{background:var(--sidebar-text-dim)}
   .brand{display:flex;align-items:center;gap:12px;padding:6px 10px 22px;}
   .brand-mark{width:42px;height:42px;border-radius:11px;background:#fff;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 0 0 1px rgba(255,255,255,.4) inset}
   .brand-text b{color:var(--sidebar-text)}
