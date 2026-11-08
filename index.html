@@ -2992,7 +2992,14 @@ function renderIncidentsSkeleton(){
   `;
   $$('#inc-filters .chip-btn').forEach(b=> b.addEventListener('click', ()=>{
     $$('#inc-filters .chip-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active');
-    incFilter = b.dataset.f; incPage = 1; renderIncidents();
+    incFilter = b.dataset.f; incPage = 1;
+    // 사용자 보고("전체 검색창에 기입한 글자가 위험 주의 정보 미해결로
+    // 변경해도 글자가 그대로 있어"): 전체/위험/주의/정보/미해결이 전부
+    // 같은 검색창(#inc-search) 하나를 공유해서, 탭(칩)을 바꿔도 이전에
+    // 입력해둔 검색어가 그대로 남아 새 탭 내용까지 계속 그 검색어로
+    // 걸러졌다. 칩을 바꾸면 검색어도 같이 비운다.
+    $('#inc-search').value = '';
+    renderIncidents();
   }));
   $('#inc-search').addEventListener('input', ()=>{ incPage = 1; renderIncidents(); });
   // 서버로 매번 다시 쿼리하는 검색이라(이벤트 쪽 검색과 달리 이미 불러온
@@ -3048,8 +3055,13 @@ async function renderDeviceHistory(){
   const j = await r.json();
   const entries = j.entries || [];
   const total = j.total || 0;
-  if(!entries.length){ body.innerHTML = '<div class="empty-note">기록이 없습니다</div>'; if(pagEl) pagEl.innerHTML=''; return; }
-  const rowsHtml = entries.map(h=>{
+  // 사용자 보고("접속/이력 검색할 수 없는 정보 기입하면 메뉴 자체가
+  // 없어짐"): 검색 결과가 0건이면 body.innerHTML을 작은 <div>
+  // 하나로 통째로 바꿔버려서 테이블 헤더(시각/경로/사용자/IP/대상
+  // 장비/작업/상세)까지 같이 사라졌다. 전체/위험/주의/정보/미해결
+  // (#inc-tbody)처럼 헤더는 그대로 두고 colspan 한 줄짜리 "기록이
+  // 없습니다" 행만 보여주도록 통일.
+  const rowsHtml = !entries.length ? `<tr><td colspan="7"><div class="empty-note">기록이 없습니다</div></td></tr>` : entries.map(h=>{
     // IP는 이제 전용 컬럼으로 따로 보이므로(사용자 요청: "IP 목록이
     // 추가 되었으니깐, 상세에서 ip 정보는 보이질 않게 해줘"), 상세 텍스트가
     // 그 IP로 시작하면("192.168.30.36에서 접속" 식) 그 접두사만 잘라낸다.
