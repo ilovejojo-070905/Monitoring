@@ -6371,7 +6371,7 @@ function drawPingDevice(e, catLabel){
           const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
           return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
           <span style="display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden;padding-right:10px">
-            ${bulkEligible ? `<input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="flex:none;cursor:pointer">` : ''}
+            ${bulkEligible ? `<label class="iface-bulk-checkbox-wrap" style="flex:none;display:flex;align-items:center;padding:6px;margin:-6px;cursor:pointer"><input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="cursor:pointer"></label>` : ''}
             <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
               <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
               ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
@@ -6436,8 +6436,18 @@ function drawPingDevice(e, catLabel){
       redrawIfaceSection(e, catLabel);
     });
   });
+  // 체크박스 자체는 작아서 살짝만 비껴 눌러도 .iface-row의 클릭(상세창
+  // 열기)으로 새나가던 문제(사용자 보고: "마우스가 조금만 어긋나도
+  // 인터페이스 상세창이 클릭되는데 불편해") -- 체크박스를 둘러싼
+  // label(.iface-bulk-checkbox-wrap, 음수 margin으로 바깥쪽에 보이지
+  // 않는 여유 클릭 영역을 추가)에서 막아야 한다. 체크박스 자체에만
+  // stopPropagation을 걸면 label의 빈 패딩 부분을 클릭했을 때 발생하는
+  // 진짜 클릭 이벤트(타깃이 input이 아니라 label)는 거기서 안 잡혀서
+  // 그대로 row까지 올라간다.
+  $$('.iface-bulk-checkbox-wrap', $('#drawerBody')).forEach(wrap=>{
+    wrap.addEventListener('click', ev=>{ ev.stopPropagation(); });
+  });
   $$('.iface-bulk-checkbox', $('#drawerBody')).forEach(cb=>{
-    cb.addEventListener('click', ev=>{ ev.stopPropagation(); });
     cb.addEventListener('change', ()=>{
       if(cb.checked) ifaceBulkSelection.add(cb.dataset.idx); else ifaceBulkSelection.delete(cb.dataset.idx);
       redrawIfaceSection(e, catLabel);
