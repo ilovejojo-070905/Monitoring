@@ -95,7 +95,7 @@ def _run_job(device_id):
         # 확인한다. 자체 쓰로틀(REMOTE_PORT_RECHECK_SEC)이 있어 매 틱마다
         # 실제로 포트를 열어보진 않는다.
         if device_row['category'] == 'net':
-            ping_collector.check_remote_ports(entity, device_row['ip'])
+            ping_collector.check_remote_ports(entity, device_row['ip'], device_row.get('vendor_profile'))
         health.record_tick_success('collector')
         # Alert design section [4]/[5]: a device that was mid-outage due to a
         # collector-internal error (not a clean reachability failure) just

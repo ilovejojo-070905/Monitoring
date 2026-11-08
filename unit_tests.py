@@ -1947,6 +1947,60 @@ def test_escalation_and_alert_retry_ticks_report_to_alerts_subsystem():
         health._subsystems = orig_subsystems
 
 
+# ======================================================================
+# T. check_remote_ports가 Comware/ArubaOS-Switch 접속 이력에 끼친 영향 수정
+# ======================================================================
+
+def test_check_remote_ports_does_not_live_probe_telnet_for_comware_and_aruba():
+    # 버그 수정(2026-11-08, "HPE Arbua는 접속 하지도 않았는데 왜
+    # 로그인성공, 로그인실패, 로그아웃 이력이 남아"): check_remote_ports가
+    # 20초마다 포트 23(Telnet)에 실제 TCP 연결을 열어보는 게, Comware/
+    # ArubaOS-Switch 쪽에서는 그 연결 시도 자체를 로그인 시도/성공으로
+    # syslog에 남겨서(완전한 로그인 절차가 끝나기도 전에) device_access_log
+    # 에 가짜 기록이 끊임없이 쌓이고 있었던 게 실제 운영 DB로 확인됨(두
+    # 장비 모두 정확히 20초 간격으로 수천 건). 이 두 벤더는 Telnet이
+    # 항상 열려 있는 게 이미 실측 확인돼 있어(device_control.py PROFILES
+    # 주석) 고정값을 쓰도록 고쳤다 -- tcp_check를 포트 23에 대해서는 바로
+    # 예외를 던지게 바꿔서, 실제로 그 포트에 연결을 시도하면 테스트가
+    # 바로 실패하게 만들어 "진짜로 연결을 안 한다"를 검증한다. SSH(22)는
+    # 이 문제가 관찰되지 않았던 포트라 그대로 라이브로 확인하므로, 닫혀
+    # 있는 포트(127.0.0.1의 임의 포트)를 대상으로 걸어 False가 나오는지도
+    # 같이 확인한다.
+    from collector import ping_collector as pc
+    orig_tcp_check = pc.tcp_check
+
+    def guard(ip, port, timeout_s=1.0):
+        if port == 23:
+            raise AssertionError('port 23 must not be live-probed for this vendor profile')
+        return orig_tcp_check(ip, port, timeout_s)
+
+    pc.tcp_check = guard
+    try:
+        entity = {}
+        pc.check_remote_ports(entity, '127.0.0.1', vendor_profile='hp-comware')
+        check('T1 Comware(hp-comware profile): telnetOpen is a static True, port 23 is never live-probed',
+              entity.get('telnetOpen') is True, entity)
+
+        entity2 = {}
+        pc.check_remote_ports(entity2, '127.0.0.1', vendor_profile='hp')
+        check('T2 ArubaOS-Switch(hp profile): telnetOpen is a static True, port 23 is never live-probed',
+              entity2.get('telnetOpen') is True, entity2)
+    finally:
+        pc.tcp_check = orig_tcp_check
+
+
+def test_check_remote_ports_still_live_probes_other_vendors():
+    # 위 고정값 처리가 cisco/juniper/generic 등 다른 벤더에는 영향이
+    # 없는지 확인(이 벤더들은 라이브 포트 체크로 실제 상태를 반영해야
+    # 한다 -- Cisco는 AAA 인증 완료 전엔 SEC_LOGIN이 안 찍혀서 애초에 이
+    # 문제가 없었던 벤더).
+    from collector import ping_collector as pc
+    entity = {}
+    pc.check_remote_ports(entity, '127.0.0.1', vendor_profile='cisco')
+    check('T3 Cisco profile: telnetOpen still comes from a real (live) probe, not the static override',
+          'telnetOpen' in entity and 'sshOpen' in entity, entity)
+
+
 def main():
     for fn in (
         test_mac_from_oid_suffix, test_collect_mac_vlan_table,
@@ -1987,6 +2041,8 @@ def main():
         test_agent_report_rejects_stale_replayed_requests,
         test_health_subsystems_do_not_cross_contaminate, test_health_record_tick_error_backward_compatible_single_arg,
         test_health_disk_check_reports_real_free_space, test_escalation_and_alert_retry_ticks_report_to_alerts_subsystem,
+        test_check_remote_ports_does_not_live_probe_telnet_for_comware_and_aruba,
+        test_check_remote_ports_still_live_probes_other_vendors,
     ):
         try:
             fn()

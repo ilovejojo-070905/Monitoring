@@ -120,8 +120,23 @@ def sample_ping(entity, device_row):
 
 REMOTE_PORT_RECHECK_SEC = 20
 
+# 버그 수정(2026-11-08, "HPE Arbua는 접속 하지도 않았는데 왜 로그인성공,
+# 로그인실패, 로그아웃 이력이 남아"): 이 포트 체크가 20초마다 23번
+# (Telnet)에 실제 TCP 연결을 여는데, Cisco와 달리 Comware/ArubaOS-Switch는
+# 완전한 로그인 절차(아이디/비밀번호 입력)가 끝나기도 전에 "연결이 열렸다"
+# 자체를 syslog로 남긴다(Comware는 입력 없이 연결이 끊기면
+# LOGINAUTHFAIL+LOGOUT, ArubaOS-Switch는 연결이 열리자마자 LOGIN_SUCCESS)
+# -- 실제 운영 DB에서 두 장비 모두 이 20초 주기와 정확히 맞물려 밤새
+# 수천 건씩 쌓인 것으로 확인됨. Cisco의 %SEC_LOGIN은 AAA 인증이 실제로
+# 끝나야만 찍혀서 이 문제가 없었다(그래서 Cisco는 그대로 라이브로 확인).
+# 이 두 벤더는 Telnet이 항상 열려 있는 게 이미 실측 확인돼 있으므로
+# (collector/device_control.py PROFILES 주석: Comware는 "Telnet만 응답",
+# ArubaOS-Switch는 "실제 검증은 Telnet으로만 함") 매번 다시 열어보는 대신
+# 고정값을 쓴다 -- SSH(22)는 이 문제가 관찰되지 않아 그대로 라이브 확인.
+_STATIC_TELNET_OPEN_VENDOR_PROFILES = {'hp-comware', 'hp'}
 
-def check_remote_ports(entity, ip):
+
+def check_remote_ports(entity, ip, vendor_profile=None):
     """네트워크 장비 목록의 SSH/Telnet 버튼을 실제로 열려 있는 포트만
     보이게 하려고(요청: "텔넷 포트만 열려 있으면 텔넷만 표시") 22/23번을
     직접 TCP 연결해본다. 포트 상태는 거의 안 바뀌므로 매 틱(기본 2초)마다
@@ -136,7 +151,10 @@ def check_remote_ports(entity, ip):
     if now - last < REMOTE_PORT_RECHECK_SEC:
         return
     ssh_open, _ = tcp_check(ip, 22, 0.5)
-    telnet_open, _ = tcp_check(ip, 23, 0.5)
+    if vendor_profile in _STATIC_TELNET_OPEN_VENDOR_PROFILES:
+        telnet_open = True
+    else:
+        telnet_open, _ = tcp_check(ip, 23, 0.5)
     with state.LOCK:
         entity['sshOpen'] = ssh_open
         entity['telnetOpen'] = telnet_open
