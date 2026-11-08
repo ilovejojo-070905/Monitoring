@@ -5655,6 +5655,11 @@ async function renderUsers(){
     // _operator_blocked_on_admin_target) -- 그 계정 행에서는 제어 버튼을
     // 아예 숨겨서 눌러봐야 403이 나는 상황 자체를 만들지 않는다.
     const canManage = CURRENT_ROLE==='ADMIN' || u.role!=='ADMIN';
+    // 사용자 요청("계정목록에 수정 비활성화 삭제 버튼도 색상 변경 해줘")으로
+    // 아래 제어 버튼들의 글자 색만 의미에 맞게 입힘(배경은 기존 .btn 그대로
+    // 유지) -- 수정=블루(다른 primary 액션과 통일), 삭제=크리티컬 레드
+    // (기존 "선택 삭제"/"2FA 비활성화" 버튼과 같은 패턴), 비활성화/활성화는
+    // 지금부터 일어날 동작 기준으로 비활성화=경고색, 활성화=양호색.
     let statusHtml;
     if(inactive) statusHtml = `<span class="pill neutral">비활성화</span>`;
     else if(locked) statusHtml = `<span class="pill crit">잠김</span>`;
@@ -5665,13 +5670,13 @@ async function renderUsers(){
       <td class="mono">${u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}</td>
       <td class="mono">${u.last_login_at ? new Date(u.last_login_at).toLocaleString('ko-KR') : '-'}</td>
       <td>${statusHtml}</td>
-      <td>${u.totp_enabled ? '<span class="pill good" style="font-size:9px">사용 중</span>' : (u.role==='ADMIN' ? '<span class="pill crit" style="font-size:9px">미설정</span>' : '<span class="pill neutral" style="font-size:9px">사용 안 함</span>')}</td>
+      <td>${u.totp_enabled ? '<span class="pill good">사용 중</span>' : (u.role==='ADMIN' ? '<span class="pill crit">미설정</span>' : '<span class="pill neutral">사용 안 함</span>')}</td>
       <td style="display:flex;gap:6px;flex-wrap:wrap">
-        ${canManage ? `<button type="button" class="btn" data-edituser="${u.id}" data-role="${u.role}" data-username="${escapeHtml(u.username)}">수정</button>` : ''}
+        ${canManage ? `<button type="button" class="btn" style="color:var(--chip-active)" data-edituser="${u.id}" data-role="${u.role}" data-username="${escapeHtml(u.username)}">수정</button>` : ''}
         ${canManage && locked ? `<button type="button" class="btn" data-unlock="${u.id}">잠금 해제</button>` : ''}
         ${canManage && u.totp_enabled ? `<button type="button" class="btn" data-totpreset="${u.id}">2FA 초기화</button>` : ''}
-        ${canManage && u.username!==CURRENT_USER ? `<button type="button" class="btn" data-toggleactive="${u.id}" data-active="${u.is_active?1:0}">${inactive?'활성화':'비활성화'}</button>` : ''}
-        ${canManage && u.username!==CURRENT_USER ? `<button type="button" class="btn" data-deluser="${u.id}">삭제</button>` : ''}
+        ${canManage && u.username!==CURRENT_USER ? `<button type="button" class="btn" style="color:${inactive?'var(--good)':'var(--warn)'}" data-toggleactive="${u.id}" data-active="${u.is_active?1:0}">${inactive?'활성화':'비활성화'}</button>` : ''}
+        ${canManage && u.username!==CURRENT_USER ? `<button type="button" class="btn" style="color:var(--crit)" data-deluser="${u.id}">삭제</button>` : ''}
       </td>
     </tr>`;
   }).join('') || `<tr><td colspan="7"><div class="empty-note">계정이 없습니다</div></td></tr>`;
