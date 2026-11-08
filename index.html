@@ -2305,9 +2305,14 @@ function renderServersSkeleton(){
           <input id="srv-search" placeholder="서버명 / IP / 그룹 / 태그 검색"></div>
       </div>
       ${selectBarHtml('srv')}
-      <div class="table-wrap"><table class="data reg-device-table">
+      <div class="table-wrap"><table class="data reg-device-table fixed-cols-table">
+        <colgroup>
+          <col style="width:4%"><col style="width:7%"><col style="width:14%"><col style="width:11%">
+          <col style="width:9%"><col style="width:8%"><col style="width:7%"><col style="width:7%">
+          <col style="width:7%"><col style="width:7%"><col style="width:8%"><col style="width:11%">
+        </colgroup>
         <thead><tr>
-          <th style="width:30px">${selectAllHeaderHtml('srv')}</th>
+          <th>${selectAllHeaderHtml('srv')}</th>
           <th data-sort-col="status">상태<span class="sort-arrow" id="srv-sort-status"></span></th>
           <th data-sort-col="name">서버명<span class="sort-arrow" id="srv-sort-name"></span></th>
           <th data-sort-col="ip">IP<span class="sort-arrow" id="srv-sort-ip"></span></th>
@@ -2370,9 +2375,18 @@ function statusFilterRow(id, current){
   return `<div class="chip-row" id="${id}">${opts.map(([v,l])=>`<button class="chip-btn ${v===current?'active':''}" data-f="${v}">${l}</button>`).join('')}</div>`;
 }
 function wireStatusFilter(id, setter, rerender){
+  // 사용자 요청("서버, 데이터베이스 네트워크 전산실 설비도 마찬가지야
+  // 똑같이 수정해줘" -- 전체 검색창 글자가 위험/주의/정보/미해결로
+  // 바꿔도 그대로 남던 것과 같은 문제): 전체/정상/주의/위험 칩도 같은
+  // 검색창을 공유하므로, 칩을 바꾸면 그 테이블의 검색창(id 규칙상
+  // "xxx-filters" -> "xxx-search")도 같이 비운다.
+  const searchId = id.replace('-filters', '-search');
   $$(`#${id} .chip-btn`).forEach(b=> b.addEventListener('click', ()=>{
     $$(`#${id} .chip-btn`).forEach(x=>x.classList.remove('active')); b.classList.add('active');
-    setter(b.dataset.f); rerender();
+    setter(b.dataset.f);
+    const searchEl = document.getElementById(searchId);
+    if(searchEl) searchEl.value = '';
+    rerender();
   }));
 }
 function applyStatusFilter(list, filterVal){
@@ -2601,9 +2615,13 @@ function renderDatabaseSkeleton(){
           <input id="db-search" placeholder="인스턴스명 / IP / 그룹 / 태그 검색"></div>
       </div>
       ${selectBarHtml('db')}
-      <div class="table-wrap"><table class="data reg-device-table">
+      <div class="table-wrap"><table class="data reg-device-table fixed-cols-table">
+        <colgroup>
+          <col style="width:5%"><col style="width:9%"><col style="width:18%"><col style="width:12%">
+          <col style="width:12%"><col style="width:14%"><col style="width:14%"><col style="width:16%">
+        </colgroup>
         <thead><tr>
-          <th style="width:30px">${selectAllHeaderHtml('db')}</th>
+          <th>${selectAllHeaderHtml('db')}</th>
           <th data-sort-col="status">상태<span class="sort-arrow" id="db-sort-status"></span></th>
           <th data-sort-col="name">인스턴스<span class="sort-arrow" id="db-sort-name"></span></th>
           <th data-sort-col="engine">엔진<span class="sort-arrow" id="db-sort-engine"></span></th>
@@ -2663,9 +2681,15 @@ function renderNetworkSkeleton(){
           <input id="net-search" placeholder="장비명 / IP / 그룹 / 유형 검색"></div>
       </div>
       ${selectBarHtml('net')}
-      <div class="table-wrap"><table class="data reg-device-table">
+      <div class="table-wrap"><table class="data reg-device-table fixed-cols-table">
+        <colgroup>
+          <col style="width:4%"><col style="width:7%"><col style="width:13%"><col style="width:7%">
+          <col style="width:10%"><col style="width:7%"><col style="width:7%"><col style="width:7%">
+          <col style="width:8%"><col style="width:8%"><col style="width:7%">
+          <col id="net-remote-col" style="width:15%;display:none">
+        </colgroup>
         <thead><tr>
-          <th style="width:30px">${selectAllHeaderHtml('net')}</th>
+          <th>${selectAllHeaderHtml('net')}</th>
           <th data-sort-col="status">상태<span class="sort-arrow" id="net-sort-status"></span></th>
           <th data-sort-col="name">장비명<span class="sort-arrow" id="net-sort-name"></span></th>
           <th data-sort-col="type">유형<span class="sort-arrow" id="net-sort-type"></span></th>
@@ -2738,6 +2762,10 @@ function renderNetwork(){
   // 보이기/숨기기만 전환한다.
   const remoteTh = $('#net-remote-th');
   if(remoteTh) remoteTh.style.display = CURRENT_ROLE==='ADMIN' ? '' : 'none';
+  // colgroup의 <col id="net-remote-col">도 헤더와 같이 보이기/숨기기를
+  // 맞춰줘야 fixed-cols-table(table-layout:fixed)에서 컬럼 수가 맞는다.
+  const remoteCol = $('#net-remote-col');
+  if(remoteCol) remoteCol.style.display = CURRENT_ROLE==='ADMIN' ? '' : 'none';
   updateSortArrows('net', netSort, ['status','name','type','ip','group']);
   if(!selectedNetId && NETS.length) selectedNetId = NETS[0].id;
 }
@@ -2898,9 +2926,13 @@ function renderFacilitySkeleton(){
           <input id="fac-search" placeholder="설비명 / IP / 그룹 / 태그 검색"></div>
       </div>
       ${selectBarHtml('fac')}
-      <div class="table-wrap"><table class="data reg-device-table">
+      <div class="table-wrap"><table class="data reg-device-table fixed-cols-table">
+        <colgroup>
+          <col style="width:6%"><col style="width:10%"><col style="width:20%"><col style="width:14%">
+          <col style="width:16%"><col style="width:17%"><col style="width:17%">
+        </colgroup>
         <thead><tr>
-          <th style="width:30px">${selectAllHeaderHtml('fac')}</th>
+          <th>${selectAllHeaderHtml('fac')}</th>
           <th data-sort-col="status">상태<span class="sort-arrow" id="fac-sort-status"></span></th>
           <th data-sort-col="name">설비명<span class="sort-arrow" id="fac-sort-name"></span></th>
           <th data-sort-col="type">유형<span class="sort-arrow" id="fac-sort-type"></span></th>
