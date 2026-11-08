@@ -1409,6 +1409,41 @@ def test_comware_syslog_config_changed():
           and '192.168.30.36' in events[0]['details'] and 'info-center loghost' in events[0]['details'], events)
 
 
+def test_comware_syslog_login_success():
+    # 실측(2026-11-08, 실제 등록된 HPE 5500 192.168.30.251)에서 캡처된
+    # 실제 원문 그대로. 같은 성공 이벤트에 /4/LOGIN(사용자명만)과 /5/
+    # SHELL_LOGIN(사용자명+IP) 두 트랩이 같이 오는데, 정보가 더 많은 /5/
+    # 쪽만 매치해서 한 번만 기록해야 한다(comware_syslog_parser.py 참고).
+    from collector import comware_syslog_parser as hsp
+    line = ('<189>Apr 28 12:35:54 2000 Main_Switch_1 %%10SHELL/5/SHELL_LOGIN(l): '
+            'admin logged in from 192.168.30.36.')
+    events = hsp.parse(line.encode('utf-8'), '192.168.30.251', 1700000000000)
+    check('N20 Comware LOGIN_SUCCESS captures username and source IP from the real trap format',
+          len(events) == 1 and events[0]['event_type'] == 'LOGIN_SUCCESS' and events[0]['username'] == 'admin'
+          and events[0]['details'] == '192.168.30.36에서 접속', events)
+    # 같은 이벤트의 짝인 /4/LOGIN(사용자명만, IP 없음) 쪽은 중복 기록을
+    # 막기 위해 의도적으로 매치시키지 않는다.
+    line2 = ('<188>Apr 28 12:35:54 2000 Main_Switch_1 %%10SHELL/4/LOGIN(t):   '
+             'Trap 1.3.6.1.4.1.25506.2.2.1.1.3.0.1:admin login from VTY')
+    events2 = hsp.parse(line2.encode('utf-8'), '192.168.30.251', 1700000000000)
+    check('N20b the paired /4/LOGIN username-only variant is intentionally left unmatched (no duplicate event)',
+          events2 == [], events2)
+
+
+def test_comware_syslog_logout_with_username():
+    # 실측(2026-11-08): 정상 로그아웃 시 /5/SHELL_LOGOUT에 사용자명+IP가
+    # 둘 다 담겨 온다(실패 로그인 뒤 자동 끊김으로 오는 사용자명 없는
+    # 기존 /4/LOGOUT 변형과는 별개 -- test_comware_syslog_logout()이 그걸
+    # 이미 검증함).
+    from collector import comware_syslog_parser as hsp
+    line = ('<189>Apr 28 12:36:20 2000 Main_Switch_1 %%10SHELL/5/SHELL_LOGOUT(l): '
+            'admin logged out from 192.168.30.36.')
+    events = hsp.parse(line.encode('utf-8'), '192.168.30.251', 1700000000000)
+    check('N21 Comware LOGOUT with username/source IP (SHELL_LOGOUT variant) is parsed',
+          len(events) == 1 and events[0]['event_type'] == 'LOGOUT' and events[0]['username'] == 'admin'
+          and events[0]['details'] == '192.168.30.36에서 로그아웃', events)
+
+
 def test_arubaswitch_syslog_login_success():
     # 실측(2026-11-07, 실제 등록된 Arbua/ArubaOS-Switch 192.168.30.252)에서
     # 캡처된 실제 원문 그대로.
@@ -1925,6 +1960,7 @@ def main():
         test_syslog_listener_tries_multiple_vendor_parsers,
         test_cisco_syslog_config_changed_with_username, test_cisco_syslog_config_changed_without_username,
         test_comware_syslog_login_failed, test_comware_syslog_logout, test_comware_syslog_config_changed,
+        test_comware_syslog_login_success, test_comware_syslog_logout_with_username,
         test_arubaswitch_syslog_login_success,
         test_db_concurrent_writes_no_lock_errors, test_metrics_aggregation_idempotent_on_rerun,
         test_scheduler_job_survives_disk_full_write_failure, test_backup_integrity_check_rejects_corrupt_file,
