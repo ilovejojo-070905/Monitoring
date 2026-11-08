@@ -1379,6 +1379,21 @@ def test_cisco_syslog_config_changed_without_username():
           and 'vty0' in events[0]['details'], events)
 
 
+def test_cisco_syslog_config_logged_command():
+    # 실측(2026-11-08, 실제 등록된 Cisco 장비 192.168.30.250): 사용자가
+    # "설정한 내용이 이력에서 보이질 않아"라고 보고해서 archive log
+    # config 기능을 켜게 한 뒤 캡처된 실제 원문 그대로("User:admin  logged
+    # command:..."처럼 User: 뒤에 공백이 두 칸, 명령어 뒤에도 trailing
+    # space -- 전부 실측 그대로이고 strip()으로 처리).
+    from collector import cisco_syslog_parser as csp
+    line = ('<189>66: *Mar  3 01:42:41: %PARSER-5-CFGLOG_LOGGEDCMD: User:admin  logged '
+            'command:interface range GigabitEthernet1/0/1 - 10 ')
+    events = csp.parse(line.encode('utf-8'), '192.168.30.250', 1700000000000)
+    check('N22 Cisco CONFIG_CHANGED via archive-log-config captures the actual typed command',
+          len(events) == 1 and events[0]['event_type'] == 'CONFIG_CHANGED' and events[0]['username'] == 'admin'
+          and events[0]['details'] == 'interface range GigabitEthernet1/0/1 - 10', events)
+
+
 def test_comware_syslog_login_failed():
     # 실측(2026-11-07, 실제 등록된 HPE 5500 192.168.30.251)에서 캡처된
     # 실제 원문 그대로.
@@ -1961,6 +1976,7 @@ def main():
         test_cisco_syslog_config_changed_with_username, test_cisco_syslog_config_changed_without_username,
         test_comware_syslog_login_failed, test_comware_syslog_logout, test_comware_syslog_config_changed,
         test_comware_syslog_login_success, test_comware_syslog_logout_with_username,
+        test_cisco_syslog_config_logged_command,
         test_arubaswitch_syslog_login_success,
         test_db_concurrent_writes_no_lock_errors, test_metrics_aggregation_idempotent_on_rerun,
         test_scheduler_job_survives_disk_full_write_failure, test_backup_integrity_check_rejects_corrupt_file,

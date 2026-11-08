@@ -17,6 +17,19 @@ CONFIG_CHANGED: 사용자 요청("cisco 장비 말고 다른 장비들도...")�
 시절의 세션, 실제로 캡처됨: "Configured from console by vty0
 (192.168.30.36)")도 같이 처리한다.
 
+위 CONFIG_I는 "누가/어디서 설정을 바꿨다"는 사실만 담고, 바꾼 명령어
+내용 자체는 담지 않는다(IOS 메시지 자체의 한계). 사용자가 "설정한
+내용이 이력에서 보이질 않아"라고 보고해서, Cisco의 "archive log
+config" 기능(사용자가 장비에 추가로 켬: archive / log config /
+logging enable / notify syslog contenttype plaintext / hidekeys)을
+켜면 입력한 명령어 한 줄마다 별도 syslog가 온다는 걸 안내하고, 실제로
+2026-11-08 켠 뒤 캡처된 원문 그대로 추가:
+  %PARSER-5-CFGLOG_LOGGEDCMD: User:admin  logged command:interface
+      GigabitEthernet1/0/1
+CONFIG_I(세션당 한 번, 명령어 없음)와 CFGLOG_LOGGEDCMD(명령어당 한 번,
+실제 명령어 포함)는 서로 다른 메시지라 둘 다 올 수 있고 중복이 아니다
+-- CFGLOG_LOGGEDCMD가 더 상세한 하위 기록을 추가로 남기는 것뿐이다.
+
 RFC3164 syslog 헤더(<PRI>타임스탬프 호스트명 ...)는 장비 설정(service
 timestamps, logging origin-id 등)에 따라 형태가 들쭉날쭉해서 헤더를
 엄격하게 파싱하지 않고, 받은 바이트 전체에서 %SEC_LOGIN-*/%SYS-5-CONFIG_I
@@ -41,6 +54,9 @@ _LOGOUT_RE = re.compile(
 _CONFIG_CHANGED_RE = re.compile(
     r'%SYS-5-CONFIG_I:\s*Configured from \S+ by\s*(?P<who>\S+)(?:\s+on\s+(?P<line>\S+))?\s*'
     r'\(\s*(?P<src>[^)]*?)\s*\)'
+)
+_CFGLOG_CMD_RE = re.compile(
+    r'%PARSER-5-CFGLOG_LOGGEDCMD:\s*User:(?P<user>\S+)\s+logged command:(?P<cmd>.+)'
 )
 
 
@@ -100,6 +116,15 @@ def parse(data, exporter_ip, recv_ts_ms):
             'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'CONFIG_CHANGED',
             'username': username,
             'details': f"{src}에서 설정 변경 ({line})",
+            'raw_message': text.strip(),
+        }]
+
+    m = _CFGLOG_CMD_RE.search(text)
+    if m:
+        return [{
+            'exporter_ip': exporter_ip, 'ts': recv_ts_ms, 'event_type': 'CONFIG_CHANGED',
+            'username': m.group('user').strip(),
+            'details': m.group('cmd').strip(),
             'raw_message': text.strip(),
         }]
 
