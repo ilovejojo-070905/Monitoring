@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<title>에이전트 설치</title>
+<style>
+  :root{
+    --bg:#f5f6fa; --surface:#ffffff; --border:#e5e7f0; --text:#1c2333; --text-dim:#5b6478; --text-faint:#9099ad;
+    --good:#00b087; --warn:#e6960f; --crit:#ef3b5c; --neutral:#9099ad; --accent:#7c5cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Pretendard',sans-serif;font-size:14px;line-height:1.5}
+  .wrap{max-width:560px;margin:0 auto;padding:40px 20px 80px}
+  header{margin-bottom:10px}
+  header h1{font-size:20px;margin:0}
+  header p{font-size:13px;color:var(--text-dim);margin:6px 0 0}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-top:16px}
+  .dev-name{font-weight:600;font-size:15px}
+  .dev-meta{font-size:12px;color:var(--text-faint);margin-top:2px}
+  .btn{display:inline-block;margin-top:12px;padding:10px 16px;border-radius:8px;background:var(--accent);color:#fff;font-weight:600;font-size:13.5px;text-decoration:none}
+  .expiry{font-size:11px;color:var(--text-faint);margin-top:8px}
+  .empty{color:var(--text-faint);font-size:13px;text-align:center;padding:50px 0}
+  footer{text-align:center;color:var(--text-faint);font-size:11.5px;margin-top:40px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>에이전트 설치</h1>
+    <p>설치할 장비를 찾아 아래 버튼을 눌러 받으세요. 방금 모니터링 시스템에 등록(또는 "설치 명령 다시 받기")한 장비만, 일정 시간 동안만 여기에 나타납니다.</p>
+  </header>
+  <div id="list"></div>
+</div>
+<footer>이 PC가 목록에 없으면, 모니터링 시스템에 로그인해서 해당 장비를 다시 등록하거나 "설치 명령 다시 받기"를 눌러주세요.</footer>
+<script>
+(function(){
+  'use strict';
+  // status.html과 같은 이유로 이 페이지도 session/쿠키 인증을 전혀 쓰지
+  // 않는다 -- /api/install/pending 역시 session을 읽지 않는 공개 엔드포인트.
+  function escapeHtml(s){
+    return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function fmtRemaining(sec){
+    if(sec >= 60) return Math.ceil(sec/60) + '분 후 목록에서 사라짐';
+    return '곧 목록에서 사라짐';
+  }
+  var OS_LABEL = {windows:'Windows', linux:'Linux'};
+
+  async function render(){
+    var listEl = document.getElementById('list');
+    let devices = [];
+    try{
+      var r = await fetch('/api/install/pending');
+      var j = await r.json();
+      devices = j.devices || [];
+    }catch(e){
+      listEl.innerHTML = '<div class="empty">목록을 불러오지 못했습니다. 잠시 후 새로고침해주세요.</div>';
+      return;
+    }
+    if(!devices.length){
+      listEl.innerHTML = '<div class="empty">현재 설치 대기 중인 장비가 없습니다.<br>모니터링 시스템에서 먼저 서버를 등록해주세요.</div>';
+      return;
+    }
+    listEl.innerHTML = devices.map(function(d){
+      var url = window.location.origin + d.installerUrl;
+      return '<div class="card">'
+        + '<div class="dev-name">' + escapeHtml(d.name) + '</div>'
+        + '<div class="dev-meta">' + (OS_LABEL[d.os] || d.os) + '</div>'
+        + '<a class="btn" href="' + url + '">⬇ 에이전트 받기</a>'
+        + '<div class="expiry">' + fmtRemaining(d.expiresInSec) + '</div>'
+        + '</div>';
+    }).join('');
+  }
+
+  render();
+  setInterval(render, 5000);
+})();
+</script>
+</body>
+</html>

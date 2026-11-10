@@ -282,6 +282,59 @@ def _public_rate_limited(ip):
     return False
 
 
+# 사용자 요청(2026-11-10, "모니터링 시스템에서 장비 등록하고나서, 등록된
+# PC에서 에이전트를 바로 받아서 설치하고 싶은데 ... 로그인 필요 없이
+# 웹으로 접속하면 클릭하라는 화면 뜨면 거기서 클릭해서 받고 싶은거야"):
+# 에이전트 토큰은 원래 DB에 평문으로 남기지 않고(_register_device_core의
+# 주석 참고) 등록/재발급 응답 한 번으로 평문이 영구히 사라지는 구조였다
+# -- "로그인 없이 아무 때나 장비를 골라 토큰을 받아가는" 페이지를 그냥
+# 만들면 이 보안 설계를 무력화하게 된다(LAN의 누구나 등록된 장비 아무거나
+# 골라 에이전트 토큰을 받을 수 있게 됨). 그래서 "등록/재발급 직후
+# 짧은 시간(기본 30분) 동안만" 로그인 없이도 /install 페이지에서 보이게
+# 완화한다 -- DB가 아니라 메모리에만 발급 시각과 함께 들고 있다가
+# 그 뒤로는(또는 서버 재시작 시) 완전히 사라진다. 토큰을 "누가" 꺼내
+# 보여줄 수 있게 할지(등록 직후뿐)는 여전히 로그인한 관리자만 결정할 수
+# 있고, 이 창구는 그 관리자가 이미 허락한 그 짧은 시간 동안의 "셀프
+# 다운로드 보조 수단"일 뿐이다.
+_recent_agent_tokens = {}  # device_id -> (token, issued_at_monotonic_time)
+AGENT_INSTALL_WINDOW_SEC = 30 * 60
+
+
+def _remember_recent_agent_token(device_id, token):
+    _recent_agent_tokens[device_id] = (token, time.time())
+
+
+def _list_pending_agent_installs():
+    """/install 공개 페이지(아래 /api/install/pending)가 보여줄 목록.
+    시간창이 지났거나, 장비가 삭제/수정(agent 모드 아니게 됨)됐거나,
+    이미 에이전트가 최소 한 번 연결됐으면(agent_started_at이 참) -- 더
+    보여줄 이유가 없으므로 그 자리에서 메모리에서도 지운다."""
+    now = time.time()
+    out = []
+    for device_id, (token, issued_at) in list(_recent_agent_tokens.items()):
+        if now - issued_at > AGENT_INSTALL_WINDOW_SEC:
+            del _recent_agent_tokens[device_id]
+            continue
+        device_row = storage.load_device(device_id)
+        if not device_row or device_row['mode'] != 'agent' or device_row.get('agent_started_at'):
+            del _recent_agent_tokens[device_id]
+            continue
+        os_field = (device_row['fields'].get('os') or '').strip().lower()
+        out.append({
+            'id': device_id,
+            'name': device_row['name'],
+            'os': 'linux' if os_field == 'linux' else 'windows',
+            # 상대경로로 내려준다 -- index.html의 agentInstallerUrl과 같은
+            # 이유(위 _agent_install_info 주석 참고): 이 페이지를 http:5057로
+            # 보든 https:8443(Caddy)로 보든, 클라이언트가 자기 origin
+            # 기준으로 이어붙이면 항상 맞는 주소가 된다.
+            'installerUrl': f'/download/installer/{token}',
+            'expiresInSec': int(AGENT_INSTALL_WINDOW_SEC - (now - issued_at)),
+        })
+    out.sort(key=lambda d: d['name'])
+    return out
+
+
 def _current_username():
     """The acting identity for this request, regardless of auth method --
     a browser session's username, or (5-2) an API token's owning user when
@@ -1372,6 +1425,7 @@ def _register_device_core(category, name, mode, ip, fields):
     audit('REGISTER_DEVICE', target=device_id, details=f"{name} (SNMP 인증정보 포함)" if has_credential else name)
     resp = {'id': device_id}
     if token:
+        _remember_recent_agent_token(device_id, token)
         lan_ip = storage.get_lan_ip()
         resp['token'] = token
         # Relative, not absolute-http -- the dashboard may now be loaded over
@@ -2404,6 +2458,25 @@ def public_status_page():
     return resp
 
 
+# ---------------------------------------- 로그인 없는 에이전트 설치 페이지 --
+# 위 _recent_agent_tokens 주석 참고 -- 등록/재발급 직후 짧은 시간 동안만,
+# 로그인 없이 "지금 설치 대기 중인 장비" 목록을 보여주고 각 장비의
+# 다운로드 버튼으로 바로 연결한다. /api/public/*와 같은 레이트리밋을
+# 그대로 적용.
+@app.get('/api/install/pending')
+def api_install_pending():
+    if _public_rate_limited(request.remote_addr):
+        return jsonify({'error': 'rate_limited'}), 429
+    return jsonify({'devices': _list_pending_agent_installs()})
+
+
+@app.get('/install')
+def install_page():
+    resp = send_from_directory(BASE_DIR, 'install.html')
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
+
+
 AGENT_REPORT_MAX_CLOCK_SKEW_MS = 5 * 60 * 1000  # 5분
 
 
@@ -2701,6 +2774,7 @@ def api_reissue_token(device_id):
         return jsonify({'error': 'agent 모드 장비만 토큰을 재발급할 수 있습니다'}), 400
     new_token = secrets.token_hex(16)
     storage.set_device_token_hash(device_id, new_token)
+    _remember_recent_agent_token(device_id, new_token)
     with state.LOCK:
         state.LAST_REPORT.pop(device_id, None)  # old token's freshness no longer applies
     audit('AGENT_TOKEN_REISSUE', target=device_id)
