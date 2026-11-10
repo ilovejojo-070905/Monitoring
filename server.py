@@ -1130,7 +1130,16 @@ def _agent_install_info(fields, lan_ip, token):
     쓰고 있으므로(아래), 같은 절대 URL로 "다운로드 + 즉시 실행"까지 한
     줄로 묶은 명령어를 추가로 내려줘서, 등록 대상 장비의 PowerShell/SSH
     터미널(RDP 등으로 원격 접속한 상태)에 그대로 붙여넣으면 USB/공유폴더
-    없이 바로 설치가 끝나게 한다."""
+    없이 바로 설치가 끝나게 한다.
+
+    agentInstallerAbsoluteUrl(같은 요청의 후속 질문, "등록할 서버에서
+    웹으로 접속해서 설치 파일을 받을 수는 없어?"): 터미널/PowerShell이
+    아니라 그냥 등록 대상 장비의 웹 브라우저 주소창에 붙여넣어도 되는
+    절대 URL 자체도 따로 내려준다 -- agentInstallerUrl은 상대경로라
+    admin 자신의 현재 페이지 origin을 기준으로만 열리므로(그 origin이
+    항상 이 LAN IP:PORT라는 보장이 없음 -- 다른 호스트명/리버스프록시로
+    접속했을 수도 있음), 다른 PC의 주소창에 그대로 붙여넣어도 반드시
+    맞는 주소가 되도록 LAN IP 기준 절대 URL을 명시적으로 만들어 둔다."""
     os_field = (fields.get('os') or '').strip().lower()
     server_url = f'http://{lan_ip}:{PORT}'
     installer_url = f'{server_url}/download/installer/{token}'
@@ -1138,6 +1147,7 @@ def _agent_install_info(fields, lan_ip, token):
         return {
             'agentOs': 'linux',
             'agentInstallerUrl': f'/download/installer/{token}',
+            'agentInstallerAbsoluteUrl': installer_url,
             'agentDownloadUrl': '/download/agent-source',
             # 'pip'(심볼릭 링크)가 아니라 'python3 -m pip'를 쓰는 이유: 많은
             # Linux 배포판이 python3-pip 패키지만 설치해도 'pip' 명령 자체는
@@ -1154,6 +1164,7 @@ def _agent_install_info(fields, lan_ip, token):
         'agentOs': 'windows',
         'agentDownloadUrl': '/download/agent',
         'agentInstallerUrl': f'/download/installer/{token}',
+        'agentInstallerAbsoluteUrl': installer_url,
         'agentConfigUrl': f'/download/config/{token}',
         'agentCommand': f"InfraSightAgent.exe --server {server_url} --token {token} --install-startup",
         'agentOneLinerCommand': (
