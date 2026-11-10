@@ -1146,6 +1146,32 @@ function renderPagination(container, page, totalPages, onChange){
 let DEVICE_LLDP_LINKS = [];
 let SERVER_INFO = { lanIp: location.hostname || 'localhost', port: location.port || '5057' };
 
+// 사용자 요청("등록 된 네트워크 장비 인터페이스에 mac address 를 볼 수
+// 있어?"): BRIDGE-MIB/Q-BRIDGE-MIB MAC/VLAN 수집(collector/snmp_collector.py
+// _collect_mac_vlan_table)과 /api/devices/<id>/mac-table는 이미 있었지만
+// 화면 어디에도 쓰인 곳이 없었다 -- 인터페이스 목록/상세 팝업에 포트별로
+// 학습된 MAC을 붙여서 노출한다. deviceId -> entries[] | 'loading' 캐시이고,
+// 드로어가 열려있는 동안 매초 도는 refreshOpenDrawer() 폴링을 그대로 타고
+// 자연스럽게 반영되므로 별도 재렌더 호출 없이 fire-and-forget으로 둔다.
+let MAC_TABLE_CACHE = {};
+async function loadMacTableFor(deviceId){
+  if(MAC_TABLE_CACHE[deviceId]) return;
+  MAC_TABLE_CACHE[deviceId] = 'loading';
+  try{
+    const r = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}/mac-table`);
+    if(!r.ok) throw new Error('load failed');
+    const j = await r.json();
+    MAC_TABLE_CACHE[deviceId] = j.entries || [];
+  }catch(e){
+    delete MAC_TABLE_CACHE[deviceId];
+  }
+}
+function macEntriesForIface(deviceId, ifIdx){
+  const entries = MAC_TABLE_CACHE[deviceId];
+  if(!Array.isArray(entries)) return [];
+  return entries.filter(x=> String(x.if_index)===String(ifIdx));
+}
+
 /* ================= alert design: web notification channel =================
    "1단계: 웹 화면 알림". Every incident already lands in the DB the instant
    add_incident() (in storage.py) writes it -- this just watches the same
@@ -6359,6 +6385,7 @@ function openDrawerFor(id){
       }
     };
   }
+  if(cat==='net' && entity.mode==='snmp') loadMacTableFor(id);
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
   let envCardHtml = '';
   if(entity.mode==='ping' || entity.mode==='snmp') envCardHtml = drawPingDevice(entity, catLabel) || '';
@@ -6459,6 +6486,20 @@ function renderIfaceModal(){
   $('#ifaceModalTitle').textContent = f.name;
   $('#ifaceModalSub').textContent = f.description ? `${entity.name} · ${f.description}` : `${entity.name} · SNMP 실측`;
   const hasErrDisc = f.inErrors!=null || f.outErrors!=null || f.inDiscards!=null || f.outDiscards!=null;
+  // 사용자 요청("등록 된 네트워크 장비 인터페이스에 mac address 를 볼 수
+  // 있어?"): 이 포트에서 BRIDGE-MIB로 학습된 MAC 주소 목록 -- 이미 로드된
+  // MAC_TABLE_CACHE(openDrawerFor에서 fire-and-forget으로 채움)에서
+  // ifIndex가 일치하는 것만 추린다. 아직 로딩 중/미지원 장비면 조용히 생략.
+  const macEntries = macEntriesForIface(entity.id, f.idx);
+  const macCard = macEntries.length ? `
+    <div class="card"><div class="card-head"><div><h3>학습된 MAC 주소</h3><span class="sub">BRIDGE-MIB/Q-BRIDGE-MIB 실측 · ${macEntries.length}개</span></div></div>
+      <div style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-top:6px">
+        ${macEntries.map(m=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:4px 2px">
+          <span class="mono">${escapeHtml(m.mac)}</span>
+          <span style="color:var(--text-faint)">${m.vlan_id!=null ? `VLAN ${m.vlan_id}` : ''}</span>
+        </div>`).join('')}
+      </div>
+    </div>` : '';
   $('#ifaceModalBody').innerHTML = `
     <div class="kv-grid">
       <div class="kv" style="grid-column:span 2"><span>합계</span><b>${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps</b></div>
@@ -6473,6 +6514,7 @@ function renderIfaceModal(){
     <div class="card"><div class="card-head"><h3>트래픽 추이</h3><span class="sub">SNMP 실측 · 최근 60초 · Mbps</span></div>
       <div style="height:200px"><canvas id="ifaceModalCanvas"></canvas></div>
     </div>
+    ${macCard}
   `;
   charts.ifaceModalChart = lineChart($('#ifaceModalCanvas'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:f.hist||[], color:'#ffb020', fill:true}], {showX:false});
 }
@@ -6725,6 +6767,7 @@ function drawPingDevice(e, catLabel){
         ${ifaces.map(f=>{
           const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
           const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
+          const macCount = macEntriesForIface(e.id, f.idx).length;
           return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
           <span style="display:flex;align-items:center;gap:7px;min-width:0;padding-right:10px">
             ${bulkEligible ? `<label class="iface-bulk-checkbox-wrap" style="flex:none;display:flex;align-items:center;padding:6px;margin:-6px;cursor:pointer"><input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="cursor:pointer"></label>` : ''}
@@ -6734,6 +6777,7 @@ function drawPingDevice(e, catLabel){
             </span>
           </span>
           <span style="display:flex;align-items:center;gap:8px;flex:none">
+            ${macCount>0 ? `<span class="mono" style="font-size:10px;color:var(--text-faint)" title="이 포트에서 학습된 MAC 주소">MAC ${macCount}</span>` : ''}
             ${hasErr ? `<span class="mono" style="font-size:10px;color:var(--warn)" title="에러/드랍 누적 발생">⚠ ${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>` : ''}
             ${f.status==='up' ? `<span class="mono" style="font-size:10px;color:var(--text-faint)">${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps${utilMax>0 ? ` (${fmt0(utilMax)}%)` : ''}</span>` : ''}
             <span class="pill ${f.status==='up'?'good':'neutral'}"><span class="dot"></span>${f.status==='up'?'Up':(f.adminStatus==='down'?'비활성화':'Down')}</span>
