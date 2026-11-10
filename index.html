@@ -6740,8 +6740,10 @@ function drawPingDevice(e, catLabel){
 
   const ifaces = isSnmp && Array.isArray(e.interfaces) ? e.interfaces : [];
   // 인터페이스를 하나씩 눌러서 비활성화/활성화하기 번거롭다는 사용자
-  // 요청으로 체크박스 다중 선택 + 일괄 제어 툴바 추가. 기존 행별 버튼
-  // (iface-ctrl-inline-btn)과 같은 권한 조건(ADMIN+net)을 그대로 쓴다.
+  // 요청으로 체크박스 다중 선택 + 일괄 제어 툴바 추가. 이후 사용자 요청
+  // ("인터페이스 목록에 선택 비활성화, 활성화 버튼이 있기 때문에
+  // 인터페이스마다 있는 비활성화 버튼은 삭제 해줘")로 행별 인라인 버튼은
+  // 제거하고 이 일괄 툴바만 남겼다.
   const bulkEligible = CURRENT_ROLE==='ADMIN' && e.category==='net';
   const allSelected = bulkEligible && ifaces.length>0 && ifaces.every(f=>ifaceBulkSelection.has(f.idx));
   const bulkToolbar = bulkEligible ? `
@@ -6781,7 +6783,6 @@ function drawPingDevice(e, catLabel){
             ${hasErr ? `<span class="mono" style="font-size:10px;color:var(--warn)" title="에러/드랍 누적 발생">⚠ ${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>` : ''}
             ${f.status==='up' ? `<span class="mono" style="font-size:10px;color:var(--text-faint)">${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps${utilMax>0 ? ` (${fmt0(utilMax)}%)` : ''}</span>` : ''}
             <span class="pill ${f.status==='up'?'good':'neutral'}"><span class="dot"></span>${f.status==='up'?'Up':(f.adminStatus==='down'?'비활성화':'Down')}</span>
-            ${(CURRENT_ROLE==='ADMIN' && e.category==='net') ? `<button type="button" class="btn iface-ctrl-inline-btn" data-idx="${escapeHtml(f.idx)}" style="font-size:10px;padding:2px 7px;white-space:nowrap">${f.adminStatus==='down' ? '활성화' : '비활성화'}</button>` : ''}
           </span>
         </div>`;}).join('')}
       </div>
@@ -6937,9 +6938,10 @@ function drawPingDevice(e, catLabel){
       redrawIfaceSection(e, catLabel);
     });
   }
-  // 일괄 제어 -- 기존 행별 shutdown/no-shutdown(아래 iface-ctrl-inline-btn)과
-  // 같은 확인 방식(장비 이름 직접 입력)을 쓰되, 대상이 여러 개라는 걸
-  // 메시지에 그대로 나열해서 사용자가 뭘 끄는지 정확히 보고 확인하게 한다.
+  // 일괄 제어 -- 예전 행별 shutdown/no-shutdown 버튼(사용자 요청으로 제거,
+  // 위 bulkEligible 주석 참고)과 같은 확인 방식(장비 이름 직접 입력)을
+  // 쓰되, 대상이 여러 개라는 걸 메시지에 그대로 나열해서 사용자가 뭘
+  // 끄는지 정확히 보고 확인하게 한다.
   async function runBulkIfaceAction(goingDown){
     const idxList = Array.from(ifaceBulkSelection);
     const names = idxList.map(idx => { const f = ifaces.find(x=>x.idx===idx); return f ? f.name : null; }).filter(Boolean);
@@ -6972,36 +6974,6 @@ function drawPingDevice(e, catLabel){
   const bulkUpBtn = document.getElementById('iface-bulk-up-btn');
   if(bulkDownBtn) bulkDownBtn.addEventListener('click', ()=>runBulkIfaceAction(true));
   if(bulkUpBtn) bulkUpBtn.addEventListener('click', ()=>runBulkIfaceAction(false));
-  // 인터페이스 목록에서 모달을 열지 않고 바로 shutdown/no-shutdown할 수
-  // 있는 버튼 -- "상세창에 바로 보이게 해달라"는 사용자 요청으로 추가(이전
-  // 엔 인터페이스 클릭 -> 트래픽 팝업을 열어야만 제어 버튼이 보였음). 행
-  // 클릭(트래픽 팝업 열기)과 겹치지 않게 stopPropagation 필요.
-  $$('.iface-ctrl-inline-btn', $('#drawerBody')).forEach(btn=>{
-    btn.addEventListener('click', async (ev)=>{
-      ev.stopPropagation();
-      const f = (e.interfaces||[]).find(x=>x.idx===btn.dataset.idx);
-      if(!f) return;
-      const goingDown = f.adminStatus!=='down';
-      const msg = goingDown
-        ? `"${e.name}"의 "${f.name}" 인터페이스를 비활성화(shutdown)할까요?\n지금 이 포트로 흐르는 트래픽이 즉시 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`
-        : `"${e.name}"의 "${f.name}" 인터페이스를 다시 활성화(no shutdown)할까요?\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`;
-      const ok = await showTypedConfirm(msg, e.name, {title: goingDown ? '인터페이스 비활성화' : '인터페이스 활성화', okText: goingDown ? '비활성화' : '활성화'});
-      if(!ok) return;
-      btn.disabled = true;
-      const prevText = btn.textContent;
-      btn.textContent = '전송 중...';
-      try{
-        const path = goingDown ? 'shutdown' : 'no-shutdown';
-        const r = await apiFetch(`/api/devices/${encodeURIComponent(e.id)}/interfaces/${encodeURIComponent(f.name)}/${path}`, {method:'POST'});
-        const j = await r.json();
-        if(!r.ok) throw new Error(j.error||'명령 전송 실패');
-      }catch(err){
-        await showConfirm(err.message, {title:'인터페이스 제어 실패', okText:'확인'});
-        btn.disabled = false;
-        btn.textContent = prevText;
-      }
-    });
-  });
   restoreScrollPositions(scrollState);
   if(hasTraffic){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
