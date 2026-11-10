@@ -1116,8 +1116,24 @@ def _agent_install_info(fields, lan_ip, token):
     /download/installer/<token>이 OS를 보고 자동으로 분기)을 내려준다
     -- 받은 파일 하나만 실행하면 타이핑 없이 끝난다. agentDownloadUrl/
     agentCommand는 "원본 그대로 + 직접 명령어 입력" 보조 경로로 계속
-    제공(사이드카 설정 파일만 예외 -- exe 전용 구조라 생략)."""
+    제공(사이드카 설정 파일만 예외 -- exe 전용 구조라 생략).
+
+    agentOneLinerCommand(사용자 요청, 2026-11-10: "모니터링 서버에서
+    에이전트 파일을 받아서 등록한 서버로 옮겨서 설치해야 하는데, 서버에서
+    바로 받아서 설치할 수 있게 가능해?"): agentInstallerUrl 자체는 이미
+    "등록한 그 장비에서 직접 열면" 타이핑 없이 끝나도록 만들어져 있었지만
+    (/download/installer/<token>이 @require_role 없이 공개된 이유가 바로
+    이거다), 상대 경로라 admin의 브라우저가 아닌 등록 대상 장비(특히 GUI
+    없는 Windows Server Core/헤드리스 Linux)에서 그대로 쓸 수가 없었다 --
+    그래서 실제로는 "내 PC에서 받아서 USB/공유폴더로 옮기는" 수동 과정이
+    굳어져 있었던 것. 이 서버(InfraSight)의 LAN IP를 이미 agentCommand가
+    쓰고 있으므로(아래), 같은 절대 URL로 "다운로드 + 즉시 실행"까지 한
+    줄로 묶은 명령어를 추가로 내려줘서, 등록 대상 장비의 PowerShell/SSH
+    터미널(RDP 등으로 원격 접속한 상태)에 그대로 붙여넣으면 USB/공유폴더
+    없이 바로 설치가 끝나게 한다."""
     os_field = (fields.get('os') or '').strip().lower()
+    server_url = f'http://{lan_ip}:{PORT}'
+    installer_url = f'{server_url}/download/installer/{token}'
     if os_field == 'linux':
         return {
             'agentOs': 'linux',
@@ -1128,14 +1144,22 @@ def _agent_install_info(fields, lan_ip, token):
             # 안 깔려 있거나(최소 설치 이미지 등), 있어도 다른 파이썬을
             # 가리킬 수 있음 -- 이미 이 명령 자체가 명시적으로 python3를
             # 쓰므로, pip도 반드시 같은 인터프리터에 설치되도록 일관되게.
-            'agentCommand': f"python3 -m pip install psutil && python3 agent.py --server http://{lan_ip}:{PORT} --token {token} --install-startup",
+            'agentCommand': f"python3 -m pip install psutil && python3 agent.py --server {server_url} --token {token} --install-startup",
+            'agentOneLinerCommand': (
+                f"curl -fsSL \"{installer_url}\" -o InfraSightAgent.py "
+                f"&& python3 -m pip install psutil && python3 InfraSightAgent.py"
+            ),
         }
     return {
         'agentOs': 'windows',
         'agentDownloadUrl': '/download/agent',
         'agentInstallerUrl': f'/download/installer/{token}',
         'agentConfigUrl': f'/download/config/{token}',
-        'agentCommand': f"InfraSightAgent.exe --server http://{lan_ip}:{PORT} --token {token} --install-startup",
+        'agentCommand': f"InfraSightAgent.exe --server {server_url} --token {token} --install-startup",
+        'agentOneLinerCommand': (
+            f"Invoke-WebRequest \"{installer_url}\" -OutFile \"$env:TEMP\\InfraSightAgent.exe\"; "
+            f"& \"$env:TEMP\\InfraSightAgent.exe\""
+        ),
     }
 
 
