@@ -31,6 +31,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus.flowables import HRFlowable
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -39,6 +40,7 @@ from openpyxl.utils import get_column_letter
 import storage
 import validation
 from collector import sla
+from collector.thresholds import FALLBACK_THRESHOLDS
 
 _FONT_REGISTERED = False
 # Only Windows paths -- this whole app is Windows-only already (IS_WINDOWS
@@ -95,6 +97,165 @@ def _filter_desc(device_id=None, group=None):
     if group:
         return f"대상 그룹: {group}"
     return '대상: 전체 장비'
+
+
+# --------------------------------------------------------- 시각적 보강 --
+# 사용자 피드백("가동률 보고서 내보내기 PDF 받으면 너무 단조로워"): 기존엔
+# 제목+메타 3줄+표 하나뿐이라 전부 같은 회색 글씨였다. 표 아래에 상태/
+# 심각도/가동률처럼 등급이 있는 값은 화면(웹) 쪽과 동일한 기준(아래 색상 ·
+# uptimePillClass 색상, FALLBACK_THRESHOLDS cpu/mem/disk 경계값)으로
+# 색을 입히고, 표 위에 핵심 숫자를 바로 보여주는 "요약" 카드 한 줄과
+# 페이지마다 상단 브랜드 띠 · 하단 페이지 번호를 추가했다.
+GRADE_COLOR = {'good': '#00b087', 'warn': '#e6960f', 'crit': '#ef3b5c'}
+
+
+def _grade_uptime(pct):
+    if pct is None:
+        return None
+    if pct >= 99.9:
+        return 'good'
+    if pct >= 99:
+        return 'warn'
+    return 'crit'
+
+
+def _grade_resource(value, kind):
+    if value is None:
+        return None
+    th = FALLBACK_THRESHOLDS[kind]
+    if value >= th['crit']:
+        return 'crit'
+    if value >= th['warn']:
+        return 'warn'
+    return 'good'
+
+
+_CELL_STYLE = ParagraphStyle('kr_cell', fontName='Korean', fontSize=8.5, leading=11, textColor=colors.HexColor('#333333'))
+_CELL_CRIT = ParagraphStyle('kr_cell_crit', parent=_CELL_STYLE, fontName='KoreanBold', textColor=colors.HexColor(GRADE_COLOR['crit']))
+_CELL_WARN = ParagraphStyle('kr_cell_warn', parent=_CELL_STYLE, fontName='KoreanBold', textColor=colors.HexColor(GRADE_COLOR['warn']))
+_CELL_GOOD = ParagraphStyle('kr_cell_good', parent=_CELL_STYLE, textColor=colors.HexColor(GRADE_COLOR['good']))
+_CELL_INFO = ParagraphStyle('kr_cell_info', parent=_CELL_STYLE, textColor=colors.HexColor('#5b6478'))
+
+SEVERITY_CELL_STYLE = {'위험': _CELL_CRIT, '주의': _CELL_WARN, '정보': _CELL_INFO}
+STATUS_CELL_STYLE = {'미해결': _CELL_CRIT, '확인됨': _CELL_WARN, '해결됨': _CELL_GOOD}
+UPTIME_CELL_STYLE = {'good': _CELL_GOOD, 'warn': _CELL_WARN, 'crit': _CELL_CRIT}
+
+
+def _cell_paragraph(report_type, ci, value):
+    text = validation.escape_pdf_text(str(value))
+    if report_type == 'incident':
+        if ci == 3 and value in SEVERITY_CELL_STYLE:
+            return Paragraph(text, SEVERITY_CELL_STYLE[value])
+        if ci == 4 and value in STATUS_CELL_STYLE:
+            return Paragraph(text, STATUS_CELL_STYLE[value])
+    elif report_type == 'network' and ci == 2 and value != '-':
+        try:
+            grade = _grade_uptime(float(value))
+        except ValueError:
+            grade = None
+        if grade:
+            return Paragraph(text, UPTIME_CELL_STYLE[grade])
+    return Paragraph(text, _CELL_STYLE)
+
+
+def _avg_col(rows, idx):
+    vals = []
+    for r in rows:
+        if r[idx] != '-':
+            try:
+                vals.append(float(r[idx]))
+            except ValueError:
+                pass
+    return sum(vals) / len(vals) if vals else None
+
+
+def _build_summary(report_type, rows):
+    """표 본문 위에 보여줄 핵심 숫자 카드(최대 4개) -- (라벨, 값문자열, 등급|None, 보조라벨|None).
+    보조라벨은 값 아래 작은 글씨로 덧붙는 장비명 등 -- 긴 장비명을 값 문자열에
+    그대로 붙이면(예: "DESKTOP-938NHR6 (100.0%)") 카드 폭이 좁아 단어 중간에서
+    줄바꿈돼 깨지므로, 숫자(값)와 장비명(보조라벨)을 분리해 각자 알맞은
+    글자 크기로 렌더링한다."""
+    if report_type == 'incident':
+        total = len(rows)
+        unresolved = sum(1 for r in rows if r[4] == '미해결')
+        critical = sum(1 for r in rows if r[3] == '위험')
+        cat_counts = {}
+        for r in rows:
+            cat_counts[r[2]] = cat_counts.get(r[2], 0) + 1
+        top_cat = max(cat_counts, key=cat_counts.get) if cat_counts else '-'
+        return [
+            ('전체 장애 건수', str(total), None, None),
+            ('미해결', str(unresolved), 'crit' if unresolved else 'good', None),
+            ('위험 등급', str(critical), 'crit' if critical else 'good', None),
+            ('최다 발생 분류', top_cat, None, None),
+        ]
+    if report_type == 'resource':
+        cpu_avg, mem_avg, disk_avg = _avg_col(rows, 1), _avg_col(rows, 3), _avg_col(rows, 5)
+        candidates = []
+        for r in rows:
+            if r[2] != '-':
+                try:
+                    candidates.append((r[0], float(r[2])))
+                except ValueError:
+                    pass
+        worst = max(candidates, key=lambda x: x[1]) if candidates else None
+        return [
+            ('평균 CPU', f'{cpu_avg:.1f}%' if cpu_avg is not None else '-', _grade_resource(cpu_avg, 'cpu'), None),
+            ('평균 메모리', f'{mem_avg:.1f}%' if mem_avg is not None else '-', _grade_resource(mem_avg, 'mem'), None),
+            ('평균 디스크', f'{disk_avg:.1f}%' if disk_avg is not None else '-', _grade_resource(disk_avg, 'disk'), None),
+            ('최고 CPU 장비', f'{worst[1]:.1f}%' if worst else '-', _grade_resource(worst[1], 'cpu') if worst else None,
+             worst[0] if worst else None),
+        ]
+    if report_type == 'network':
+        pct_pairs = []
+        for r in rows:
+            if r[2] != '-':
+                try:
+                    pct_pairs.append((r[0], float(r[2])))
+                except ValueError:
+                    pass
+        avg_pct = sum(v for _, v in pct_pairs) / len(pct_pairs) if pct_pairs else None
+        total_fail = sum(int(r[3]) for r in rows)
+        worst = min(pct_pairs, key=lambda x: x[1]) if pct_pairs else None
+        return [
+            ('평균 가동률', f'{avg_pct:.3f}%' if avg_pct is not None else '-', _grade_uptime(avg_pct), None),
+            ('총 장애 횟수', str(total_fail), 'crit' if total_fail else 'good', None),
+            ('대상 장비 수', str(len(rows)), None, None),
+            ('최저 가동률 장비', f'{worst[1]:.3f}%' if worst else '-', _grade_uptime(worst[1]) if worst else None,
+             worst[0] if worst else None),
+        ]
+    return []
+
+
+def _build_summary_table(summary_items, usable_mm):
+    label_style = ParagraphStyle('kr_sum_label', fontName='Korean', fontSize=8, leading=10, textColor=colors.HexColor('#5b6478'))
+    sublabel_style = ParagraphStyle('kr_sum_sublabel', fontName='Korean', fontSize=8, leading=10, textColor=colors.HexColor('#8d93a6'))
+    cmds = [
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f7f8fb')),
+        ('BOX', (0, 0), (-1, -1), 0.4, colors.HexColor('#e3e6ee')),
+        ('INNERGRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#e3e6ee')),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+    ]
+    row = []
+    for i, (label, value, grade, sublabel) in enumerate(summary_items):
+        value_style = ParagraphStyle(f'kr_sum_val_{i}', fontName='KoreanBold', fontSize=13.5, leading=16,
+                                      textColor=colors.HexColor(GRADE_COLOR.get(grade, '#1c2333')))
+        cell = [
+            Paragraph(validation.escape_pdf_text(label), label_style),
+            Paragraph(validation.escape_pdf_text(value), value_style),
+        ]
+        if sublabel:
+            cell.append(Paragraph(validation.escape_pdf_text(sublabel), sublabel_style))
+        row.append(cell)
+        cmds.append(('LINEABOVE', (i, 0), (i, 0), 2.6, colors.HexColor(GRADE_COLOR.get(grade, '#7c5cff'))))
+    col_w = usable_mm / len(summary_items) * mm
+    t = Table([row], colWidths=[col_w] * len(summary_items))
+    t.setStyle(TableStyle(cmds))
+    return t
 
 
 # ------------------------------------------------------------ 데이터 수집 --
@@ -166,21 +327,67 @@ def build_pdf(report_type, start_ms, end_ms, device_id=None, group=None):
     title = _REPORT_TITLES[report_type]
     period_desc = f"기간: {_fmt_ms(start_ms)} ~ {_fmt_ms(end_ms)}"
     filter_desc = _filter_desc(device_id, group)
+    generated_at_ms = int(time.time() * 1000)
 
-    title_style = ParagraphStyle('kr_title', fontName='KoreanBold', fontSize=16, leading=20)
-    meta_style = ParagraphStyle('kr_meta', fontName='Korean', fontSize=9.5, leading=13, textColor=colors.HexColor('#555555'))
+    title_style = ParagraphStyle('kr_title', fontName='KoreanBold', fontSize=18, leading=22, textColor=colors.HexColor('#1c2333'))
+    meta_style = ParagraphStyle('kr_meta', fontName='Korean', fontSize=9.5, leading=14, textColor=colors.HexColor('#555555'))
+    section_style = ParagraphStyle('kr_section', fontName='KoreanBold', fontSize=12, leading=15, textColor=colors.HexColor('#1c2333'))
+    usable_mm = 210 - 28  # A4 폭(210mm) - 좌우 여백(14mm씩)
+
+    def _decorate(canvas, doc_):
+        # 페이지마다: 상단 브랜드 띠(InfraSight) + 하단 생성시각/페이지 번호.
+        # 기존엔 페이지가 그냥 흰 배경에 표만 떠 있어 "단조롭다"는 피드백이
+        # 있었음 -- 보고서 어디서 한 장만 봐도 어떤 시스템이 언제 만들었는지
+        # 알 수 있게.
+        canvas.saveState()
+        page_w, page_h = A4
+        canvas.setFillColor(colors.HexColor('#1c2333'))
+        canvas.rect(0, page_h - 12 * mm, page_w, 12 * mm, fill=1, stroke=0)
+        canvas.setFillColor(colors.white)
+        canvas.setFont('KoreanBold', 11)
+        canvas.drawString(14 * mm, page_h - 8.3 * mm, 'InfraSight')
+        canvas.setFont('Korean', 8)
+        canvas.setFillColor(colors.HexColor('#c7ccdb'))
+        canvas.drawRightString(page_w - 14 * mm, page_h - 8.1 * mm, '인프라 모니터링 시스템')
+        canvas.setStrokeColor(colors.HexColor('#dddddd'))
+        canvas.line(14 * mm, 15 * mm, page_w - 14 * mm, 15 * mm)
+        canvas.setFillColor(colors.HexColor('#8d93a6'))
+        canvas.setFont('Korean', 7.5)
+        canvas.drawString(14 * mm, 10.5 * mm, f'생성: {_fmt_ms(generated_at_ms)}')
+        canvas.drawRightString(page_w - 14 * mm, 10.5 * mm, f'{canvas.getPageNumber()} 페이지')
+        canvas.restoreState()
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=18 * mm, bottomMargin=16 * mm, leftMargin=14 * mm, rightMargin=14 * mm)
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=20 * mm, bottomMargin=18 * mm, leftMargin=14 * mm, rightMargin=14 * mm)
+
+    meta_box = Table([[[
+        Paragraph(period_desc, meta_style),
+        Paragraph(validation.escape_pdf_text(filter_desc), meta_style),
+    ]]], colWidths=[usable_mm * mm])
+    meta_box.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f7f8fb')),
+        ('BOX', (0, 0), (-1, -1), 0.4, colors.HexColor('#e3e6ee')),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10), ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ('TOPPADDING', (0, 0), (-1, -1), 7), ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
+    ]))
+
     elements = [
-        Paragraph(f'InfraSight {title}', title_style), Spacer(1, 3 * mm),
-        Paragraph(period_desc, meta_style), Paragraph(validation.escape_pdf_text(filter_desc), meta_style),
-        Paragraph(f"생성 시각: {_fmt_ms(int(time.time() * 1000))}", meta_style),
-        Spacer(1, 6 * mm),
+        Paragraph(title, title_style),
+        HRFlowable(width='100%', thickness=1.4, color=colors.HexColor('#7c5cff'), spaceBefore=3, spaceAfter=6),
+        meta_box,
+        Spacer(1, 7 * mm),
     ]
     if not rows:
         elements.append(Paragraph('해당 조건에 데이터가 없습니다.', meta_style))
     else:
+        summary_items = _build_summary(report_type, rows)
+        if summary_items:
+            elements.append(Paragraph('요약', section_style))
+            elements.append(Spacer(1, 2.5 * mm))
+            elements.append(_build_summary_table(summary_items, usable_mm))
+            elements.append(Spacer(1, 7 * mm))
+        elements.append(Paragraph('상세 내역', section_style))
+        elements.append(Spacer(1, 2.5 * mm))
         # 사용자 보고("네트워크 상태보고서를 pdf로 받았는데 엉망이야" --
         # IP(예: "192.168.30.250")가 "192.16/8.30.2/50"처럼 글자 단위로
         # 줄바꿈돼 깨져 보임 / "상태 보고서 전부 pdf 상태 확인해서
@@ -201,7 +408,6 @@ def build_pdf(report_type, start_ms, end_ms, device_id=None, group=None):
         # '내용'처럼 유독 긴 컬럼 하나가 MAX_FRACTION을 넘겨 나머지를
         # 다 잡아먹지 않게 상한도 둔다. 상한을 넘겨 깎인 만큼은 아직 여유가
         # 있는 컬럼들에 비례 배분한다.
-        usable_mm = 210 - 28
         n = len(columns)
         MIN_MM = 15.0
         MAX_FRACTION = 0.42
@@ -254,7 +460,9 @@ def build_pdf(report_type, start_ms, end_ms, device_id=None, group=None):
                     widths[i] += excess * (widths[i] / remaining_total)
         # XML 마크업 주입 대응(validation.escape_pdf_text 주석 참고) -- reportlab의
         # Paragraph는 문자열을 그대로 마크업으로 해석하고 자동 이스케이프하지 않는다.
-        table_data = [columns] + [[Paragraph(validation.escape_pdf_text(str(c)), meta_style) for c in row] for row in rows]
+        # 등급(심각도/상태/가동률)이 있는 컬럼은 화면과 같은 색으로 강조
+        # (_cell_paragraph) -- 나머지는 기존처럼 일반 텍스트.
+        table_data = [columns] + [[_cell_paragraph(report_type, ci, c) for ci, c in enumerate(row)] for row in rows]
         t = Table(table_data, repeatRows=1, colWidths=[w * mm for w in widths])
         t.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, -1), 'Korean'),
@@ -265,9 +473,11 @@ def build_pdf(report_type, start_ms, end_ms, device_id=None, group=None):
             ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#dddddd')),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f7f8fb')]),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
         ]))
         elements.append(t)
-    doc.build(elements)
+    doc.build(elements, onFirstPage=_decorate, onLaterPages=_decorate)
     return buf.getvalue()
 
 
