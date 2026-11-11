@@ -1535,6 +1535,22 @@ function barChart(canvas, labels, data, colors){
     }
   });
 }
+// 사용자 요청("장비 가동률 상세에 일별 가동률을 세로 막대로 표현 해줘"):
+// barChart()는 indexAxis:'y'라 실제로는 가로 막대(랭킹용, ov_top5가 씀)라
+// 날짜별 추이를 보여주는 일별 가동률에는 안 맞음 -- 공유 함수를 건드리면
+// ov_top5(장비명이 길어 가로가 맞는 용도)가 깨지므로, 세로 막대 전용
+// 함수를 따로 둔다.
+function columnChart(canvas, labels, data, colors){
+  return new Chart(canvas.getContext('2d'), {
+    type:'bar',
+    data:{ labels, datasets:[{data, backgroundColor:colors, borderRadius:5, maxBarThickness:36}] },
+    options:{
+      responsive:true, maintainAspectRatio:false, animation:false,
+      plugins:{legend:{display:false}, tooltip:{backgroundColor:'#ffffff',borderColor:'#e2e6f0',borderWidth:1,titleColor:'#1c2333',bodyColor:'#1c2333'}},
+      scales:{ y:{max:100, grid:{color:'#eef1f7'}, ticks:{color:'#8792a8',font:{size:9.5}}}, x:{grid:{display:false}, ticks:{color:'#5b6478',font:{size:10.5,family:"'IBM Plex Mono'"}}} }
+    }
+  });
+}
 function doughnutChart(canvas, labels, data, colors){
   return new Chart(canvas.getContext('2d'), {
     type:'doughnut',
@@ -4927,7 +4943,7 @@ async function openSlaDetailModal(kind, id, start, end){
     </table></div>
   `;
   destroyChart('slaDetail');
-  charts.slaDetail = barChart($('#slaDetailChart'),
+  charts.slaDetail = columnChart($('#slaDetailChart'),
     buckets.map(b=> new Date(b.periodStart).toLocaleDateString('ko-KR', {month:'numeric', day:'numeric'})),
     buckets.map(b=> b.uptimePct),
     buckets.map(b=> b.insufficientData?'#6b7280':b.uptimePct>=99.9?'#00b087':b.uptimePct>=99?'#e6960f':'#ef3b5c'));
