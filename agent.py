@@ -957,8 +957,10 @@ def main():
     # 실제로 도달하지 못했다 -- 즉 원클릭 설치의 가장 흔한 경로(재배치 성공)
     # 에서 자동 시작이 단 한 번도 등록되지 않고 있었다. server/token은 이미
     # 위에서 다 정해진 뒤이므로 여기서 먼저 호출해도 안전하다.
+    startup_registered = False
     if is_fresh_embedded and server and token:
         install_startup()
+        startup_registered = True
 
     if is_fresh_embedded and relocate_and_relaunch_if_needed(server, token):
         return  # the relocated copy takes over from here; this process is done
@@ -980,6 +982,19 @@ def main():
     # is_fresh_embedded 쪽은 위에서 이미 처리됐으니(재배치 성공/실패 어느
     # 쪽이든) 여기서 또 부르면 중복 호출 -- not is_fresh_embedded로 막는다.
     if args.install_startup and not is_fresh_embedded:
+        install_startup()
+        startup_registered = True
+
+    # 재발 방지(2026-11-12, 192.168.30.15 사례): --install-startup도
+    # --setup-only의 "(+자동시작 등록)"도 명시적으로 안 넘기고 그냥
+    # `agent.py --server .. --token ..`으로만 돌린 PC는 재부팅/Windows
+    # 업데이트로 한 번 꺼지면 다시는 안 켜졌다 -- 시작프로그램 등록이
+    # 아예 안 돼 있었기 때문. server/token이 정상적으로 확정된 모든
+    # 경로에서 자동시작 등록을 보장해서, 이 플래그를 깜빡해도(그리고
+    # Windows 업데이트가 기존 등록을 지워버려도) 다음 실행 때 스스로
+    # 복구되게 한다. install_startup()은 매번 같은 내용을 덮어쓰는
+    # idempotent 동작이라 이미 등록돼 있어도 안전하다.
+    if not startup_registered:
         install_startup()
 
     if args.setup_only:
