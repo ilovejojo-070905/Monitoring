@@ -2295,6 +2295,28 @@ function positionTip(e){
   tip.style.left = x+'px'; tip.style.top = y+'px';
 }
 function statusLabel(lv){ return lv==='crit'?'위험':lv==='warn'?'주의':'정상'; }
+function servicePortStatusColor(lv){ return lv==='crit'?'var(--crit)':lv==='warn'?'var(--warn)':'var(--good)'; }
+// 3등분 바(녹색=정상/오렌지색=주의/빨간색=위험) -- 세 구간 전부 항상 보이고,
+// 현재 상태에 해당하는 구간만 꽉 찬 색, 나머지 둘은 옅은(soft) 색으로 죽인다.
+function servicePortBar(status){
+  const seg = (lv, full, soft)=> `<i style="width:15px;height:7px;border-radius:3px;background:${status===lv?full:soft}"></i>`;
+  return `<span style="display:inline-flex;gap:3px;align-items:center;flex:none">`
+    + seg('good', 'var(--good)', 'var(--good-soft)')
+    + seg('warn', 'var(--warn)', 'var(--warn-soft)')
+    + seg('crit', 'var(--crit)', 'var(--crit-soft)')
+    + `</span>`;
+}
+function servicePortRowHtml(p){
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--surface-2)">
+      <span style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
+        ${servicePortBar(p.status)}
+        <span style="font-size:11px;font-weight:600;flex:none;color:${servicePortStatusColor(p.status)}">${statusLabel(p.status)}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(p.name)}<span class="mono" style="color:var(--text)"> : ${p.port}</span></span>
+      </span>
+      <span class="mono" style="font-size:11px;color:${p.reachable?'var(--text)':'var(--crit)'};flex:none;max-width:280px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.reasonLabel||'')}">${p.reachable ? (p.latencyMs!=null ? `${fmt1(p.latencyMs)}ms` : '정상') : escapeHtml(p.reasonLabel||'확인 실패')}</span>
+    </div>`;
+}
 function osLabel(os){ return os==='linux'?'Linux':os==='windows'?'Windows':(os||'-'); }
 
 function refreshTopology(){
@@ -6729,14 +6751,7 @@ function drawServer(s){
     <div class="card" style="min-width:0">
       <div class="card-head"><div><h3>서비스 포트 상태</h3><span class="sub">등록된 포트를 직접 TCP 연결해 실시간 확인</span></div></div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-        ${Object.values(s.servicePortStatus).sort((a,b)=>a.port-b.port).map(p=>`
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--surface-2)">
-            <span style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
-              <span class="pill ${p.status}" style="flex:none;font-size:9px;padding:2px 7px"><span class="dot"></span>${statusLabel(p.status)}</span>
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}<span class="mono" style="color:var(--text-faint)"> : ${p.port}</span></span>
-            </span>
-            <span class="mono" style="font-size:11px;color:${p.reachable?'var(--text-dim)':'var(--crit)'};flex:none;max-width:280px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.reasonLabel||'')}">${p.reachable ? (p.latencyMs!=null ? `${fmt1(p.latencyMs)}ms` : '정상') : escapeHtml(p.reasonLabel||'확인 실패')}</span>
-          </div>`).join('')}
+        ${Object.values(s.servicePortStatus).sort((a,b)=>a.port-b.port).map(servicePortRowHtml).join('')}
       </div>
     </div>` : ''}
     <div style="${grid2}">
@@ -6980,14 +6995,7 @@ function drawPingDevice(e, catLabel){
     <div class="card" style="min-width:0">
       <div class="card-head"><div><h3>서비스 포트 상태</h3><span class="sub">등록된 포트를 직접 TCP 연결해 실시간 확인</span></div></div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-        ${Object.values(e.servicePortStatus).sort((a,b)=>a.port-b.port).map(p=>`
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--surface-2)">
-            <span style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
-              <span class="pill ${p.status}" style="flex:none;font-size:9px;padding:2px 7px"><span class="dot"></span>${statusLabel(p.status)}</span>
-              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.name)}<span class="mono" style="color:var(--text-faint)"> : ${p.port}</span></span>
-            </span>
-            <span class="mono" style="font-size:11px;color:${p.reachable?'var(--text-dim)':'var(--crit)'};flex:none;max-width:280px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.reasonLabel||'')}">${p.reachable ? (p.latencyMs!=null ? `${fmt1(p.latencyMs)}ms` : '정상') : escapeHtml(p.reasonLabel||'확인 실패')}</span>
-          </div>`).join('')}
+        ${Object.values(e.servicePortStatus).sort((a,b)=>a.port-b.port).map(servicePortRowHtml).join('')}
       </div>
     </div>` : ''}
     <div class="card"><div class="card-head"><h3>안내</h3></div>
