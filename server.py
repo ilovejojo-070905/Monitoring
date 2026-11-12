@@ -2011,6 +2011,86 @@ def api_delete_maintenance_window(window_id):
     return jsonify({'ok': True})
 
 
+# --------------------------------------------- 소프트웨어 라이선스 자산관리 --
+def _license_matched_devices(license_name):
+    """license_name is matched case-insensitively as a substring against
+    each agent device's live installedPrograms[].name (not persisted to the
+    DB -- same live-only data agent_collector.record_report stores into
+    state.LIVE, so this is recomputed on every call rather than cached)."""
+    needle = license_name.strip().lower()
+    matched = []
+    for d in storage.load_devices():
+        if d.get('mode') != 'agent':
+            continue
+        entity = state.LIVE.get(d['id'], {})
+        programs = entity.get('installedPrograms') or []
+        if any(needle in (p.get('name') or '').lower() for p in programs):
+            matched.append({'id': d['id'], 'name': d['name']})
+    return matched
+
+
+_LICENSE_EXPIRING_SOON_MS = 30 * 24 * 3600 * 1000  # 30 days
+
+
+@app.get('/api/licenses')
+@require_role('VIEWER')
+def api_list_licenses():
+    now_ms = int(time.time() * 1000)
+    out = []
+    for lic in storage.load_licenses():
+        matched = _license_matched_devices(lic['name'])
+        expires_at = lic.get('expires_at')
+        out.append({
+            **lic,
+            'inUse': len(matched),
+            'matchedDevices': matched,
+            'expired': bool(expires_at) and expires_at < now_ms,
+            'expiringSoon': bool(expires_at) and now_ms <= expires_at <= now_ms + _LICENSE_EXPIRING_SOON_MS,
+        })
+    return jsonify({'licenses': out})
+
+
+@app.post('/api/licenses')
+@require_role('OPERATOR')
+def api_create_license():
+    body = request.get_json(force=True)
+    try:
+        cleaned = validation.validate_license(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    license_id = storage.create_license(
+        cleaned['name'], cleaned['quantity'], cleaned['vendor'], cleaned['expires_at'], cleaned['note'],
+        _current_username())
+    audit('CREATE_LICENSE', target=str(license_id), details=cleaned['name'])
+    return jsonify({'ok': True, 'id': license_id})
+
+
+@app.put('/api/licenses/<int:license_id>')
+@require_role('OPERATOR')
+def api_update_license(license_id):
+    if not storage.get_license(license_id):
+        return jsonify({'error': 'not found'}), 404
+    body = request.get_json(force=True)
+    try:
+        cleaned = validation.validate_license(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    storage.update_license(
+        license_id, cleaned['name'], cleaned['quantity'], cleaned['vendor'], cleaned['expires_at'], cleaned['note'])
+    audit('UPDATE_LICENSE', target=str(license_id), details=cleaned['name'])
+    return jsonify({'ok': True})
+
+
+@app.delete('/api/licenses/<int:license_id>')
+@require_role('OPERATOR')
+def api_delete_license(license_id):
+    if not storage.get_license(license_id):
+        return jsonify({'error': 'not found'}), 404
+    storage.delete_license(license_id)
+    audit('DELETE_LICENSE', target=str(license_id))
+    return jsonify({'ok': True})
+
+
 @app.get('/api/maintenance/log')
 @require_role('VIEWER')
 def api_maintenance_log():

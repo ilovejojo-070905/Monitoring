@@ -485,6 +485,22 @@ def init_db():
         started_by TEXT
     )''')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_maintenance_log_device ON maintenance_log(device_id, started_at)')
+    # 소프트웨어 라이선스 자산관리: name은 agent가 수집한 installedPrograms[].name
+    # 과 대소문자 무시 부분 일치로 매칭하는 검색 키워드다(예: "Microsoft
+    # Office"로 등록하면 "Microsoft Office Professional Plus 2021"이 설치된
+    # 장비도 매칭됨) -- 실시간 사용 현황은 저장하지 않고 조회 시점에
+    # collector.state.LIVE를 스캔해서 매번 계산한다(installedPrograms 자체도
+    # DB에 영속화되지 않는 live-only 데이터라 그와 동일한 성격을 맞춘 것).
+    conn.execute('''CREATE TABLE IF NOT EXISTS software_licenses(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        vendor TEXT,
+        expires_at INTEGER,
+        note TEXT,
+        created_by TEXT,
+        created_at INTEGER NOT NULL
+    )''')
     # 2-5: 알림 에스컬레이션. escalation_tiers is the configured contact chain
     # (1차/2차/3차...); escalation_state tracks, per OPEN incident, how far
     # through that chain it's gotten so a repeat scheduler tick never
@@ -1449,6 +1465,49 @@ def set_maintenance_window_enabled(window_id, enabled):
 def delete_maintenance_window(window_id):
     conn = get_db()
     conn.execute('DELETE FROM maintenance_windows WHERE id=?', (window_id,))
+    conn.commit()
+    conn.close()
+
+
+def create_license(name, quantity, vendor, expires_at, note, created_by):
+    conn = get_db()
+    now = int(time.time() * 1000)
+    cur = conn.execute(
+        'INSERT INTO software_licenses(name,quantity,vendor,expires_at,note,created_by,created_at) '
+        'VALUES (?,?,?,?,?,?,?)',
+        (name, quantity, vendor, expires_at, note, created_by, now))
+    license_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return license_id
+
+
+def load_licenses():
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM software_licenses ORDER BY created_at DESC').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_license(license_id):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM software_licenses WHERE id=?', (license_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_license(license_id, name, quantity, vendor, expires_at, note):
+    conn = get_db()
+    conn.execute(
+        'UPDATE software_licenses SET name=?, quantity=?, vendor=?, expires_at=?, note=? WHERE id=?',
+        (name, quantity, vendor, expires_at, note, license_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_license(license_id):
+    conn = get_db()
+    conn.execute('DELETE FROM software_licenses WHERE id=?', (license_id,))
     conn.commit()
     conn.close()
 

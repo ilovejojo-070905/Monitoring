@@ -332,6 +332,47 @@ def validate_maintenance_window(data):
     return out
 
 
+MAX_LICENSE_NAME_LEN = 100
+MAX_LICENSE_VENDOR_LEN = 60
+MAX_LICENSE_NOTE_LEN = 200
+
+
+def validate_license(data):
+    """data: the raw create/update body for a software license entry.
+    name is a search keyword matched (case-insensitive substring) against
+    each agent-reported installedPrograms[].name at usage-count time, not an
+    exact product key -- e.g. "Microsoft Office" matches "Microsoft Office
+    Professional Plus 2021" on any device that has it installed."""
+    if not isinstance(data, dict):
+        raise ValueError('라이선스 입력 형식이 올바르지 않습니다')
+    name = (data.get('name') or '').strip()
+    if not name:
+        raise ValueError('소프트웨어 이름(검색 키워드)을 입력해주세요')
+    if len(name) > MAX_LICENSE_NAME_LEN:
+        raise ValueError(f'이름은 {MAX_LICENSE_NAME_LEN}자 이하여야 합니다')
+    try:
+        quantity = int(data.get('quantity'))
+    except (TypeError, ValueError):
+        raise ValueError('보유 수량을 입력해주세요')
+    if quantity < 0:
+        raise ValueError('보유 수량은 0 이상이어야 합니다')
+    vendor = (data.get('vendor') or '').strip() or None
+    if vendor and len(vendor) > MAX_LICENSE_VENDOR_LEN:
+        raise ValueError(f'공급사는 {MAX_LICENSE_VENDOR_LEN}자 이하여야 합니다')
+    note = (data.get('note') or '').strip() or None
+    if note and len(note) > MAX_LICENSE_NOTE_LEN:
+        raise ValueError(f'비고는 {MAX_LICENSE_NOTE_LEN}자 이하여야 합니다')
+    expires_at = data.get('expiresAt')
+    if expires_at is not None and expires_at != '':
+        try:
+            expires_at = int(expires_at)
+        except (TypeError, ValueError):
+            raise ValueError('만료일 형식이 올바르지 않습니다')
+    else:
+        expires_at = None
+    return {'name': name, 'quantity': quantity, 'vendor': vendor, 'expires_at': expires_at, 'note': note}
+
+
 MAX_ESCALATION_TIMEOUT_MIN = 24 * 60  # 24 hours -- past this it's not really "escalation" anymore
 
 

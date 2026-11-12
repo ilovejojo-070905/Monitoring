@@ -3637,6 +3637,32 @@ function renderRegisterSkeleton(){
       <div id="maint-log-panel" style="display:none;margin-top:12px"></div>
       </div></div>
     </div>
+    <div class="card" id="license-card">
+      <div class="card-head collapsible collapsed" data-collapse="license-body" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>소프트웨어 라이선스</h3><span class="sub">보유 수량을 등록하면, 등록된 장비들의 설치 프로그램 목록과 이름을 대조해 실제 사용 중인 수량을 자동으로 계산합니다</span></div>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+      <div class="collapse-wrap collapsed" id="license-body"><div class="collapse-inner" style="padding-top:12px">
+      <form id="license-form" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px">
+        <input type="hidden" id="lic-id" value="">
+        <div class="form-grid">
+          <div class="field"><label>소프트웨어 이름 (검색 키워드) *</label><input type="text" id="lic-name" placeholder="예: Microsoft Office" maxlength="100"></div>
+          <div class="field"><label>보유 수량 *</label><input type="number" id="lic-quantity" min="0" step="1" placeholder="예: 10"></div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>공급사 (선택)</label><input type="text" id="lic-vendor" placeholder="예: Microsoft" maxlength="60"></div>
+          <div class="field"><label>만료일 (선택)</label><input type="date" id="lic-expires"></div>
+        </div>
+        <div class="field"><label>비고 (선택)</label><input type="text" id="lic-note" placeholder="예: 볼륨 라이선스 계약번호" maxlength="200"></div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button type="submit" class="btn primary" id="lic-submit-btn">라이선스 등록</button>
+          <button type="button" class="btn" id="lic-cancel-edit-btn" style="display:none">취소</button>
+          <span id="lic-error" style="color:var(--crit);font-size:11.5px"></span>
+        </div>
+      </form>
+      <div id="lic-list"></div>
+      </div></div>
+    </div>
 
   `;
 
@@ -3870,6 +3896,37 @@ function renderRegisterSkeleton(){
     renderMaintWindowsList();
   });
   $('#maint-log-btn').addEventListener('click', wireMaintenanceLogPanel);
+  function resetLicenseForm(){
+    $('#license-form').reset();
+    $('#lic-id').value = '';
+    $('#lic-submit-btn').textContent = '라이선스 등록';
+    $('#lic-cancel-edit-btn').style.display = 'none';
+    $('#lic-error').textContent = '';
+  }
+  $('#lic-cancel-edit-btn').addEventListener('click', resetLicenseForm);
+  $('#license-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const errEl = $('#lic-error');
+    errEl.textContent = '';
+    const name = $('#lic-name').value.trim();
+    const quantity = $('#lic-quantity').value;
+    if(!name){ errEl.textContent = '소프트웨어 이름을 입력해주세요'; return; }
+    if(quantity === ''){ errEl.textContent = '보유 수량을 입력해주세요'; return; }
+    const body = {
+      name, quantity: parseInt(quantity, 10),
+      vendor: $('#lic-vendor').value.trim(),
+      note: $('#lic-note').value.trim(),
+      expiresAt: $('#lic-expires').value ? new Date($('#lic-expires').value + 'T00:00:00').getTime() : null,
+    };
+    const editId = $('#lic-id').value;
+    const r = await apiFetch(editId ? `/api/licenses/${editId}` : '/api/licenses', {
+      method: editId ? 'PUT' : 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error || '저장 실패'; return; }
+    resetLicenseForm();
+    renderLicensesList();
+  });
   $('#threshold-global-edit-btn').addEventListener('click', ()=>{
     openThresholdEditModal({
       scope:'global', title:'전역 기본 임계치 수정',
@@ -4418,6 +4475,7 @@ function renderRegister(){
   renderGlobalThresholdsSummary();
   renderMaintWindowsList();
   renderMaintWindowTargetOptions();
+  renderLicensesList();
   // resetNetBulkUi()/clearScanResults()는 여기(renderRegister)가 아니라 switchView()에서만
   // 호출한다 -- renderRegister()는 이 화면을 "다시 보여줄 때"뿐 아니라
   // 메인 폴링 루프(pollTick, 1초마다)가 이 화면에 머무는 동안에도 계속
@@ -6270,6 +6328,79 @@ async function renderMaintWindowsList(){
       if(!ok) return;
       await apiFetch('/api/maintenance/windows/'+b.dataset.mwDel, {method:'DELETE'});
       renderMaintWindowsList();
+    }));
+  }catch(err){
+    listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
+  }
+}
+/* ================= 소프트웨어 라이선스 자산관리 ================= */
+let LICENSES_CACHE = [];
+function licenseStatusPill(lic){
+  if(lic.expired) return '<span class="pill crit" style="font-size:9px">만료됨</span>';
+  if(lic.inUse > lic.quantity) return '<span class="pill crit" style="font-size:9px">초과 사용</span>';
+  if(lic.expiringSoon) return '<span class="pill warn" style="font-size:9px">만료 임박</span>';
+  return '<span class="pill good" style="font-size:9px">정상</span>';
+}
+async function renderLicensesList(){
+  const listEl = $('#lic-list');
+  if(!listEl) return;
+  try{
+    const r = await apiFetch('/api/licenses');
+    const j = await r.json();
+    if(!r.ok) throw new Error(j.error || '불러오기 실패');
+    LICENSES_CACHE = j.licenses;
+    if(!j.licenses.length){
+      listEl.innerHTML = '<div class="empty-note">등록된 라이선스가 없습니다.</div>';
+      return;
+    }
+    listEl.innerHTML = `
+      <div class="table-wrap"><table class="data reg-device-table">
+        <thead><tr><th>이름</th><th>보유</th><th>사용중</th><th>남음</th><th>만료일</th><th>상태</th><th></th></tr></thead>
+        <tbody>
+          ${j.licenses.map(l=>{
+            const remain = l.quantity - l.inUse;
+            return `
+            <tr>
+              <td class="name">${escapeHtml(l.name)}${l.vendor?` <span style="color:var(--text-faint);font-size:10.5px">(${escapeHtml(l.vendor)})</span>`:''}</td>
+              <td class="mono">${l.quantity}</td>
+              <td class="mono" style="cursor:${l.inUse>0?'pointer':'default'}" ${l.inUse>0?`data-lic-toggle-devices="${l.id}" title="클릭하면 사용 중인 장비 목록을 봅니다"`:''}>${l.inUse}</td>
+              <td class="mono" style="color:${remain<0?'var(--crit)':'var(--text-dim)'}">${remain}</td>
+              <td style="font-size:11.5px">${l.expires_at ? new Date(l.expires_at).toLocaleDateString('ko-KR') : '-'}</td>
+              <td>${licenseStatusPill(l)}</td>
+              <td style="display:flex;gap:6px">
+                <button type="button" class="btn" data-lic-edit="${l.id}">수정</button>
+                <button type="button" class="btn" data-lic-del="${l.id}">삭제</button>
+              </td>
+            </tr>
+            <tr data-lic-devices-row="${l.id}" style="display:none"><td colspan="7" style="font-size:11px;color:var(--text-dim)">
+              사용 중인 장비: ${l.matchedDevices.map(d=>escapeHtml(d.name)).join(', ') || '-'}
+            </td></tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>`;
+    $$('[data-lic-toggle-devices]', listEl).forEach(el=> el.addEventListener('click', ()=>{
+      const row = listEl.querySelector(`[data-lic-devices-row="${el.dataset.licToggleDevices}"]`);
+      if(row) row.style.display = row.style.display === 'none' ? '' : 'none';
+    }));
+    $$('[data-lic-edit]', listEl).forEach(b=> b.addEventListener('click', ()=>{
+      const lic = LICENSES_CACHE.find(x=> String(x.id) === b.dataset.licEdit);
+      if(!lic) return;
+      $('#lic-id').value = lic.id;
+      $('#lic-name').value = lic.name;
+      $('#lic-quantity').value = lic.quantity;
+      $('#lic-vendor').value = lic.vendor || '';
+      $('#lic-note').value = lic.note || '';
+      $('#lic-expires').value = lic.expires_at ? new Date(lic.expires_at).toISOString().slice(0,10) : '';
+      $('#lic-submit-btn').textContent = '수정 완료';
+      $('#lic-cancel-edit-btn').style.display = '';
+      $('#license-card .collapse-wrap').classList.remove('collapsed');
+      $('#license-card .card-head').classList.remove('collapsed');
+    }));
+    $$('[data-lic-del]', listEl).forEach(b=> b.addEventListener('click', async ()=>{
+      const ok = await showConfirm('이 라이선스를 삭제할까요?', {title:'라이선스 삭제', okText:'삭제'});
+      if(!ok) return;
+      await apiFetch('/api/licenses/'+b.dataset.licDel, {method:'DELETE'});
+      renderLicensesList();
     }));
   }catch(err){
     listEl.innerHTML = `<div class="empty-note">${escapeHtml(err.message)}</div>`;
