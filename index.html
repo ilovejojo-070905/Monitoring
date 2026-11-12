@@ -2296,25 +2296,38 @@ function positionTip(e){
 }
 function statusLabel(lv){ return lv==='crit'?'위험':lv==='warn'?'주의':'정상'; }
 function servicePortStatusColor(lv){ return lv==='crit'?'var(--crit)':lv==='warn'?'var(--warn)':'var(--good)'; }
-// 3등분 바(녹색=정상/오렌지색=주의/빨간색=위험) -- 세 구간 전부 항상 보이고,
-// 현재 상태에 해당하는 구간만 꽉 찬 색, 나머지 둘은 옅은(soft) 색으로 죽인다.
-function servicePortBar(status){
-  const seg = (lv, full, soft)=> `<i style="width:15px;height:7px;border-radius:3px;background:${status===lv?full:soft}"></i>`;
-  return `<span style="display:inline-flex;gap:3px;align-items:center;flex:none">`
-    + seg('good', 'var(--good)', 'var(--good-soft)')
-    + seg('warn', 'var(--warn)', 'var(--warn-soft)')
-    + seg('crit', 'var(--crit)', 'var(--crit-soft)')
-    + `</span>`;
+// 지연시간(ms) 구간 -- TCP 연결 자체가 안 될 때는(!reachable) 기존 연속
+// 실패 횟수 기반 등급(p.status, evaluate_status)을 그대로 쓰고, 연결은
+// 되는데 응답이 느린 경우를 구분하기 위해 연결됐을 때만 지연시간 기준
+// 등급을 새로 매긴다 -- 장애 이력/알림(check_service_ports)이 근거로
+// 삼는 p.status 자체는 건드리지 않는, 순전히 화면 표시용 등급이다.
+const SERVICE_PORT_LATENCY_WARN_MS = 100;
+const SERVICE_PORT_LATENCY_CRIT_MS = 300;
+function servicePortTier(p){
+  if(!p.reachable) return p.status;
+  if(p.latencyMs == null) return 'good';
+  if(p.latencyMs >= SERVICE_PORT_LATENCY_CRIT_MS) return 'crit';
+  if(p.latencyMs >= SERVICE_PORT_LATENCY_WARN_MS) return 'warn';
+  return 'good';
+}
+function servicePortTierSoftBg(lv){ return lv==='crit'?'var(--crit-soft)':lv==='warn'?'var(--warn-soft)':'var(--good-soft)'; }
+function servicePortLegendHtml(){
+  return `
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin:8px 0 2px;font-size:10.5px;color:var(--text-dim)">
+      <span style="display:flex;align-items:center;gap:5px"><i style="width:8px;height:8px;border-radius:50%;background:var(--good);flex:none"></i>${SERVICE_PORT_LATENCY_WARN_MS}ms 미만 정상</span>
+      <span style="display:flex;align-items:center;gap:5px"><i style="width:8px;height:8px;border-radius:50%;background:var(--warn);flex:none"></i>${SERVICE_PORT_LATENCY_WARN_MS}~${SERVICE_PORT_LATENCY_CRIT_MS}ms 주의</span>
+      <span style="display:flex;align-items:center;gap:5px"><i style="width:8px;height:8px;border-radius:50%;background:var(--crit);flex:none"></i>${SERVICE_PORT_LATENCY_CRIT_MS}ms 초과 위험</span>
+    </div>`;
 }
 function servicePortRowHtml(p){
+  const tier = servicePortTier(p);
   return `
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:var(--surface-2)">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:${servicePortTierSoftBg(tier)}">
       <span style="display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden">
-        ${servicePortBar(p.status)}
-        <span style="font-size:11px;font-weight:600;flex:none;color:${servicePortStatusColor(p.status)}">${statusLabel(p.status)}</span>
+        <span style="font-size:11px;font-weight:600;flex:none;color:${servicePortStatusColor(tier)}">${statusLabel(tier)}</span>
         <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(p.name)}<span class="mono" style="color:var(--text)"> : ${p.port}</span></span>
       </span>
-      <span class="mono" style="font-size:11px;color:${p.reachable?'var(--text)':'var(--crit)'};flex:none;max-width:280px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.reasonLabel||'')}">${p.reachable ? (p.latencyMs!=null ? `${fmt1(p.latencyMs)}ms` : '정상') : escapeHtml(p.reasonLabel||'확인 실패')}</span>
+      <span class="mono" style="font-size:15px;font-weight:700;color:var(--text);flex:none;max-width:280px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.reasonLabel||'')}">${p.reachable ? (p.latencyMs!=null ? `${fmt1(p.latencyMs)}ms` : '정상') : escapeHtml(p.reasonLabel||'확인 실패')}</span>
     </div>`;
 }
 function osLabel(os){ return os==='linux'?'Linux':os==='windows'?'Windows':(os||'-'); }
@@ -6750,6 +6763,7 @@ function drawServer(s){
     ${(s.servicePortStatus && Object.keys(s.servicePortStatus).length) ? `
     <div class="card" style="min-width:0">
       <div class="card-head"><div><h3>서비스 포트 상태</h3><span class="sub">등록된 포트를 직접 TCP 연결해 실시간 확인</span></div></div>
+      ${servicePortLegendHtml()}
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
         ${Object.values(s.servicePortStatus).sort((a,b)=>a.port-b.port).map(servicePortRowHtml).join('')}
       </div>
@@ -6994,6 +7008,7 @@ function drawPingDevice(e, catLabel){
     ${(e.servicePortStatus && Object.keys(e.servicePortStatus).length) ? `
     <div class="card" style="min-width:0">
       <div class="card-head"><div><h3>서비스 포트 상태</h3><span class="sub">등록된 포트를 직접 TCP 연결해 실시간 확인</span></div></div>
+      ${servicePortLegendHtml()}
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
         ${Object.values(e.servicePortStatus).sort((a,b)=>a.port-b.port).map(servicePortRowHtml).join('')}
       </div>
