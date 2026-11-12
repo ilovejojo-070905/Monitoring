@@ -6498,6 +6498,13 @@ function renderIfaceModal(){
   const entity = findEntity(ifaceModalState.deviceId);
   const f = entity && Array.isArray(entity.interfaces) ? entity.interfaces.find(x=>x.idx===ifaceModalState.idx) : null;
   if(!entity || !f){ closeIfaceModal(); return; }
+  // 사용자 보고("학습된 맥주소 스크롤이 또 자동으로 제자리도 복귀 돼"):
+  // 이 함수가 1초 폴링마다(위 pollTick) #ifaceModalBody를 통째로 다시
+  // 그리는데, 아래 MAC 목록 div에 data-scroll-key가 없어서 스크롤을
+  // 내린 상태에서도 매초 맨 위로 되돌아갔다 -- drawPingDevice 등
+  // 다른 곳과 같은 captureScrollPositions()/restoreScrollPositions()
+  // 패턴을 여기도 적용.
+  const scrollState = captureScrollPositions();
   destroyChart('ifaceModalChart');
   $('#ifaceModalTitle').textContent = f.name;
   $('#ifaceModalSub').textContent = f.description ? `${entity.name} · ${f.description}` : `${entity.name} · SNMP 실측`;
@@ -6509,7 +6516,7 @@ function renderIfaceModal(){
   const macEntries = macEntriesForIface(entity.id, f.idx);
   const macCard = macEntries.length ? `
     <div class="card"><div class="card-head"><div><h3>학습된 MAC 주소</h3><span class="sub">BRIDGE-MIB/Q-BRIDGE-MIB 실측 · ${macEntries.length}개</span></div></div>
-      <div style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-top:6px">
+      <div data-scroll-key="iface-mac-list" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-top:6px">
         ${macEntries.map(m=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:4px 2px">
           <span class="mono">${escapeHtml(m.mac)}</span>
           <span style="color:var(--text-faint)">${m.vlan_id!=null ? `VLAN ${m.vlan_id}` : ''}</span>
@@ -6533,6 +6540,7 @@ function renderIfaceModal(){
     ${macCard}
   `;
   charts.ifaceModalChart = lineChart($('#ifaceModalCanvas'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:f.hist||[], color:'#ffb020', fill:true}], {showX:false});
+  restoreScrollPositions(scrollState);
 }
 $('#ifaceModalClose').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });
 $('#ifaceOverlay').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });
