@@ -261,7 +261,24 @@ function Resolve-ExeAndAddToPath([string]$cmd, [string[]]$searchGlobs) {
     # 포기하지 않고 최대 5회(매번 2초 간격)까지 재확인한다. 이미 설치돼
     # 있던 경우(가장 흔한 경로)는 첫 시도에서 바로 찾아 반환되므로 이
     # 재시도 때문에 느려지지 않는다.
-    for ($attempt = 1; $attempt -le 5; $attempt++) {
+    # 실제 겪은 문제(2026-11-13, 다른 PC에 GUI Setup으로 설치 중): winget
+    # install git이 종료 코드 0(성공)으로 끝났고 출력도 GitHub 릴리스에서
+    # 내려받아 설치했다고 나오는데, 아래 하드코딩된 세 후보 경로 중 어디에도
+    # git.exe가 없어 5번(10초) 재시도 후에도 실패했다. winget을 포함한
+    # 제대로 된 설치 프로그램은 설치 위치가 어디든 레지스트리의 PATH
+    # 환경변수는 갱신하는데, 지금까지는 그 레지스트리 값을 이 프로세스의
+    # $env:Path로 다시 읽어들이는 시도를 전혀 안 하고 있었다(하드코딩된
+    # 후보 경로 glob에만 의존) -- 그래서 "설치는 됐는데 우리가 예상 못한
+    # 위치"인 경우를 전부 놓쳤다. 매 시도마다 레지스트리의 Machine/User
+    # PATH를 먼저 병합해서 Get-Command가 설치 위치와 무관하게 찾아내게
+    # 하고, 그래도 못 찾을 때만 기존 glob 후보로 넘어간다 -- git뿐 아니라
+    # python/caddy/mkcert 전부에 적용되는 일반적인 보강이다. 재시도 횟수도
+    # 5->8회(최대 16초)로 늘려 백신 실시간 검사 등으로 인한 추가 지연에
+    # 더 여유를 둔다.
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $env:Path = (@($machinePath, $userPath, $env:Path) | Where-Object { $_ }) -join ';'
         $existing = Get-Command $cmd -ErrorAction SilentlyContinue
         if ($existing -and $existing.Source -notmatch '\\WindowsApps\\') { return $existing.Source }
         foreach ($glob in $searchGlobs) {
@@ -276,7 +293,7 @@ function Resolve-ExeAndAddToPath([string]$cmd, [string[]]$searchGlobs) {
                 return $found.FullName
             }
         }
-        if ($attempt -lt 5) { Start-Sleep -Seconds 2 }
+        if ($attempt -lt 8) { Start-Sleep -Seconds 2 }
     }
     $detail = ''
     if ($script:WingetLog.ContainsKey($cmd)) {
