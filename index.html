@@ -6924,7 +6924,14 @@ function restoreInputState(id, state){
   if(!el) return;
   el.value = state.value;
   if(state.focused){
-    el.focus();
+    // 사용자 보고("검색창 만들고 네트워크 상세창 스크롤이 아래로 계속
+    // 자동으로 내려가"): preventScroll 없이 focus()를 호출하면, 포커스
+    // 복원마다(1초 폴링 틱마다) 브라우저가 이 입력란을 보이게 하려고
+    // 모달을 매번 스크롤시켰다 -- 바로 위에서 이미 restoreScrollPositions
+    // 로 올바른 위치를 복원해놨는데, 그 다음 이 focus() 호출이 매번
+    // 그걸 다시 밀어버린 것. preventScroll:true로 포커스는 유지하되
+    // 스크롤은 건드리지 않게 한다.
+    el.focus({preventScroll: true});
     try{ el.setSelectionRange(state.selStart, state.selEnd); }catch(e){}
   }
 }
