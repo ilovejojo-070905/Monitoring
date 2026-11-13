@@ -6680,13 +6680,24 @@ function renderIfaceModal(){
   // MAC_TABLE_CACHE(openDrawerFor에서 fire-and-forget으로 채움)에서
   // ifIndex가 일치하는 것만 추린다. 아직 로딩 중/미지원 장비면 조용히 생략.
   const macEntries = macEntriesForIface(entity.id, f.idx);
+  // 사용자 요청("학습된 mac주소에 맥주소가 많으면 검색할수있게 검색창
+  // 만들어줘"): 목록이 한 화면(스크롤 영역 하나 분량, 대략 8개)을 넘을
+  // 때만 검색창을 보여준다. 이 영역도 renderIfaceModal()이 1초마다
+  // innerHTML을 통째로 다시 그리므로, 위 captureInputState/
+  // restoreInputState로 타이핑 중 값/커서/포커스를 보존한다.
+  const macSearchState = captureInputState('iface-mac-search');
+  const macQuery = ((macSearchState ? macSearchState.value : '') || '').trim().toLowerCase();
+  const macEntriesFiltered = macQuery
+    ? macEntries.filter(m => (m.mac||'').toLowerCase().includes(macQuery) || (m.vlan_id!=null && String(m.vlan_id).includes(macQuery)))
+    : macEntries;
   const macCard = macEntries.length ? `
     <div class="card"><div class="card-head"><div><h3>학습된 MAC 주소</h3><span class="sub">BRIDGE-MIB/Q-BRIDGE-MIB 실측 · ${macEntries.length}개</span></div></div>
+      ${macEntries.length > 8 ? `<input type="text" id="iface-mac-search" placeholder="MAC 주소 또는 VLAN 검색" autocomplete="off" style="margin-top:8px;width:100%;box-sizing:border-box;padding:6px 10px;font-size:11.5px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:var(--text)">` : ''}
       <div data-scroll-key="iface-mac-list" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-top:6px">
-        ${macEntries.map(m=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:4px 2px">
+        ${macEntriesFiltered.length ? macEntriesFiltered.map(m=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:4px 2px">
           <span class="mono">${escapeHtml(m.mac)}</span>
           <span style="color:var(--text-faint)">${m.vlan_id!=null ? `VLAN ${m.vlan_id}` : ''}</span>
-        </div>`).join('')}
+        </div>`).join('') : '<span style="font-size:11.5px;color:var(--text-faint)">일치하는 MAC 주소가 없습니다</span>'}
       </div>
     </div>` : '';
   $('#ifaceModalBody').innerHTML = `
@@ -6707,6 +6718,9 @@ function renderIfaceModal(){
   `;
   charts.ifaceModalChart = lineChart($('#ifaceModalCanvas'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:f.hist||[], color:'#ffb020', fill:true}], {showX:false});
   restoreScrollPositions(scrollState);
+  restoreInputState('iface-mac-search', macSearchState);
+  const macSearchEl = $('#iface-mac-search');
+  if(macSearchEl) macSearchEl.addEventListener('input', renderIfaceModal);
 }
 $('#ifaceModalClose').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });
 $('#ifaceOverlay').addEventListener('click', ()=>{ closeIfaceModal(); refreshOpenDrawer(); });
@@ -6894,6 +6908,25 @@ function restoreScrollPositions(state){
     const s = state[el.dataset.scrollKey];
     if(s){ el.scrollTop = s.t; el.scrollLeft = s.l; }
   });
+}
+// 검색창처럼 사용자가 타이핑 중인 입력란이 있는 영역도 주기적으로
+// innerHTML을 통째로 다시 그리는 곳(renderIfaceModal 등)에서 쓴다 --
+// 위 스크롤 보존과 같은 이유로, 값/캐럿 위치/포커스 여부를 다시 그리기
+// 전에 저장했다가 그린 뒤 복원해서 타이핑 중 커서가 날아가지 않게 한다.
+function captureInputState(id){
+  const el = document.getElementById(id);
+  if(!el) return null;
+  return {value: el.value, selStart: el.selectionStart, selEnd: el.selectionEnd, focused: document.activeElement === el};
+}
+function restoreInputState(id, state){
+  if(!state) return;
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.value = state.value;
+  if(state.focused){
+    el.focus();
+    try{ el.setSelectionRange(state.selStart, state.selEnd); }catch(e){}
+  }
 }
 function drawPingDevice(e, catLabel){
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
