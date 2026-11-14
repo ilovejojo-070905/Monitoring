@@ -501,6 +501,26 @@ def init_db():
         created_by TEXT,
         created_at INTEGER NOT NULL
     )''')
+    # 네트워크 장비 설정(config) 자동 백업: 사용자 요청("등록 된 장비들
+    # 일정 기간을 지정해서 config를 자동으로 받을 수 있게 할수 있어?")으로
+    # 추가. changed=0(이전 백업과 내용이 같음, 또는 접속/조회 자체가
+    # 실패)인 행은 매 주기마다 쌓이면 안정적인 장비 기준 거의 전부
+    # 쓸모없는 중복이 되므로, save_config_backup()이 기기당 가장 최근
+    # changed=0 행 하나만 남기고(새로 쓰기 전에 지움) 교체한다 -- 그래서
+    # 이 테이블에는 실제 "변경"이 일어난 모든 행(changed=1, content 포함)과
+    # 기기당 최대 1개의 최신 "변경 없음/확인 실패" 행만 쌓인다. content는
+    # changed=0일 때 굳이 중복 저장하지 않고 NULL로 둔다.
+    conn.execute('''CREATE TABLE IF NOT EXISTS device_config_backups(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL,
+        captured_at INTEGER NOT NULL,
+        success INTEGER NOT NULL,
+        changed INTEGER NOT NULL DEFAULT 0,
+        content TEXT,
+        content_hash TEXT,
+        error TEXT
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_device_config_backups_device ON device_config_backups(device_id, captured_at)')
     # 2-5: 알림 에스컬레이션. escalation_tiers is the configured contact chain
     # (1차/2차/3차...); escalation_state tracks, per OPEN incident, how far
     # through that chain it's gotten so a repeat scheduler tick never
@@ -1508,6 +1528,87 @@ def update_license(license_id, name, quantity, vendor, expires_at, note):
 def delete_license(license_id):
     conn = get_db()
     conn.execute('DELETE FROM software_licenses WHERE id=?', (license_id,))
+    conn.commit()
+    conn.close()
+
+
+# ------------------------------------------------- 장비 설정(config) 백업 --
+CONFIG_BACKUP_SETTING_KEY = 'config_backup_settings'
+
+
+def get_config_backup_settings():
+    """{'enabled': bool, 'intervalHours': int}. 기본값은 꺼짐 -- 등록된
+    네트워크 장비 전부에 SSH/Telnet 계정이 미리 등록돼 있다는 보장이 없어서,
+    사용자가 명시적으로 켜기 전까지는 아무 장비에도 접속을 시도하지 않는다."""
+    raw = get_setting(CONFIG_BACKUP_SETTING_KEY)
+    if not raw:
+        return {'enabled': False, 'intervalHours': 24}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return {'enabled': False, 'intervalHours': 24}
+    return {'enabled': bool(data.get('enabled')), 'intervalHours': int(data.get('intervalHours') or 24)}
+
+
+def set_config_backup_settings(enabled, interval_hours):
+    set_setting(CONFIG_BACKUP_SETTING_KEY, json.dumps({'enabled': bool(enabled), 'intervalHours': int(interval_hours)}))
+
+
+def save_config_backup(device_id, success, changed, content, content_hash, error):
+    conn = get_db()
+    now = int(time.time() * 1000)
+    if not changed:
+        # 변경 없음/실패 행은 기기당 가장 최근 것 하나만 남긴다(테이블
+        # 스키마 주석 참고) -- 실제 변경(changed=1) 행은 여기서 절대 안 지움.
+        conn.execute('DELETE FROM device_config_backups WHERE device_id=? AND changed=0', (device_id,))
+    conn.execute(
+        'INSERT INTO device_config_backups(device_id,captured_at,success,changed,content,content_hash,error) '
+        'VALUES (?,?,?,?,?,?,?)',
+        (device_id, now, 1 if success else 0, 1 if changed else 0, content, content_hash, error))
+    conn.commit()
+    conn.close()
+
+
+def load_config_backups(device_id, limit=50):
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT * FROM device_config_backups WHERE device_id=? ORDER BY captured_at DESC LIMIT ?',
+        (device_id, limit)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_config_backup(backup_id):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM device_config_backups WHERE id=?', (backup_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_last_config_backup_attempt_at(device_id):
+    """성공/실패/변경여부 가리지 않고 이 장비에 마지막으로 시도한 시각
+    (ms) -- 스케줄러가 "이 장비, 지금 백업할 때 됐나?"를 판단하는 기준."""
+    conn = get_db()
+    row = conn.execute(
+        'SELECT MAX(captured_at) as m FROM device_config_backups WHERE device_id=?', (device_id,)).fetchone()
+    conn.close()
+    return row['m'] if row and row['m'] is not None else None
+
+
+def get_latest_config_backup_content(device_id):
+    """content가 실제로 들어있는(changed=1) 가장 최근 백업 -- 다음 번
+    조회 결과와 비교할 "이전 설정" 기준점."""
+    conn = get_db()
+    row = conn.execute(
+        'SELECT * FROM device_config_backups WHERE device_id=? AND content IS NOT NULL '
+        'ORDER BY captured_at DESC LIMIT 1', (device_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_config_backups_for_device(device_id):
+    conn = get_db()
+    conn.execute('DELETE FROM device_config_backups WHERE device_id=?', (device_id,))
     conn.commit()
     conn.close()
 

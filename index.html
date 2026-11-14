@@ -1172,6 +1172,53 @@ function macEntriesForIface(deviceId, ifIdx){
   return entries.filter(x=> String(x.if_index)===String(ifIdx));
 }
 
+// 사용자 요청("네트워크 등록 된 장비들 일정 기간을 지정해서 config 를
+// 자동으로 받을 수 있게 할수 있어?") -- 위 MAC_TABLE_CACHE와 같은
+// fire-and-forget 캐시 패턴. 목록은 openDrawerFor()에서 네트워크 장비일
+// 때만 fire-and-forget으로 채우고, drawPingDevice()는 그 결과가 있으면
+// 그려주기만 한다(API 응답을 기다리지 않음 -- 다음 폴링 틱에서 캐시가
+// 채워지면 자연스럽게 반영).
+let CONFIG_BACKUP_CACHE = {};
+async function loadConfigBackupsFor(deviceId){
+  if(CONFIG_BACKUP_CACHE[deviceId]) return;
+  CONFIG_BACKUP_CACHE[deviceId] = 'loading';
+  try{
+    const r = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}/config-backups`);
+    if(!r.ok) throw new Error('load failed');
+    const j = await r.json();
+    CONFIG_BACKUP_CACHE[deviceId] = j.backups || [];
+  }catch(e){
+    delete CONFIG_BACKUP_CACHE[deviceId];
+  }
+}
+// 백업 자체가 실제 SSH 접속+명령 실행이라 몇 초~수십 초 걸릴 수 있는데,
+// 드로어는 열려있는 동안 1초마다 #drawerBody를 통째로 다시 그린다
+// (refreshOpenDrawer) -- 버튼 자체의 disabled/텍스트 상태는 그 다음 틱에서
+// 바로 지워지므로, 진행 중인 장비 id를 따로 기억해뒀다가 매번 다시 그릴
+// 때 반영해서 같은 백업이 끝나기도 전에 또 눌리는 걸 막는다.
+let CONFIG_BACKUP_INFLIGHT = new Set();
+let CONFIG_BACKUP_SETTINGS = null;
+let cfgbkSettingsFormLoaded = false;
+async function loadConfigBackupSettings(){
+  if(CONFIG_BACKUP_SETTINGS) return;
+  try{
+    const r = await apiFetch('/api/config-backup/settings');
+    if(!r.ok) throw new Error('load failed');
+    CONFIG_BACKUP_SETTINGS = await r.json();
+  }catch(e){ /* CONFIG_BACKUP_SETTINGS stays null, retried on next call */ }
+}
+// 설정 폼은(license-form 등과 같은 이유로) 매 폴링 틱마다 값을 다시
+// 써넣지 않는다 -- 사용자가 입력 중인 값을 매초 덮어쓰면 타이핑이 불가능
+// 해지므로, 최초 1회만 서버 값으로 채우고 그 뒤로는 저장 시에만 갱신한다.
+function renderConfigBackupSettingsForm(){
+  if(cfgbkSettingsFormLoaded || !CONFIG_BACKUP_SETTINGS) return;
+  const enabledSel = $('#cfgbk-enabled'), intervalInput = $('#cfgbk-interval');
+  if(!enabledSel || !intervalInput) return;
+  enabledSel.value = CONFIG_BACKUP_SETTINGS.enabled ? '1' : '0';
+  intervalInput.value = CONFIG_BACKUP_SETTINGS.intervalHours;
+  cfgbkSettingsFormLoaded = true;
+}
+
 /* ================= alert design: web notification channel =================
    "1단계: 웹 화면 알림". Every incident already lands in the DB the instant
    add_incident() (in storage.py) writes it -- this just watches the same
@@ -2328,6 +2375,44 @@ function servicePortRowHtml(p){
         <span style="font-size:15px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escapeHtml(p.name)}<span class="mono" style="font-weight:700;color:var(--text)"> : ${p.port}</span></span>
       </span>
       <span class="mono" style="font-size:15px;font-weight:700;color:var(--text);flex:none;max-width:280px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(p.reasonLabel||'')}">${p.reachable ? (p.latencyMs!=null ? `${fmt1(p.latencyMs)}ms` : '정상') : escapeHtml(p.reasonLabel||'확인 실패')}</span>
+    </div>`;
+}
+function configBackupStatusPill(b){
+  if(!b.success) return '<span class="pill crit" style="font-size:9px">실패</span>';
+  if(b.changed) return '<span class="pill warn" style="font-size:9px">변경됨</span>';
+  return '<span class="pill good" style="font-size:9px">변경없음</span>';
+}
+// 사용자 요청("네트워크 등록 된 장비들 일정 기간을 지정해서 config 를
+// 자동으로 받을 수 있게 할수 있어?") -- CONFIG_BACKUP_CACHE는
+// loadConfigBackupsFor()가 fire-and-forget으로 채우므로, 이 함수는 그
+// 결과가 아직 없어도(아직 로딩/미시도) 빈 목록으로 조용히 그린다 --
+// 다음 폴링 틱에서 캐시가 채워지면 자연스럽게 다시 그려진다.
+function configBackupCardHtml(e){
+  if(e.category !== 'net') return '';
+  const cached = CONFIG_BACKUP_CACHE[e.id];
+  const backups = Array.isArray(cached) ? cached : [];
+  const settings = CONFIG_BACKUP_SETTINGS;
+  const subText = settings
+    ? (settings.enabled ? `전역 설정: ${settings.intervalHours}시간마다 자동 백업, 변경 시 알림` : '전역 설정에서 꺼져 있습니다 -- 등록 화면에서 켤 수 있습니다')
+    : '등록된 SSH/Telnet 계정으로 설정을 가져옵니다';
+  return `
+    <div class="card" style="min-width:0">
+      <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>설정(config) 자동 백업</h3><span class="sub">${subText}</span></div>
+        ${CURRENT_ROLE_RANK >= 1 ? `<button type="button" class="btn" data-cfgbk-run="${e.id}" ${CONFIG_BACKUP_INFLIGHT.has(e.id)?'disabled':''} style="margin-left:auto;font-size:12px;padding:6px 12px">${CONFIG_BACKUP_INFLIGHT.has(e.id)?'백업 중...':'지금 백업'}</button>` : ''}
+      </div>
+      <span id="cfgbk-run-error-${e.id}" style="color:var(--crit);font-size:11px"></span>
+      <div data-scroll-key="cfgbk-list-${e.id}" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;margin-top:8px">
+        ${backups.length ? backups.map(b=>`
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;padding:4px 2px">
+            <span class="mono">${fmtWhen(b.captured_at)}</span>
+            <span style="display:flex;align-items:center;gap:8px;min-width:0">
+              ${configBackupStatusPill(b)}
+              ${(b.success && b.changed) ? `<a href="/api/devices/${encodeURIComponent(e.id)}/config-backups/${b.id}/raw" target="_blank" rel="noopener" style="color:var(--info);text-decoration:none">보기</a>` : ''}
+              ${(!b.success && b.error) ? `<span style="color:var(--crit);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(b.error)}">${escapeHtml(b.error)}</span>` : ''}
+            </span>
+          </div>`).join('') : '<span style="font-size:12px;color:var(--text-faint)">아직 백업 기록이 없습니다 ("지금 백업"을 눌러보세요)</span>'}
+      </div>
     </div>`;
 }
 function osLabel(os){ return os==='linux'?'Linux':os==='windows'?'Windows':(os||'-'); }
@@ -3698,6 +3783,27 @@ function renderRegisterSkeleton(){
       <div id="lic-list"></div>
       </div></div>
     </div>
+    <div class="card" id="cfgbk-settings-card">
+      <div class="card-head collapsible collapsed" data-collapse="cfgbk-settings-body" style="align-items:center;flex-wrap:wrap;gap:10px">
+        <div><h3>네트워크 장비 설정(config) 자동 백업</h3><span class="sub">등록된 네트워크 장비(SSH/Telnet 계정이 등록된 장비)의 설정을 주기적으로 가져와 이전 백업과 다르면 새로 저장하고 알림을 남깁니다</span></div>
+        <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      </div>
+      <div class="collapse-wrap collapsed" id="cfgbk-settings-body"><div class="collapse-inner" style="padding-top:12px">
+      <form id="cfgbk-settings-form" style="display:flex;flex-direction:column;gap:10px">
+        <div class="form-grid">
+          <div class="field"><label>자동 백업</label>
+            <select id="cfgbk-enabled"><option value="0">꺼짐</option><option value="1">켜짐</option></select>
+          </div>
+          <div class="field"><label>백업 주기 (시간)</label><input type="number" id="cfgbk-interval" min="1" max="720" step="1" placeholder="예: 24"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <button type="submit" class="btn primary">저장</button>
+          <span id="cfgbk-settings-error" style="color:var(--crit);font-size:11.5px"></span>
+          <span id="cfgbk-settings-saved" style="color:var(--good);font-size:11.5px"></span>
+        </div>
+      </form>
+      </div></div>
+    </div>
 
   `;
 
@@ -3961,6 +4067,20 @@ function renderRegisterSkeleton(){
     if(!r.ok){ errEl.textContent = j.error || '저장 실패'; return; }
     resetLicenseForm();
     renderLicensesList();
+  });
+  $('#cfgbk-settings-form').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const errEl = $('#cfgbk-settings-error'), savedEl = $('#cfgbk-settings-saved');
+    errEl.textContent = ''; savedEl.textContent = '';
+    const body = {enabled: $('#cfgbk-enabled').value === '1', intervalHours: parseInt($('#cfgbk-interval').value, 10)};
+    const r = await apiFetch('/api/config-backup/settings', {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if(!r.ok){ errEl.textContent = j.error || '저장 실패'; return; }
+    CONFIG_BACKUP_SETTINGS = {enabled: body.enabled, intervalHours: body.intervalHours};
+    savedEl.textContent = '저장되었습니다';
+    setTimeout(()=>{ if(savedEl.textContent==='저장되었습니다') savedEl.textContent=''; }, 3000);
   });
   $('#threshold-global-edit-btn').addEventListener('click', ()=>{
     openThresholdEditModal({
@@ -4511,6 +4631,12 @@ function renderRegister(){
   renderMaintWindowsList();
   renderMaintWindowTargetOptions();
   renderLicensesList();
+  loadConfigBackupSettings().then(renderConfigBackupSettingsForm);
+  // SSH/Telnet 자격증명 입력란(위 f-ssh-control-group)과 같은 이유로
+  // ADMIN에게만 보이게 숨긴다 -- PUT 자체도 서버에서 ADMIN 전용이라,
+  // 숨기는 건 "안 보이니 혼란 없게"일 뿐 보안 경계는 서버가 담당.
+  const cfgbkSettingsCard = $('#cfgbk-settings-card');
+  if(cfgbkSettingsCard) cfgbkSettingsCard.style.display = CURRENT_ROLE==='ADMIN' ? '' : 'none';
   // resetNetBulkUi()/clearScanResults()는 여기(renderRegister)가 아니라 switchView()에서만
   // 호출한다 -- renderRegister()는 이 화면을 "다시 보여줄 때"뿐 아니라
   // 메인 폴링 루프(pollTick, 1초마다)가 이 화면에 머무는 동안에도 계속
@@ -6568,6 +6694,7 @@ function openDrawerFor(id){
     };
   }
   if(cat==='net' && entity.mode==='snmp') loadMacTableFor(id);
+  if(cat==='net'){ loadConfigBackupsFor(id); loadConfigBackupSettings(); }
   destroyChart('drawer1'); destroyChart('drawer2'); destroyChart('drawer3'); destroyChart('drawer4');
   let envCardHtml = '';
   if(entity.mode==='ping' || entity.mode==='snmp') envCardHtml = drawPingDevice(entity, catLabel) || '';
@@ -7053,12 +7180,34 @@ function drawPingDevice(e, catLabel){
         ${Object.values(e.servicePortStatus).sort((a,b)=>a.port-b.port).map(servicePortRowHtml).join('')}
       </div>
     </div>` : ''}
+    ${configBackupCardHtml(e)}
     <div class="card"><div class="card-head"><h3>안내</h3></div>
       <p style="font-size:12px;color:var(--text-dim);line-height:1.6;margin:0">${isSnmp
         ? 'SNMP로 장치 정보와 응답시간을 실측합니다. 인터페이스·CPU·메모리·배터리 등은 장비가 해당 MIB를 지원할 때만 표시됩니다.'
         : '이 장비는 Ping(또는 포트 확인)으로만 모니터링됩니다. 상세 지표가 필요하면 SNMP로 등록하거나, 해당 PC에 InfraSight 에이전트를 설치해 다시 등록하세요.'}</p>
     </div>
   `;
+  $$('[data-cfgbk-run]', $('#drawerBody')).forEach(btn=> btn.addEventListener('click', async ()=>{
+    const devId = btn.dataset.cfgbkRun;
+    if(CONFIG_BACKUP_INFLIGHT.has(devId)) return;
+    CONFIG_BACKUP_INFLIGHT.add(devId);
+    const errEl = $(`#cfgbk-run-error-${devId}`);
+    if(errEl) errEl.textContent = '';
+    btn.disabled = true;
+    btn.textContent = '백업 중...';
+    try{
+      const r = await apiFetch(`/api/devices/${devId}/config-backups/run`, {method:'POST'});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error || '백업 실패');
+      delete CONFIG_BACKUP_CACHE[devId];
+      loadConfigBackupsFor(devId);
+    }catch(err){
+      const liveErrEl = $(`#cfgbk-run-error-${devId}`);
+      if(liveErrEl) liveErrEl.textContent = err.message;
+    }finally{
+      CONFIG_BACKUP_INFLIGHT.delete(devId);
+    }
+  }));
   // 사용자 보고("인터페이스 목록 스크롤 마우스 클릭 후 움직임이 부드럽지
   // 못하고 이상해"): .iface-name-scroll(이름/설명 칸, overflow-x:auto)을
   // 마우스로 눌러 끌면 브라우저 기본 동작은 "가로 스크롤"이 아니라

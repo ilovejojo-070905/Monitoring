@@ -57,14 +57,22 @@ PROFILES = {
         'reboot_cmd': 'reload',
         'reboot_confirm_keys': ('confirm',),
         'reboot_confirm_response': '',
+        # 사용자 요청("등록된 장비들 config를 자동으로 받을 수 있게")으로
+        # 추가 -- 표준 조회 전용 명령이라 shutdown/reboot류와 달리 확인
+        # 프롬프트나 위험한 부작용이 없어서, 이 PROFILES 상단 주석의
+        # "실제 장비에서 검증되기 전까지 올리지 않는다" 원칙을 완화해
+        # 업계 표준 명령을 먼저 올린다. 그래도 이 코드베이스 자체로는
+        # 아직 실제 장비에서 검증 안 됨 -- 배포 후 한 대에서 꼭 결과를
+        # 확인해볼 것.
+        'config_backup_cmd': 'show running-config',
     },
     'cisco-nxos': {
         'ssh_device_type': 'cisco_nxos', 'telnet_device_type': None,
-        'shutdown_cmds': None, 'no_shutdown_cmds': None,
+        'shutdown_cmds': None, 'no_shutdown_cmds': None, 'config_backup_cmd': None,
     },
     'aruba-cx': {
         'ssh_device_type': 'aruba_os', 'telnet_device_type': None,
-        'shutdown_cmds': None, 'no_shutdown_cmds': None,
+        'shutdown_cmds': None, 'no_shutdown_cmds': None, 'config_backup_cmd': None,
     },
     # HP A-series(Comware/H3C OEM) -- 2026-11-02, 실제 테스트 장비
     # (192.168.30.251, HP A5500-24G-4SFP HI, Comware 5.20.99, Telnet만
@@ -87,6 +95,7 @@ PROFILES = {
         'reboot_cmd': 'reboot',
         'reboot_confirm_keys': ('y/n',),
         'reboot_confirm_response': 'Y',
+        'config_backup_cmd': 'display current-configuration',
     },
     # ArubaOS-Switch(클래식, ProCurve 계열 -- ArubaOS-CX와는 다른 OS/프로필,
     # snmp_profiles.py의 'hp' 벤더와 동일 계열) -- 2026-11-02, 실제 테스트
@@ -111,6 +120,7 @@ PROFILES = {
         'reboot_cmd': 'reload',
         'reboot_confirm_keys': ('y/n',),
         'reboot_confirm_response': 'y',
+        'config_backup_cmd': 'show running-config',
     },
     # Juniper(Junos) -- 2026-11-03, 실제 테스트 장비(192.168.30.253, root
     # 계정, SSH 정상 응답)로 전부 실측 검증 완료. Junos는 Cisco/Comware/
@@ -139,6 +149,7 @@ PROFILES = {
         'reboot_cmd': 'request system reboot',
         'reboot_confirm_keys': ('yes,no',),
         'reboot_confirm_response': 'yes',
+        'config_backup_cmd': 'show configuration',
     },
 }
 
@@ -310,3 +321,19 @@ def reboot_device(device_row, vendor_profile, save_config_first=True):
         except Exception:
             pass
     return save_output + '\n' + reboot_output
+
+
+def fetch_running_config(device_row, vendor_profile):
+    """사용자 요청("등록된 네트워크 장비들 config를 자동으로 받을 수 있게
+    할수 있어?") -- 조회 전용 명령이라 shutdown_interfaces/reboot_device와
+    달리 config 모드 진입이나 확인 프롬프트가 없어 send_command 한 번으로
+    끝난다. 출력이 수천 줄짜리 설정일 수 있어 netmiko 기본 read_timeout
+    (보통 수 초)보다 넉넉하게 60초를 준다."""
+    profile = get_profile(vendor_profile)
+    if not profile or not profile.get('config_backup_cmd'):
+        raise DeviceControlError(f'"{vendor_profile}" 벤더는 설정 백업이 아직 지원되지 않습니다.')
+    conn = _connect(device_row, profile)
+    try:
+        return conn.send_command(profile['config_backup_cmd'], read_timeout=60)
+    finally:
+        conn.disconnect()

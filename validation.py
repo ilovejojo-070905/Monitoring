@@ -373,6 +373,25 @@ def validate_license(data):
     return {'name': name, 'quantity': quantity, 'vendor': vendor, 'expires_at': expires_at, 'note': note}
 
 
+MIN_CONFIG_BACKUP_INTERVAL_HOURS = 1
+MAX_CONFIG_BACKUP_INTERVAL_HOURS = 24 * 30  # 30 days -- past this it's not really a "periodic" backup anymore
+
+
+def validate_config_backup_settings(data):
+    """data: {enabled, intervalHours} -- 네트워크 장비 설정 자동 백업
+    전역 설정(2026-11-14, 사용자 요청)."""
+    if not isinstance(data, dict):
+        raise ValueError('설정 백업 입력 형식이 올바르지 않습니다')
+    enabled = bool(data.get('enabled'))
+    try:
+        interval_hours = int(data.get('intervalHours'))
+    except (TypeError, ValueError):
+        raise ValueError('백업 주기(시간)를 입력해주세요')
+    if not (MIN_CONFIG_BACKUP_INTERVAL_HOURS <= interval_hours <= MAX_CONFIG_BACKUP_INTERVAL_HOURS):
+        raise ValueError(f'백업 주기는 {MIN_CONFIG_BACKUP_INTERVAL_HOURS}~{MAX_CONFIG_BACKUP_INTERVAL_HOURS}시간 사이여야 합니다')
+    return {'enabled': enabled, 'interval_hours': interval_hours}
+
+
 MAX_ESCALATION_TIMEOUT_MIN = 24 * 60  # 24 hours -- past this it's not really "escalation" anymore
 
 

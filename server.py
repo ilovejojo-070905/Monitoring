@@ -42,6 +42,7 @@ from collector import discovery
 from collector import flow_listener
 from collector import syslog_listener
 from collector import device_control
+from collector import config_backup
 
 BASE_DIR = storage.BASE_DIR
 PORT = storage.PORT
@@ -1716,6 +1717,7 @@ def api_delete_device(device_id):
         conn.execute('DELETE FROM devices WHERE id=?', (device_id,))
         conn.execute('DELETE FROM credentials WHERE device_id=?', (device_id,))
         conn.execute('DELETE FROM device_links WHERE from_device_id=? OR to_device_id=?', (device_id, device_id))
+        conn.execute('DELETE FROM device_config_backups WHERE device_id=?', (device_id,))
         conn.commit()
     finally:
         conn.close()
@@ -1767,6 +1769,7 @@ def api_bulk_delete_devices():
                 continue
             conn.execute('DELETE FROM credentials WHERE device_id=?', (device_id,))
             conn.execute('DELETE FROM device_links WHERE from_device_id=? OR to_device_id=?', (device_id, device_id))
+            conn.execute('DELETE FROM device_config_backups WHERE device_id=?', (device_id,))
             conn.execute(
                 'INSERT INTO audit_log(username,action,target,ts,source_ip,details) VALUES (?,?,?,?,?,?)',
                 (username, 'DELETE_DEVICE', device_id, int(time.time() * 1000), source_ip, None))
@@ -2844,6 +2847,94 @@ def api_device_reboot(device_id):
     _force_extended_repoll(device_id)
     audit('DEVICE_REBOOT', target=device_id, details=f'saveConfigFirst={save_first}')
     return jsonify({'ok': True, 'output': output})
+
+
+# ------------------------------------------- 네트워크 장비 설정 자동 백업 --
+@app.get('/api/config-backup/settings')
+@require_role('VIEWER')
+def api_get_config_backup_settings():
+    settings = storage.get_config_backup_settings()
+    return jsonify({'enabled': settings['enabled'], 'intervalHours': settings['intervalHours']})
+
+
+@app.put('/api/config-backup/settings')
+@require_role('ADMIN')
+def api_set_config_backup_settings():
+    # ADMIN 전용: 켜는 순간부터 등록된 모든 네트워크 장비에 저장된 SSH/
+    # Telnet 계정으로 사람 확인 없이 주기적으로 자동 로그인하기 시작하는
+    # 설정이라, 인터페이스 shutdown/재부팅과 같은 등급으로 둔다(위
+    # api_interface_shutdown 주석 참고).
+    body = request.get_json(force=True)
+    try:
+        cleaned = validation.validate_config_backup_settings(body)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    storage.set_config_backup_settings(cleaned['enabled'], cleaned['interval_hours'])
+    audit('SET_CONFIG_BACKUP_SETTINGS', details=f"enabled={cleaned['enabled']} intervalHours={cleaned['interval_hours']}")
+    return jsonify({'ok': True})
+
+
+@app.get('/api/devices/<device_id>/config-backups')
+@require_role('VIEWER')
+def api_list_config_backups(device_id):
+    if not storage.load_device(device_id):
+        return jsonify({'error': 'device not found'}), 404
+    limit = validation.clamp_int(request.args.get('limit'), 1, 200, 50)
+    rows = storage.load_config_backups(device_id, limit)
+    # content는 목록에서는 뺀다(전체 설정 텍스트가 수천 줄일 수 있어
+    # 목록 응답이 쓸데없이 커짐) -- 필요하면 아래 단건 조회로 받는다.
+    out = [{k: v for k, v in r.items() if k != 'content'} for r in rows]
+    return jsonify({'backups': out})
+
+
+@app.get('/api/devices/<device_id>/config-backups/<int:backup_id>')
+@require_role('VIEWER')
+def api_get_config_backup(device_id, backup_id):
+    row = storage.get_config_backup(backup_id)
+    if not row or row['device_id'] != device_id:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(row)
+
+
+@app.get('/api/devices/<device_id>/config-backups/<int:backup_id>/raw')
+@require_role('VIEWER')
+def api_get_config_backup_raw(device_id, backup_id):
+    # 새 탭으로 열면 평문 설정 파일 그대로 보이게(JSON으로 안 감쌈) --
+    # 프론트에서 별도 모달을 만들지 않고 window.open()만으로 "보기/저장"이
+    # 되게 하려는 용도.
+    row = storage.get_config_backup(backup_id)
+    if not row or row['device_id'] != device_id or not row.get('content'):
+        return jsonify({'error': 'not found'}), 404
+    device_row = storage.load_device(device_id)
+    # 장비 이름은 등록 시점에 이미 validation._SAFE_NAME_RE(영숫자/한글/
+    # 공백/.()-_만 허용, 따옴표나 제어문자 불가)로 검증돼 있어 헤더에
+    # 그대로 넣어도 안전하다.
+    name = device_row['name'] if device_row else device_id
+    ts = datetime.fromtimestamp(row['captured_at'] / 1000).strftime('%Y%m%d-%H%M%S')
+    resp = Response(row['content'], mimetype='text/plain; charset=utf-8')
+    resp.headers['Content-Disposition'] = f'inline; filename="{name}-{ts}.cfg"'
+    return resp
+
+
+@app.post('/api/devices/<device_id>/config-backups/run')
+@require_role('OPERATOR')
+def api_run_config_backup(device_id):
+    # 조회 전용 CLI 명령이라(device_control.fetch_running_config) 상태를
+    # 바꾸는 interface shutdown/reboot(ADMIN 전용)과 달리 OPERATOR로 충분.
+    device_row = storage.load_device(device_id)
+    if not device_row:
+        return jsonify({'error': 'device not found'}), 404
+    if device_row.get('category') != 'net':
+        return jsonify({'error': '네트워크 장비만 설정 백업을 지원합니다'}), 400
+    before = storage.get_last_config_backup_attempt_at(device_id)
+    config_backup.backup_one_device(device_row)
+    latest = storage.load_config_backups(device_id, limit=1)
+    row = latest[0] if latest else None
+    if row and row['captured_at'] != before and not row['success']:
+        audit('CONFIG_BACKUP_RUN_FAILED', target=device_id, details=row.get('error') or '')
+        return jsonify({'error': row.get('error') or '설정 백업에 실패했습니다'}), 400
+    audit('CONFIG_BACKUP_RUN', target=device_id)
+    return jsonify({'ok': True, 'backup': {k: v for k, v in (row or {}).items() if k != 'content'}})
 
 
 @app.post('/api/devices/<device_id>/token/reissue')

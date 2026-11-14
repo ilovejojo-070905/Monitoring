@@ -25,6 +25,7 @@ from collector import escalation
 from collector import alert_retry
 from collector import report_delivery
 from collector import cert_check
+from collector import config_backup
 
 def _compute_max_workers():
     """Code review pass, finding #4: this was a flat, hardcoded 10
@@ -258,6 +259,21 @@ def _run_maintenance_tick():
         health.record_tick_error('scheduler', f"maintenance: {e}")
 
 
+# 사용자 요청("네트워크 등록 된 장비들 일정 기간을 지정해서 config 를
+# 자동으로 받을 수 있게 할수 있어?") -- 10분마다 "지금 백업할 때가 된"
+# 장비가 있는지 확인(장비별 실제 주기는 config_backup.run_due_backups가
+# storage.get_config_backup_settings()의 intervalHours로 판단하므로, 이
+# 10분은 그 판단을 얼마나 자주 재확인하느냐일 뿐 백업 자체의 주기가
+# 아니다 -- 사용자가 설정하는 몇 시간/며칠 단위 주기에 비하면 충분히
+# 촘촘함).
+def _run_config_backup_tick():
+    try:
+        config_backup.run_due_backups()
+        health.record_tick_success('scheduler')
+    except Exception as e:
+        health.record_tick_error('scheduler', f"config_backup: {e}")
+
+
 def start():
     local_collector.prime_psutil()
     for d in storage.load_devices():
@@ -309,6 +325,8 @@ def start():
                         id='weekly_report', replace_existing=True)
     _scheduler.add_job(_run_monthly_report_job, 'cron', day=1, hour=6, minute=30,
                         id='monthly_report', replace_existing=True)
+    _scheduler.add_job(_run_config_backup_tick, 'interval', minutes=10, id='config_backup_tick',
+                        replace_existing=True, next_run_time=datetime.now())
 
 
 def shutdown():
