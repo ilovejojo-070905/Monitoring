@@ -606,6 +606,8 @@ def test_sample_snmp_flags_low_confidence_traffic():
         # 기본값(10Gbps 가정)보다 훨씬 낮게 잡아서, 3틱의 카운터 급감이
         # "랩어라운드로도 말이 안 되는" 수준이 되게 함(아래 J13).
         'ifHighSpeed': {'1': '1000'},
+        'pethDetect': {'1.1': '3'}, 'pethClass': {'1.1': '4'},
+        'pethMainPower': {'1': '370'}, 'pethMainConsumption': {'1': '15'},
     }
 
     async def fake_poll(*a, **kw):
@@ -647,6 +649,10 @@ def test_sample_snmp_flags_low_confidence_traffic():
         sc.sample_snmp(entity, device_row)
         check('J13 counter reset detected -> trafficLowConfidence true, traffic not negative-clamped-to-zero silently',
               entity['interfaces'][0]['trafficLowConfidence'] is True, entity['interfaces'][0])
+        check('P5 PoE status attached to interface and device-level power summary filled',
+              entity['interfaces'][0].get('poe') == {'status': 'delivering', 'class': 3}
+              and entity.get('poe') == {'powerW': 370, 'consumptionW': 15, 'portsDelivering': 1, 'portsMapped': 1},
+              (entity['interfaces'][0].get('poe'), entity.get('poe')))
     finally:
         sc._snmp_poll = orig_poll
         conn = storage.get_db()
@@ -654,6 +660,31 @@ def test_sample_snmp_flags_low_confidence_traffic():
         conn.execute("DELETE FROM incidents WHERE device_id=?", (dev_id,))
         conn.commit()
         conn.close()
+
+
+def test_poe_port_mapping():
+    from collector import snmp_collector as sc
+    # HP ProCurve/Aruba 형태: 그룹 1개, 포트번호 == ifIndex, 이름에 슬래시 없음
+    hp_ifaces = [{'idx': '1', 'name': '1'}, {'idx': '2', 'name': '2'}, {'idx': '3', 'name': '3'}]
+    m = sc.map_poe_ports(hp_ifaces, {'1.1': 3, '1.2': 2, '1.3': 4}, {'1.1': 3})
+    check('P1 single-group port index == ifIndex maps directly',
+          m.get('1') == {'status': 'delivering', 'class': 2} and m['2']['status'] == 'searching' and m['3']['status'] == 'fault', m)
+
+    # Cisco 형태: ifIndex(10101..)는 포트번호와 무관, 이름으로 매칭. 업링크 Gi1/1/1은
+    # 같은 (1,1)이지만 가운데 숫자가 0이 아니라 매칭되면 안 됨.
+    cisco_ifaces = [{'idx': '10101', 'name': 'GigabitEthernet1/0/1'}, {'idx': '10102', 'name': 'GigabitEthernet1/0/2'},
+                    {'idx': '10149', 'name': 'GigabitEthernet1/1/1'}, {'idx': '1', 'name': 'Vlan1'}]
+    m = sc.map_poe_ports(cisco_ifaces, {'1.1': 3, '1.2': 1}, {})
+    check('P2 slot/port name match (Cisco), uplink module and ifIndex-1 VLAN not wrongly matched',
+          set(m) == {'10101', '10102'} and m['10101']['status'] == 'delivering' and m['10102']['status'] == 'disabled'
+          and m['10101']['class'] is None, m)
+
+    # 스택(그룹 2개)에서 이름이 안 맞으면 ifIndex 추측은 하지 않는다
+    m = sc.map_poe_ports(hp_ifaces, {'1.1': 3, '2.1': 3}, {})
+    check('P3 multi-group with no name match -> no guessing by ifIndex', m == {}, m)
+
+    m = sc.map_poe_ports(hp_ifaces, {}, {})
+    check('P4 non-PoE device -> empty mapping', m == {}, m)
 
 
 def test_server_category_module_filter():
@@ -2264,7 +2295,7 @@ def main():
         test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env, test_cisco_fru_env,
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
-        test_sample_snmp_flags_low_confidence_traffic,
+        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping,
         test_related_network_failure_correlation,
         test_ack_then_recovery, test_ack_then_escalate_reopens, test_agent_mode_escalation,
         test_maintenance_suppresses_and_renotifies, test_escalation_tier_order_stable_across_enable_disable,

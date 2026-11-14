@@ -41,6 +41,7 @@
     --crit-soft:rgba(239,59,92,.13);
     --info:#0ea5e9;
     --info-soft:rgba(14,165,233,.13);
+    --poe:#facc15;
     --glow-accent:0 8px 22px rgba(124,92,255,.22);
     --glow-good:0 8px 20px rgba(0,176,135,.22);
     --glow-warn:0 8px 20px rgba(230,150,15,.22);
@@ -7096,6 +7097,12 @@ function drawPingDevice(e, catLabel){
   // 기존 트래픽 차트/제어 기능을 그대로 재사용한다.
   const portMapHtml = ifaces.length ? (()=>{
     const hasErr = f => (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
+    // PoE(표준 POWER-ETHERNET-MIB, collector/snmp_collector.py map_poe_ports) --
+    // 포트별 실제 소비전력(W)은 표준 MIB에 없어서 상태와 Class만 보여준다.
+    const poeLabel = p => {
+      const s = {delivering:'PoE 전력 공급중', searching:'PoE 대기(기기 없음)', disabled:'PoE 꺼짐', fault:'PoE 오류', test:'PoE 테스트중'}[p.status] || 'PoE 상태 알 수 없음';
+      return p.status==='delivering' && p.class!=null ? `${s} (Class ${p.class})` : s;
+    };
     const cellDot = f => {
       if(hasErr(f)) return 'var(--warn)';
       if(f.adminStatus==='down') return 'var(--text-faint)';
@@ -7106,20 +7113,27 @@ function drawPingDevice(e, catLabel){
       const statusText = f.adminStatus==='down' ? '비활성화' : (f.status==='up' ? 'Up' : 'Down');
       const speedText = f.speedMbps ? ` · ${fmt0(f.speedMbps)}Mbps` : '';
       const trafficText = f.status==='up' ? ` · ${fmtMbps((f.inMbps||0)+(f.outMbps||0))}Mbps 사용중` : '';
-      const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${hasErr(f) ? ' · 에러/드랍 발생' : ''}`;
-      return `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="width:22px;height:28px;border-radius:4px;background:rgba(255,255,255,.08);border:1.5px solid ${selected?'var(--accent-2)':'transparent'};display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px;cursor:pointer">
+      const poeText = f.poe ? ` · ${poeLabel(f.poe)}` : '';
+      const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${poeText}${hasErr(f) ? ' · 에러/드랍 발생' : ''}`;
+      const boltColor = !f.poe ? '' : f.poe.status==='delivering' ? 'var(--poe)' : f.poe.status==='fault' ? 'var(--crit)' : '';
+      return `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="width:22px;height:28px;border-radius:4px;background:rgba(255,255,255,.08);border:1.5px solid ${selected?'var(--accent-2)':'transparent'};display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:3px 0 4px;box-sizing:border-box;cursor:pointer">
+        <svg width="8" height="10" viewBox="0 0 8 10" style="visibility:${boltColor?'visible':'hidden'}"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor||'none'}"/></svg>
         <span style="width:7px;height:7px;border-radius:50%;background:${cellDot(f)}"></span>
       </div>`;
     };
+    const poe = e.poe;
+    const poeSub = poe ? ` · PoE ${poe.portsDelivering}포트 공급중${poe.consumptionW!=null ? ` (${fmt0(poe.consumptionW)}${poe.powerW ? '/'+fmt0(poe.powerW) : ''}W)` : ''}` : '';
     return `<div class="card" style="min-width:0">
-      <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 상세 정보가 열립니다 · ${ifaces.filter(f=>f.status==='up').length}/${ifaces.length} Up</span></div>
+      <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 상세 정보가 열립니다 · ${ifaces.filter(f=>f.status==='up').length}/${ifaces.length} Up${poeSub}</span></div>
       <div style="background:var(--bg);border-radius:10px;padding:12px 14px;overflow-x:auto">
         <div style="display:flex;flex-wrap:wrap;gap:5px;min-width:min-content">${ifaces.map(cell).join('')}</div>
       </div>
-      <div style="display:flex;gap:14px;margin-top:10px;font-size:11px;color:var(--text-dim)">
+      <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:11px;color:var(--text-dim)">
         <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);margin-right:5px"></span>연결됨</span>
         <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--text-faint);margin-right:5px"></span>미사용/비활성화</span>
         <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);margin-right:5px"></span>에러 발생</span>
+        ${poe ? `<span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--poe)"/></svg>PoE 공급중</span>
+        <span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--crit)"/></svg>PoE 오류</span>` : ''}
       </div>
     </div>`;
   })() : '';

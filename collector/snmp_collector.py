@@ -12,6 +12,7 @@ All per-interface CPU/memory parsing (0-5 in the Phase 1 analysis) is
 otherwise untouched: interface hist arrays, uptime parsing.
 """
 import asyncio
+import re
 import time
 
 import storage
@@ -107,6 +108,16 @@ OID_IF_OUT_DISCARDS = '1.3.6.1.2.1.2.2.1.19'
 # link speed likely to show up here) -- used as the utilization-% denominator.
 # ifSpeed (ifTable, bps) saturates at 4.3Gbps on gigabit+ links so it's not used.
 OID_IF_HIGH_SPEED = '1.3.6.1.2.1.31.1.1.1.15'
+# 신규 기능(2026-11-14, "포트맵에 PoE도 추가"): 벤더 전용 MIB가 아니라
+# 표준 POWER-ETHERNET-MIB(RFC 3621)만 쓴다. pethPsePortTable의 인덱스는
+# ifIndex가 아니라 (pethPsePortGroupIndex, pethPsePortIndex) 쌍이라서
+# 인터페이스와의 연결은 아래 map_poe_ports()에서 따로 한다. 포트별 실제
+# 소비전력(W)은 RFC 3621에 없고 벤더 전용 MIB에만 있어서 제외 -- 대신
+# 장비 전체 PSE 정격/소비전력(pethMainPseTable)만 가져온다.
+OID_PETH_PORT_DETECTION = '1.3.6.1.2.1.105.1.1.1.6'   # disabled(1) searching(2) deliveringPower(3) fault(4) test(5) otherFault(6)
+OID_PETH_PORT_CLASS = '1.3.6.1.2.1.105.1.1.1.10'      # class0(1)..class4(5)
+OID_PETH_MAIN_POWER = '1.3.6.1.2.1.105.1.3.1.1.2'     # 정격 전력(W)
+OID_PETH_MAIN_CONSUMPTION = '1.3.6.1.2.1.105.1.3.1.1.4'  # 현재 소비 전력(W)
 OID_UPS_BATTERY_CAPACITY = '1.3.6.1.2.1.33.1.2.4.0'
 # 신규 기능(2026-10-16, "64비트 인터페이스 카운터 우선 사용"): ifInOctets/
 # ifOutOctets(위 OID_IF_IN_OCTETS/OID_IF_OUT_OCTETS)는 32비트라 3.4Gbps를
@@ -435,6 +446,15 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
             result['inDiscards'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_DISCARDS, timeout=timeout)
             result['outDiscards'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OUT_DISCARDS, timeout=timeout)
             result['ifHighSpeed'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_HIGH_SPEED, timeout=timeout)
+            # PoE: 비PoE 장비는 첫 walk가 빈 결과로 바로 끝나므로 추가 비용은
+            # 확장 주기마다 한 번의 라운드트립뿐. 응답이 있을 때만 나머지를 건다.
+            result['pethDetect'] = await _snmp_walk(engine, ip, auth_data, port, OID_PETH_PORT_DETECTION, timeout=timeout)
+            if result['pethDetect']:
+                result['pethClass'] = await _snmp_walk(engine, ip, auth_data, port, OID_PETH_PORT_CLASS, timeout=timeout)
+                result['pethMainPower'] = await _snmp_walk(engine, ip, auth_data, port, OID_PETH_MAIN_POWER, timeout=timeout)
+                result['pethMainConsumption'] = await _snmp_walk(engine, ip, auth_data, port, OID_PETH_MAIN_CONSUMPTION, timeout=timeout)
+            else:
+                result['pethClass'] = result['pethMainPower'] = result['pethMainConsumption'] = {}
             if not result.get('memUsed') and not result.get('memFree') and not result.get('memPct'):
                 hr_type = await _snmp_walk(engine, ip, auth_data, port, OID_HR_STORAGE_TYPE, timeout=timeout)
                 ram_idx = next((idx for idx, v in hr_type.items() if str(v).lstrip('.') == HR_STORAGE_TYPE_RAM), None)
@@ -558,6 +578,48 @@ def _safe_int(v):
         return int(v)
     except Exception:
         return None
+
+
+_PETH_DETECT_MAP = {1: 'disabled', 2: 'searching', 3: 'delivering', 4: 'fault', 5: 'test', 6: 'fault'}
+_IFNAME_SLOT_PORT_RE = re.compile(r'(\d+)/(?:(\d+)/)?(\d+)$')
+
+
+def map_poe_ports(ifaces, detect, klass):
+    """pethPsePortTable("그룹.포트" 인덱스)을 인터페이스 idx에 연결.
+
+    RFC 3621은 이 인덱스와 ifIndex의 관계를 정하지 않아서 벤더마다 다르다.
+    실제로 흔한 두 가지만 지원하고, 둘 다 안 맞는 포트는 그냥 PoE 표시를
+    안 한다(틀린 포트에 붙이는 것보다 안 보이는 게 안전):
+      1) 이름 매칭 -- "Gi1/0/5", "Fa1/5"처럼 슬롯/포트 형태 이름에서 첫
+         숫자=그룹, 마지막 숫자=포트 (Cisco/Comware 계열). 가운데 숫자가
+         있으면 0일 때만 인정해서 업링크 모듈(Gi1/1/1 등)과 겹치지 않게 함.
+      2) 그룹이 하나뿐일 때 포트번호 == ifIndex (HP ProCurve/Aruba 계열).
+    반환: {iface_idx: {'status': ..., 'class': 0-4 또는 None}}"""
+    by_slot = {}
+    for f in ifaces:
+        m = _IFNAME_SLOT_PORT_RE.search(str(f.get('name') or ''))
+        if m and (m.group(2) is None or m.group(2) == '0'):
+            by_slot.setdefault((m.group(1), m.group(3)), f['idx'])
+    by_idx = {f['idx'] for f in ifaces}
+    keys = [k.split('.') for k in detect]
+    single_group = len({k[0] for k in keys if len(k) == 2}) == 1
+    out = {}
+    for key, raw in detect.items():
+        parts = key.split('.')
+        if len(parts) != 2:
+            continue
+        group, port = parts
+        idx = by_slot.get((group, port))
+        if idx is None and single_group and port in by_idx:
+            idx = port
+        if idx is None or idx in out:
+            continue
+        cls = _safe_int(klass.get(key))
+        out[idx] = {
+            'status': _PETH_DETECT_MAP.get(_safe_int(raw), 'unknown'),
+            'class': cls - 1 if cls and 1 <= cls <= 5 else None,
+        }
+    return out
 
 
 def _top_level_module_indices(ent_class, ent_contained_in):
@@ -946,7 +1008,7 @@ def sample_snmp(entity, device_row):
     for _k in ('adminStatus', 'inErrors', 'outErrors', 'inDiscards', 'outDiscards', 'ifHighSpeed',
                'hrMemSize', 'hrMemUsed', 'hrMemUnits', 'entDescr', 'entModel', 'entSerial',
                'envTempDescr', 'envTempValue', 'envTempState', 'envFanState', 'envSupplyState',
-               'entModuleIdx'):
+               'entModuleIdx', 'pethDetect', 'pethClass', 'pethMainPower', 'pethMainConsumption'):
         if _k in result:
             ext_cache[_k] = result[_k]
 
@@ -1101,6 +1163,22 @@ def sample_snmp(entity, device_row):
                     'hist': list(iface_hist[idx]),
                 })
             ifaces.sort(key=lambda x: int(x['idx']) if x['idx'].isdigit() else 0)
+            peth_detect = ext_cache.get('pethDetect') or {}
+            if peth_detect:
+                poe_map = map_poe_ports(ifaces, peth_detect, ext_cache.get('pethClass') or {})
+                for f in ifaces:
+                    if f['idx'] in poe_map:
+                        f['poe'] = poe_map[f['idx']]
+                main_power = [v for v in (_safe_int(x) for x in (ext_cache.get('pethMainPower') or {}).values()) if v is not None]
+                main_cons = [v for v in (_safe_int(x) for x in (ext_cache.get('pethMainConsumption') or {}).values()) if v is not None]
+                entity['poe'] = {
+                    'powerW': sum(main_power) if main_power else None,
+                    'consumptionW': sum(main_cons) if main_cons else None,
+                    'portsDelivering': sum(1 for v in poe_map.values() if v['status'] == 'delivering'),
+                    'portsMapped': len(poe_map),
+                }
+            else:
+                entity.pop('poe', None)
             entity['interfaces'] = ifaces[:64]
         except Exception:
             pass
