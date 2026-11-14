@@ -7090,6 +7090,39 @@ function drawPingDevice(e, catLabel){
     </div>` : '';
 
   const ifaces = isSnmp && Array.isArray(e.interfaces) ? e.interfaces : [];
+  // 포트맵 -- 실제 스위치처럼 포트를 한눈에 보여달라는 사용자 요청. 아래
+  // "인터페이스 목록"과 같은 ifaces 배열을 그대로 쓰고, 포트를 누르면 그
+  // 목록의 행을 누른 것과 똑같이 openIfaceModal을 열어 중복 구현 없이
+  // 기존 트래픽 차트/제어 기능을 그대로 재사용한다.
+  const portMapHtml = ifaces.length ? (()=>{
+    const hasErr = f => (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
+    const cellDot = f => {
+      if(hasErr(f)) return 'var(--warn)';
+      if(f.adminStatus==='down') return 'var(--text-faint)';
+      return f.status==='up' ? 'var(--good)' : 'var(--text-faint)';
+    };
+    const cell = f => {
+      const selected = ifaceModalState && ifaceModalState.deviceId===e.id && ifaceModalState.idx===f.idx;
+      const statusText = f.adminStatus==='down' ? '비활성화' : (f.status==='up' ? 'Up' : 'Down');
+      const speedText = f.speedMbps ? ` · ${fmt0(f.speedMbps)}Mbps` : '';
+      const trafficText = f.status==='up' ? ` · ${fmtMbps((f.inMbps||0)+(f.outMbps||0))}Mbps 사용중` : '';
+      const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${hasErr(f) ? ' · 에러/드랍 발생' : ''}`;
+      return `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="width:22px;height:28px;border-radius:4px;background:rgba(255,255,255,.08);border:1.5px solid ${selected?'var(--accent-2)':'transparent'};display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px;cursor:pointer">
+        <span style="width:7px;height:7px;border-radius:50%;background:${cellDot(f)}"></span>
+      </div>`;
+    };
+    return `<div class="card" style="min-width:0">
+      <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 상세 정보가 열립니다 · ${ifaces.filter(f=>f.status==='up').length}/${ifaces.length} Up</span></div>
+      <div style="background:var(--bg);border-radius:10px;padding:12px 14px;overflow-x:auto">
+        <div style="display:flex;flex-wrap:wrap;gap:5px;min-width:min-content">${ifaces.map(cell).join('')}</div>
+      </div>
+      <div style="display:flex;gap:14px;margin-top:10px;font-size:11px;color:var(--text-dim)">
+        <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);margin-right:5px"></span>연결됨</span>
+        <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--text-faint);margin-right:5px"></span>미사용/비활성화</span>
+        <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);margin-right:5px"></span>에러 발생</span>
+      </div>
+    </div>`;
+  })() : '';
   // 인터페이스를 하나씩 눌러서 비활성화/활성화하기 번거롭다는 사용자
   // 요청으로 체크박스 다중 선택 + 일괄 제어 툴바 추가. 이후 사용자 요청
   // ("인터페이스 목록에 선택 비활성화, 활성화 버튼이 있기 때문에
@@ -7166,6 +7199,7 @@ function drawPingDevice(e, catLabel){
     ${hasRow2 ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:10px">${cpuKv}${memKv}${ifaceKv}${battKv}</div>` : ''}
     ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
     ${trafficCard ? `<div style="${pingGrid2}">${trafficCard}</div>` : ''}
+    ${portMapHtml}
     ${ifaceCard ? `
     <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:10px">
       <div style="display:flex;flex-direction:column;gap:10px;min-width:0;height:425px">${envCard}${responseTimeCard}</div>
@@ -7275,6 +7309,16 @@ function drawPingDevice(e, catLabel){
         closeIfaceModal();
       } else {
         openIfaceModal(e.id, row.dataset.idx);
+      }
+      redrawIfaceSection(e, catLabel);
+    });
+  });
+  $$('.portmap-cell', $('#drawerBody')).forEach(cell=>{
+    cell.addEventListener('click', ()=>{
+      if(ifaceModalState && ifaceModalState.deviceId===e.id && ifaceModalState.idx===cell.dataset.idx){
+        closeIfaceModal();
+      } else {
+        openIfaceModal(e.id, cell.dataset.idx);
       }
       redrawIfaceSection(e, catLabel);
     });
