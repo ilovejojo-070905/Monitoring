@@ -466,6 +466,14 @@
   .portmap-panel .btn{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18);color:var(--chrome-text)}
   .portmap-panel .btn:hover:not(:disabled){background:rgba(255,255,255,.16)}
   .portmap-panel .pill.neutral{background:rgba(255,255,255,.1);color:var(--chrome-text-dim)}
+  /* 포트 상세 6칸을 한 줄로(사용자 요청: "두 줄이라서 별로야, 한 줄로") --
+     드로어 최대 폭(900px)에 맞춰 글자/여백을 줄이고 라벨은 한 줄 고정. */
+  .portmap-panel .portmap-kv-row{grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+  .portmap-panel .portmap-kv-row .kv{padding:8px 6px;min-width:0}
+  .portmap-panel .portmap-kv-row .kv span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10.5px}
+  .portmap-panel .portmap-kv-row .kv b{font-size:13px;white-space:nowrap}
+  .portmap-panel .portmap-kv-row .kv b span{display:block;font-size:10px;margin-top:2px}
+  @media (max-width:640px){.portmap-panel .portmap-kv-row{grid-template-columns:repeat(3,minmax(0,1fr))}}
 
   /* ---------- incidents ---------- */
   .sev-strip{width:3px;border-radius:3px;display:inline-block;height:16px;vertical-align:middle;margin-right:8px;box-shadow:0 0 6px currentColor}
@@ -7268,6 +7276,8 @@ function drawPingDevice(e, catLabel){
       const pill = isAdminDown ? '<span class="pill neutral"><span class="dot"></span>비활성화</span>'
         : f.status==='up' ? '<span class="pill good"><span class="dot"></span>Up</span>' : '<span class="pill neutral"><span class="dot"></span>Down</span>';
       const util = p => p!=null ? ` <span style="color:var(--chrome-text-faint);font-weight:500">(${fmt1(p)}%)</span>` : '';
+      // 6칸 한 줄 폭에 맞게 큰 누적값은 1.2만/3.4백만 대신 12.3K/3.4M처럼 줄임(정확한 값은 툴팁).
+      const compactN = v => v>=1e6 ? (v/1e6).toFixed(1)+'M' : v>=1e4 ? (v/1e3).toFixed(1)+'K' : fmt0(v);
       return `<div class="portmap-panel" style="margin-top:12px;border-radius:10px;padding:12px 14px">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <b class="mono" style="font-size:13px">${escapeHtml(f.name)}</b>
@@ -7279,13 +7289,13 @@ function drawPingDevice(e, catLabel){
           <button type="button" class="btn" id="portmap-chart-btn" style="font-size:11px;padding:4px 10px;white-space:nowrap">트래픽 차트</button>
           <button type="button" class="btn" id="portmap-close-btn" title="닫기" style="font-size:11px;padding:4px 8px">✕</button>
         </div>
-        <div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-top:10px">
+        <div class="kv-grid portmap-kv-row" style="margin-top:10px">
           <div class="kv"><span>사용량 합계</span><b>${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps</b></div>
           <div class="kv"><span>In</span><b style="color:var(--info)">${fmtMbps(f.inMbps||0)} Mbps${util(f.utilInPct)}</b></div>
           <div class="kv"><span>Out</span><b style="color:var(--accent-3)">${fmtMbps(f.outMbps||0)} Mbps${util(f.utilOutPct)}</b></div>
           <div class="kv"><span>링크 속도</span><b>${f.speedMbps ? fmt0(f.speedMbps)+' Mbps' : '-'}</b></div>
-          <div class="kv"><span>최근 5분 에러·드랍 증가</span><b style="color:${errNow(f)?'var(--warn)':'inherit'}">${f.errRecent==null ? '측정 중' : `${errNow(f)?'⚠ ':''}${fmt0(f.errRecent)}개`}</b></div>
-          <div class="kv"><span>에러 / 드랍 (부팅 후 누적)</span><b style="color:var(--chrome-text-dim)">${fmt0((f.inErrors||0)+(f.outErrors||0))} / ${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</b></div>
+          <div class="kv" title="최근 5분 동안 늘어난 에러+드랍 개수"><span>5분 에러·드랍</span><b style="color:${errNow(f)?'var(--warn)':'inherit'}">${f.errRecent==null ? '측정 중' : `${errNow(f)?'⚠ ':''}${fmt0(f.errRecent)}개`}</b></div>
+          <div class="kv" title="장비 부팅 이후 누적 에러 ${fmt0((f.inErrors||0)+(f.outErrors||0))} / 드랍 ${fmt0((f.inDiscards||0)+(f.outDiscards||0))}"><span>누적 에러/드랍</span><b style="color:var(--chrome-text-dim)">${compactN((f.inErrors||0)+(f.outErrors||0))} / ${compactN((f.inDiscards||0)+(f.outDiscards||0))}</b></div>
         </div>
         <div style="margin-top:10px;font-size:11.5px">
           <div style="color:var(--chrome-text-dim);font-weight:600;margin-bottom:4px">학습된 MAC 주소 ${Array.isArray(macState) ? `· ${macs.length}개` : ''}</div>
@@ -7316,62 +7326,14 @@ function drawPingDevice(e, catLabel){
       ${portPanel}
     </div>`;
   })() : '';
-  // 인터페이스를 하나씩 눌러서 비활성화/활성화하기 번거롭다는 사용자
-  // 요청으로 체크박스 다중 선택 + 일괄 제어 툴바 추가. 이후 사용자 요청
-  // ("인터페이스 목록에 선택 비활성화, 활성화 버튼이 있기 때문에
-  // 인터페이스마다 있는 비활성화 버튼은 삭제 해줘")로 행별 인라인 버튼은
-  // 제거하고 이 일괄 툴바만 남겼다.
-  const bulkEligible = CURRENT_ROLE==='ADMIN' && e.category==='net';
-  const allSelected = bulkEligible && ifaces.length>0 && ifaces.every(f=>ifaceBulkSelection.has(f.idx));
-  const bulkToolbar = bulkEligible ? `
-    <div style="display:flex;align-items:center;gap:8px;padding:0 2px 8px;font-size:11px">
-      <label style="display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text-dim)">
-        <input type="checkbox" id="iface-select-all" ${allSelected?'checked':''}>전체 선택
-      </label>
-      <span style="color:var(--text-faint)">${ifaceBulkSelection.size}개 선택됨</span>
-      <span style="flex:1"></span>
-      <button type="button" class="btn" id="iface-bulk-down-btn" ${ifaceBulkSelection.size===0||ifaceBulkInflight?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">${ifaceBulkInflight ? '전송 중...' : '선택 비활성화'}</button>
-      <button type="button" class="btn" id="iface-bulk-up-btn" ${ifaceBulkSelection.size===0||ifaceBulkInflight?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">${ifaceBulkInflight ? '전송 중...' : '선택 활성화'}</button>
-    </div>` : '';
-  // 사용자 보고("cisco 인터페이스 디스크립션을 길게 변경했는데 인터페이스
-  // 목록에 짤려서 보여, 이걸 볼 수 있게 스크롤 만들어줘"): 이름/설명
-  // 영역이 overflow:hidden + text-overflow:ellipsis라 길면 그냥 잘려서
-  // 끝부분을 볼 방법이 없었다. 그 영역만 가로 스크롤 가능하게
-  // (overflow-x:auto) 바꿔서 드래그/휠로 끝까지 읽을 수 있게 함(아래
-  // ifaces.map의 두 번째 <span> 참고).
-  const ifaceCard = ifaces.length ? `
-    <div class="card" style="min-width:0;height:425px;display:flex;flex-direction:column"><div class="card-head"><h3>인터페이스 목록</h3><span class="sub">클릭하면 트래픽 창이 열립니다 · ${e.portsUp||0}/${ifaces.length} Up</span></div>
-      ${bulkToolbar}
-      <div id="iface-list" data-scroll-key="iface-list" style="flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
-        ${ifaces.map(f=>{
-          const hasErr = (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
-          const utilMax = Math.max(f.utilInPct||0, f.utilOutPct||0);
-          const macCount = macEntriesForIface(e.id, f.idx).length;
-          return `<div class="iface-row" data-idx="${escapeHtml(f.idx)}" style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;padding:6px 8px;border-radius:6px;cursor:pointer;background:${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'var(--accent-soft)':'transparent'};border:1px solid ${ifaceModalState&&ifaceModalState.deviceId===e.id&&ifaceModalState.idx===f.idx?'rgba(124,92,255,.4)':'transparent'}">
-          <span style="display:flex;align-items:center;gap:7px;min-width:0;padding-right:10px">
-            ${bulkEligible ? `<label class="iface-bulk-checkbox-wrap" style="flex:none;display:flex;align-items:center;padding:6px;margin:-6px;cursor:pointer"><input type="checkbox" class="iface-bulk-checkbox" data-idx="${escapeHtml(f.idx)}" ${ifaceBulkSelection.has(f.idx)?'checked':''} style="cursor:pointer"></label>` : ''}
-            <span class="iface-name-scroll" data-scroll-key="iface-name-${escapeHtml(f.idx)}" style="overflow-x:auto;white-space:nowrap;min-width:0">
-              <span class="mono" style="color:var(--text-dim)">${escapeHtml(f.name)}</span>
-              ${f.description ? `<span style="color:var(--text-faint);margin-left:6px">· ${escapeHtml(f.description)}</span>` : ''}
-            </span>
-          </span>
-          <span style="display:flex;align-items:center;gap:8px;flex:none">
-            ${macCount>0 ? `<span class="mono" style="font-size:10px;color:var(--text-faint)" title="이 포트에서 학습된 MAC 주소">MAC ${macCount}</span>` : ''}
-            ${hasErr ? ((f.errRecent||0)>0
-              ? `<span class="mono" style="font-size:10px;color:var(--warn);font-weight:700" title="최근 5분 동안 에러/드랍이 ${fmt0(f.errRecent)}개 늘었습니다 (숫자는 부팅 후 누적 에러/드랍)">⚠ ${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>`
-              : `<span class="mono" style="font-size:10px;color:var(--text-faint)" title="부팅 후 누적 에러/드랍 -- 최근 5분 동안은 늘지 않음">${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>`) : ''}
-            ${f.status==='up' ? `<span class="mono" style="font-size:10px;color:var(--text-faint)">${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps${utilMax>0 ? ` (${fmt0(utilMax)}%)` : ''}</span>` : ''}
-            <span class="pill ${f.status==='up'?'good':'neutral'}"><span class="dot"></span>${f.status==='up'?'Up':(f.adminStatus==='down'?'비활성화':'Down')}</span>
-          </span>
-        </div>`;}).join('')}
-      </div>
-    </div>` : '';
+  // 인터페이스 목록 카드는 사용자 요청("인터페이스 목록은 삭제")으로 제거 --
+  // 포트맵(상세 패널 + 다중 선택 일괄 제어)이 같은 기능을 모두 대신한다.
 
   const hasEnv = isSnmp && (Array.isArray(e.envTemps) && e.envTemps.length || Array.isArray(e.envFans) && e.envFans.length || Array.isArray(e.envSupplies) && e.envSupplies.length);
   const envStateColor = s => s==='normal' ? 'var(--good)' : (s==='warning' ? 'var(--warn)' : (s==='critical'||s==='shutdown' ? 'var(--crit)' : 'var(--text-faint)'));
   const envStateLabel = s => ({normal:'정상', warning:'주의', critical:'위험', shutdown:'차단', notPresent:'미설치', unknown:'알수없음'})[s] || s;
   const envCard = hasEnv ? `
-    <div class="card" style="min-width:0;display:flex;flex-direction:column;height:192px"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
+    <div class="card" style="min-width:0;display:flex;flex-direction:column;height:220px"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
       <div id="env-sensor-list" data-scroll-key="env-sensor-list" style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto">
         ${(e.envTemps||[]).filter(t=>t.state!=='notPresent').map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(t.description||'온도 센서')}${t.valueC!=null ? ` · ${fmt0(t.valueC)}°C` : ''}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(t.state)};color:${envStateColor(t.state)}"><span class="dot" style="background:${envStateColor(t.state)}"></span>${envStateLabel(t.state)}</span></div>`).join('')}
         ${(e.envFans||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>팬 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}
@@ -7380,8 +7342,8 @@ function drawPingDevice(e, catLabel){
     </div>` : '';
 
   const responseTimeCard = `
-    <div class="card" style="min-width:0;display:flex;flex-direction:column"><div class="card-head"><h3>응답시간 추이</h3><span class="sub">${isSnmp?'SNMP':'Ping / 포트 확인'} · 최근 60초</span></div>
-      <div style="height:160px"><canvas id="drawerChart1"></canvas></div></div>`;
+    <div class="card" style="min-width:0;display:flex;flex-direction:column;height:220px"><div class="card-head"><h3>응답시간 추이</h3><span class="sub">${isSnmp?'SNMP':'Ping / 포트 확인'} · 최근 60초</span></div>
+      <div style="flex:1;min-height:0;position:relative"><canvas id="drawerChart1"></canvas></div></div>`;
 
   const pingGrid2 = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px';
   const hasRow2 = cpuKv || memKv || ifaceKv || battKv;
@@ -7395,12 +7357,7 @@ function drawPingDevice(e, catLabel){
     ${extraKvWide ? `<div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-top:10px">${extraKvWide}</div>` : ''}
     ${trafficCard ? `<div style="${pingGrid2}">${trafficCard}</div>` : ''}
     ${portMapHtml}
-    ${ifaceCard ? `
-    <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:10px">
-      <div style="display:flex;flex-direction:column;gap:10px;min-width:0;height:425px">${envCard}${responseTimeCard}</div>
-      ${ifaceCard}
-    </div>` : `
-    <div style="display:flex;flex-direction:column;gap:10px">${envCard}${responseTimeCard}</div>`}
+    <div style="display:grid;grid-template-columns:${envCard ? 'repeat(auto-fit,minmax(260px,1fr))' : '1fr'};gap:10px">${envCard}${responseTimeCard}</div>
     ${(e.servicePortStatus && Object.keys(e.servicePortStatus).length) ? `
     <div class="card" style="min-width:0">
       <div class="card-head"><div><h3>서비스 포트 상태</h3><span class="sub">등록된 포트를 직접 TCP 연결해 실시간 확인</span></div></div>
@@ -7437,77 +7394,6 @@ function drawPingDevice(e, catLabel){
       CONFIG_BACKUP_INFLIGHT.delete(devId);
     }
   }));
-  // 사용자 보고("인터페이스 목록 스크롤 마우스 클릭 후 움직임이 부드럽지
-  // 못하고 이상해"): .iface-name-scroll(이름/설명 칸, overflow-x:auto)을
-  // 마우스로 눌러 끌면 브라우저 기본 동작은 "가로 스크롤"이 아니라
-  // 텍스트 선택(드래그하며 파란 하이라이트)이었고, 그 뒤 mouseup에서
-  // .iface-row의 click이 그대로 발생해 상세창까지 열려버려 뒤죽박죽으로
-  // 느껴졌다. mousedown에서 기본 동작(텍스트 선택)을 막고 mousemove를
-  // 직접 읽어 scrollLeft를 옮기는 수동 드래그-스크롤로 바꾸고, 실제로
-  // 끌어서 스크롤한 경우에만(3px 넘게 움직였을 때) 뒤이은 row 클릭을
-  // 한 번 무시해 상세창이 엉뚱하게 열리지 않게 한다. document에 붙이는
-  // mousemove/mouseup 리스너는 각 드래그 동작이 끝나면(mouseup) 바로
-  // 제거하므로 재렌더될 때마다 쌓이지 않는다.
-  //
-  // 후속 사용자 보고("세로 스크롤은 아직 마우스 클릭 후 계속 움직이지
-  // 않아 부드럽지 못해"): 위 첫 버전은 mousedown에서 바로 preventDefault를
-  // 걸고 모든 mousemove를 가로(scrollLeft)로만 처리해서, 사용자가 이름
-  // 칸 위에서 세로로 드래그해 #iface-list를 스크롤하려 하면 그 움직임을
-  // 가로 처리기가 가로채 세로 스크롤이 전혀 안 먹혔다(이름 칸이 행 너비
-  // 대부분을 차지해서 거의 항상 이 위에서 드래그가 시작됨). mousedown
-  // 시점엔 아직 preventDefault를 걸지 않고, 첫 움직임에서 |dx|/|dy|를
-  // 비교해 방향을 판단 -- 세로 쪽이 더 크면 그 즉시 우리 리스너를 떼고
-  // 손을 떼서(아무 것도 안 함) 브라우저의 기본 세로 스크롤이 그대로
-  // 동작하게 두고, 가로 쪽이 더 크다고 판단된 경우에만 그때부터
-  // preventDefault + scrollLeft 처리를 시작한다.
-  $$('.iface-row', $('#drawerBody')).forEach(row=>{
-    let suppressClick = false;
-    const nameScroll = row.querySelector('.iface-name-scroll');
-    if(nameScroll){
-      nameScroll.addEventListener('mousedown', ev=>{
-        if(ev.button !== 0) return;
-        const startX = ev.clientX, startY = ev.clientY;
-        const startScroll = nameScroll.scrollLeft;
-        let moved = false, decided = false, horizontal = false;
-        const onMove = mv=>{
-          const dx = mv.clientX - startX;
-          const dy = mv.clientY - startY;
-          if(!decided){
-            if(Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
-            decided = true;
-            horizontal = Math.abs(dx) > Math.abs(dy);
-            if(!horizontal){
-              // 세로 드래그로 판단 -- 끼어들지 않고 바로 손 뗌(네이티브
-              // 세로 스크롤이 그대로 진행되게 둔다).
-              document.removeEventListener('mousemove', onMove);
-              document.removeEventListener('mouseup', onUp);
-              return;
-            }
-          }
-          if(!horizontal) return;
-          mv.preventDefault();
-          if(Math.abs(dx) > 3) moved = true;
-          nameScroll.scrollLeft = startScroll - dx;
-        };
-        const onUp = ()=>{
-          document.removeEventListener('mousemove', onMove);
-          document.removeEventListener('mouseup', onUp);
-          if(moved) suppressClick = true;
-        };
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
-      });
-    }
-    row.addEventListener('click', ()=>{
-      if(suppressClick){ suppressClick = false; return; }
-      if(ifaceModalState && ifaceModalState.deviceId===e.id && ifaceModalState.idx===row.dataset.idx){
-        closeIfaceModal();
-      } else {
-        openIfaceModal(e.id, row.dataset.idx);
-      }
-      redrawIfaceSection(e, catLabel);
-    });
-  });
   // 포트맵 칸 클릭 = 아래 상세 패널 열기/닫기(같은 칸을 다시 누르면 닫힘).
   // 다중 선택 모드에선 선택/해제(인터페이스 목록 체크박스와 같은 집합).
   const portMultiOn = portMapMulti && CURRENT_ROLE==='ADMIN' && e.category==='net';
@@ -7571,32 +7457,6 @@ function drawPingDevice(e, catLabel){
       if(openDrawerId===e.id) redrawIfaceSection(findEntity(e.id) || e, catLabel);
     }
   });
-  // 체크박스 자체는 작아서 살짝만 비껴 눌러도 .iface-row의 클릭(상세창
-  // 열기)으로 새나가던 문제(사용자 보고: "마우스가 조금만 어긋나도
-  // 인터페이스 상세창이 클릭되는데 불편해") -- 체크박스를 둘러싼
-  // label(.iface-bulk-checkbox-wrap, 음수 margin으로 바깥쪽에 보이지
-  // 않는 여유 클릭 영역을 추가)에서 막아야 한다. 체크박스 자체에만
-  // stopPropagation을 걸면 label의 빈 패딩 부분을 클릭했을 때 발생하는
-  // 진짜 클릭 이벤트(타깃이 input이 아니라 label)는 거기서 안 잡혀서
-  // 그대로 row까지 올라간다.
-  $$('.iface-bulk-checkbox-wrap', $('#drawerBody')).forEach(wrap=>{
-    wrap.addEventListener('click', ev=>{ ev.stopPropagation(); });
-  });
-  $$('.iface-bulk-checkbox', $('#drawerBody')).forEach(cb=>{
-    cb.addEventListener('change', ()=>{
-      if(cb.checked) ifaceBulkSelection.add(cb.dataset.idx); else ifaceBulkSelection.delete(cb.dataset.idx);
-      redrawIfaceSection(e, catLabel);
-    });
-  });
-  const selectAllCb = document.getElementById('iface-select-all');
-  if(selectAllCb){
-    selectAllCb.addEventListener('click', ev=>{ ev.stopPropagation(); });
-    selectAllCb.addEventListener('change', ()=>{
-      if(selectAllCb.checked) ifaces.forEach(f=>ifaceBulkSelection.add(f.idx));
-      else ifaces.forEach(f=>ifaceBulkSelection.delete(f.idx));
-      redrawIfaceSection(e, catLabel);
-    });
-  }
   // 일괄 제어 -- 예전 행별 shutdown/no-shutdown 버튼(사용자 요청으로 제거,
   // 위 bulkEligible 주석 참고)과 같은 확인 방식(장비 이름 직접 입력)을
   // 쓰되, 대상이 여러 개라는 걸 메시지에 그대로 나열해서 사용자가 뭘
@@ -7637,10 +7497,6 @@ function drawPingDevice(e, catLabel){
       if(openDrawerId===e.id) redrawIfaceSection(findEntity(e.id) || e, catLabel);
     }
   }
-  const bulkDownBtn = document.getElementById('iface-bulk-down-btn');
-  const bulkUpBtn = document.getElementById('iface-bulk-up-btn');
-  if(bulkDownBtn) bulkDownBtn.addEventListener('click', ()=>runBulkIfaceAction(true));
-  if(bulkUpBtn) bulkUpBtn.addEventListener('click', ()=>runBulkIfaceAction(false));
   restoreScrollPositions(scrollState);
   if(hasTraffic){
     charts.drawer2 = lineChart($('#drawerChart2'), Array(24).fill(''), [{label:'트래픽(Mbps)', data:e.hist.traffic, color:'#ff3ec9', fill:true}], {showX:false});
