@@ -609,6 +609,8 @@ def test_sample_snmp_flags_low_confidence_traffic():
         'ifType': {'1': '6'},
         'pethDetect': {'1.1': '3'}, 'pethClass': {'1.1': '4'},
         'pethMainPower': {'1': '370'}, 'pethMainConsumption': {'1': '15'},
+        # 부팅 이후 누적 에러/드랍이 이미 15개 있는 포트
+        'inErrors': {'1': '10'}, 'outErrors': {'1': '0'}, 'inDiscards': {'1': '5'}, 'outDiscards': {'1': '0'},
     }
 
     async def fake_poll(*a, **kw):
@@ -624,6 +626,8 @@ def test_sample_snmp_flags_low_confidence_traffic():
         sc.sample_snmp(entity, device_row)
         check('J10 first tick: no prior sample -> no trafficLowConfidence flag yet',
               'trafficLowConfidence' not in entity, entity.get('trafficLowConfidence'))
+        check('E9 old cumulative errors (15) are not reported as recent errors',
+              entity['interfaces'][0].get('errRecent') == 0, entity['interfaces'][0].get('errRecent'))
 
         # 2틱: 60초 넘게 지났는데(기본 2초 틱의 30배) 카운터는 정상적으로
         # 증가만 함 -- 카운터 자체는 'ok'지만 측정 간격이 너무 길어서
@@ -656,6 +660,10 @@ def test_sample_snmp_flags_low_confidence_traffic():
               (entity['interfaces'][0].get('poe'), entity.get('poe')))
         check('F1 ethernet ifType interface flagged physical in sample_snmp output',
               entity['interfaces'][0].get('physical') is True, entity['interfaces'][0].get('physical'))
+        canned['inErrors'] = {'1': '14'}
+        sc.sample_snmp(entity, device_row)
+        check('E10 errors growing now -> errRecent reports the increase (4)',
+              entity['interfaces'][0].get('errRecent') == 4, entity['interfaces'][0].get('errRecent'))
     finally:
         sc._snmp_poll = orig_poll
         conn = storage.get_db()
@@ -663,6 +671,22 @@ def test_sample_snmp_flags_low_confidence_traffic():
         conn.execute("DELETE FROM incidents WHERE device_id=?", (dev_id,))
         conn.commit()
         conn.close()
+
+
+def test_error_recent_increase():
+    from collector import snmp_collector as sc
+    s = []
+    check("E1 first sample has no baseline -> 0", sc.error_recent_increase(s, 1000, 50, 300) == 0)
+    check("E2 counter grew within window -> increase", sc.error_recent_increase(s, 1020, 57, 300) == 7)
+    # 그 뒤로 안 늘면 창(300초)이 지난 뒤 0으로 돌아가야 함 -- 누적값이 계속
+    # 50이 넘어 있어도 경고가 영원히 남지 않는 게 이 함수의 목적.
+    sc.error_recent_increase(s, 1200, 57, 300)
+    check("E3 still within window of the jump -> 7", sc.error_recent_increase(s, 1300, 57, 300) == 7)
+    check("E4 window passed with no new errors -> 0", sc.error_recent_increase(s, 1400, 57, 300) == 0)
+    check("E5 older samples pruned, newest pre-window sample kept as baseline", [x[0] for x in s] == [1020, 1200, 1300, 1400], str(s))
+    check("E6 counter reset (device reboot) -> restart, not negative", sc.error_recent_increase(s, 1420, 3, 300) == 0)
+    check("E7 growth after reset counted from new baseline", sc.error_recent_increase(s, 1440, 5, 300) == 2)
+    check("E8 unknown counter -> None, nothing recorded", sc.error_recent_increase(s, 1460, None, 300) is None and s[-1][1] == 5)
 
 
 def test_poe_port_mapping():
@@ -2303,7 +2327,7 @@ def main():
         test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env, test_cisco_fru_env,
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
-        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping,
+        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase,
         test_related_network_failure_correlation,
         test_ack_then_recovery, test_ack_then_escalate_reopens, test_agent_mode_escalation,
         test_maintenance_suppresses_and_renotifies, test_escalation_tier_order_stable_across_enable_disable,

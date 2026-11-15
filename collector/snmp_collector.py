@@ -595,6 +595,32 @@ def is_physical_iface(if_type):
     return t in PHYSICAL_IF_TYPES
 
 
+# 포트맵 "에러 발생" 표시 기준 시간. ifIn/OutErrors·Discards는 장비 부팅
+# 이후 누적값이라 그대로 쓰면 예전에 드랍이 한 번만 있었어도 포트가 계속
+# 경고색으로 남는다 -- 최근 이 시간 동안 "늘었는지"로 판단한다.
+ERR_RECENT_WINDOW_SEC = 300
+
+
+def error_recent_increase(samples, now, total, window_sec=ERR_RECENT_WINDOW_SEC):
+    """samples([[t, 누적합], ...], 호출 간 유지되는 리스트)에 이번 값을 넣고
+    최근 window_sec 동안 늘어난 양을 돌려준다.
+
+    - 기준점: 창 시작 시각 이전의 가장 최근 샘플(없으면 창 안의 가장 오래된
+      샘플). 서버를 막 시작해 샘플이 하나뿐이면 비교 대상이 없으니 0.
+    - 누적값이 줄었으면(카운터 초기화, 장비 재부팅, 32비트 wrap) 그 전
+      샘플은 비교 의미가 없어 버리고 새로 시작한다.
+    - total이 None(장비가 응답 안 함)이면 기록하지 않고 None."""
+    if total is None:
+        return None
+    if samples and total < samples[-1][1]:
+        samples.clear()
+    samples.append([now, total])
+    cutoff = now - window_sec
+    while len(samples) >= 2 and samples[1][0] <= cutoff:
+        samples.pop(0)
+    return total - samples[0][1]
+
+
 _PETH_DETECT_MAP = {1: 'disabled', 2: 'searching', 3: 'delivering', 4: 'fault', 5: 'test', 6: 'fault'}
 _IFNAME_SLOT_PORT_RE = re.compile(r'(\d+)/(?:(\d+)/)?(\d+)$')
 
@@ -1143,8 +1169,18 @@ def sample_snmp(entity, device_row):
             high_speed = ext_cache.get('ifHighSpeed') or {}
             if_type = ext_cache.get('ifType') or {}
             iface_hist = entity.setdefault('_ifaceHist', {})
+            # 에러/드랍 최근 증가분(error_recent_increase 참고). 카운터는 확장
+            # 주기에만 새로 받으므로 그 틱에만 샘플을 쌓고, 나머지 틱은 직전
+            # 계산값을 그대로 쓴다(같은 캐시값을 2초마다 넣어봐야 의미 없음).
+            err_refreshed = 'inErrors' in result
+            err_hist = entity.setdefault('_errHist', {})
+            err_recent = entity.setdefault('_errRecent', {})
             ifaces = []
             for idx, name in ifdescr.items():
+                if err_refreshed:
+                    err_parts = [_safe_int(d.get(idx)) for d in (in_err, out_err, in_disc, out_disc)]
+                    err_total = sum(v for v in err_parts if v is not None) if any(v is not None for v in err_parts) else None
+                    err_recent[idx] = error_recent_increase(err_hist.setdefault(idx, []), now, err_total)
                 rate = iface_rates.get(idx, {'inMbps': 0.0, 'outMbps': 0.0, 'lowConfidence': False})
                 iface_hist.setdefault(idx, hist(0))
                 push_cap(iface_hist[idx], round(rate['inMbps'] + rate['outMbps'], 3))
@@ -1176,6 +1212,9 @@ def sample_snmp(entity, device_row):
                     'outErrors': _safe_int(out_err.get(idx)),
                     'inDiscards': _safe_int(in_disc.get(idx)),
                     'outDiscards': _safe_int(out_disc.get(idx)),
+                    # 최근 ERR_RECENT_WINDOW_SEC 동안 늘어난 에러+드랍 개수
+                    # (None = 아직 모름). 포트맵 경고색은 누적값 대신 이걸로.
+                    'errRecent': err_recent.get(idx),
                     'physical': is_physical_iface(if_type.get(idx)),
                     'hist': list(iface_hist[idx]),
                 })

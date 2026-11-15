@@ -7131,7 +7131,11 @@ function drawPingDevice(e, catLabel){
   // 목록의 행을 누른 것과 똑같이 openIfaceModal을 열어 중복 구현 없이
   // 기존 트래픽 차트/제어 기능을 그대로 재사용한다.
   const portMapHtml = ifaces.length ? (()=>{
+    // hasErr = 장비 부팅 이후 누적(상세 패널 참고용), errNow = 최근 5분 사이에
+    // 실제로 늘었는지(백엔드 errRecent). 경고 표시는 errNow로만 -- 누적값으로
+    // 하면 예전에 드랍 한 번 있던 포트가 영원히 경고색이라 진짜 문제를 가린다.
     const hasErr = f => (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
+    const errNow = f => (f.errRecent||0) > 0;
     // 물리 포트만(VLAN/Loopback/Port-channel 등 제외) -- 백엔드가 표준 ifType으로
     // 판정한 physical 값 사용. 아직 ifType을 못 받았거나(등록 직후) 장비가
     // 이더넷 계열로 응답하지 않아 하나도 안 남으면 전체를 그대로 보여준다.
@@ -7148,11 +7152,14 @@ function drawPingDevice(e, catLabel){
     // 사용자 요청("사용하는 포트는 녹색점으로 말고 더 잘보이게")으로 작은 점
     // 대신 포트 칸 전체를 상태색으로 채운다. 비활성화(admin down)는 점선
     // 테두리만, 링크 없음은 어두운 빈 칸.
+    // 에러는 칸 색을 덮지 않고 주황 굵은 테두리 + 경고 표시만 덧붙여서,
+    // 사용중(녹색)인지 미사용인지 상태색은 그대로 보이게 한다.
     const cellLook = f => {
-      if(hasErr(f)) return 'background:var(--warn);border-color:var(--warn);box-shadow:0 0 8px rgba(230,150,15,.55)';
-      if(f.adminStatus==='down') return 'background:transparent;border:1.5px dashed rgba(255,255,255,.3)';
-      if(f.status==='up') return 'background:var(--good);border-color:var(--good);box-shadow:0 0 8px rgba(0,176,135,.6)';
-      return 'background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.12)';
+      const err = errNow(f);
+      const errBorder = 'border:2.5px solid var(--warn);box-shadow:0 0 9px rgba(230,150,15,.75)';
+      if(f.adminStatus==='down') return err ? `background:transparent;${errBorder}` : 'background:transparent;border:1.5px dashed rgba(255,255,255,.3)';
+      if(f.status==='up') return `background:var(--good);${err ? errBorder : 'border-color:var(--good);box-shadow:0 0 8px rgba(0,176,135,.6)'}`;
+      return `background:rgba(255,255,255,.1);${err ? errBorder : 'border-color:rgba(255,255,255,.12)'}`;
     };
     // 칸 안 사용량(In+Out 합계) -- 사용자 요청("사용량 수치를 Mbps로, 글자도
     // 크게")으로 G/M/K 단위 혼용 대신 전부 Mbps 숫자로 통일(숫자 아래 "Mbps").
@@ -7168,12 +7175,14 @@ function drawPingDevice(e, catLabel){
       const trafficText = f.status==='up' ? ` · ${fmtMbps(usage)}Mbps 사용중` : '';
       const poeText = f.poe ? ` · ${poeLabel(f.poe)}` : '';
       const macN = macEntriesForIface(e.id, f.idx).length;
-      const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${poeText}${macN ? ` · MAC ${macN}개` : ''}${hasErr(f) ? ' · 에러/드랍 발생' : ''}`;
+      const errText = errNow(f) ? ` · ⚠ 최근 5분 에러/드랍 ${fmt0(f.errRecent)}개 증가` : '';
+      const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${poeText}${macN ? ` · MAC ${macN}개` : ''}${errText}`;
       const boltColor = !f.poe ? '' : f.poe.status==='delivering' ? 'var(--poe)' : f.poe.status==='fault' ? 'var(--crit)' : '';
       // 48포트급(dense)은 칸이 14~20px라 숫자가 안 들어가서 생략 -- 툴팁/아래 패널로 확인.
       const showUsage = !dense && f.status==='up' && f.adminStatus!=='down';
       const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="position:relative;width:100%;height:${dense?26:36}px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer;overflow:hidden">
         ${boltColor ? `<svg width="7" height="9" viewBox="0 0 8 10" style="position:absolute;top:2px;left:2px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor}" stroke="rgba(0,0,0,.55)" stroke-width=".7"/></svg>` : ''}
+        ${errNow(f) ? `<svg width="10" height="9" viewBox="0 0 10 9" style="position:absolute;bottom:1px;right:1px"><path d="M5 .6 9.5 8.4H.5z" fill="var(--warn)" stroke="rgba(0,0,0,.6)" stroke-width=".8" stroke-linejoin="round"/><path d="M5 3.3v2.4" stroke="#1a1a1a" stroke-width="1.2" stroke-linecap="round"/><circle cx="5" cy="7.1" r=".65" fill="#1a1a1a"/></svg>` : ''}
         ${multi && selected ? `<svg width="11" height="11" viewBox="0 0 12 12" style="position:absolute;top:1px;right:1px"><circle cx="6" cy="6" r="5.5" fill="var(--accent-2)" stroke="rgba(0,0,0,.45)" stroke-width=".8"/><path d="M3.3 6.2 5.2 8l3.5-4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>` : ''}
         ${showUsage ? `<span style="display:flex;flex-direction:column;align-items:center;gap:1px;color:rgba(0,0,0,.78);white-space:nowrap"><b style="font:800 12px/1 var(--font-mono);letter-spacing:-.03em">${usageMbps(usage)}</b><span style="font:700 8px/1 var(--font-mono);opacity:.75">Mbps</span></span>` : ''}
       </div>`;
@@ -7275,7 +7284,8 @@ function drawPingDevice(e, catLabel){
           <div class="kv"><span>In</span><b style="color:var(--info)">${fmtMbps(f.inMbps||0)} Mbps${util(f.utilInPct)}</b></div>
           <div class="kv"><span>Out</span><b style="color:var(--accent-3)">${fmtMbps(f.outMbps||0)} Mbps${util(f.utilOutPct)}</b></div>
           <div class="kv"><span>링크 속도</span><b>${f.speedMbps ? fmt0(f.speedMbps)+' Mbps' : '-'}</b></div>
-          <div class="kv"><span>에러 / 드랍</span><b style="color:${hasErr(f)?'var(--warn)':'inherit'}">${fmt0((f.inErrors||0)+(f.outErrors||0))} / ${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</b></div>
+          <div class="kv"><span>최근 5분 에러·드랍 증가</span><b style="color:${errNow(f)?'var(--warn)':'inherit'}">${f.errRecent==null ? '측정 중' : `${errNow(f)?'⚠ ':''}${fmt0(f.errRecent)}개`}</b></div>
+          <div class="kv"><span>에러 / 드랍 (부팅 후 누적)</span><b style="color:var(--chrome-text-dim)">${fmt0((f.inErrors||0)+(f.outErrors||0))} / ${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</b></div>
         </div>
         <div style="margin-top:10px;font-size:11.5px">
           <div style="color:var(--chrome-text-dim);font-weight:600;margin-bottom:4px">학습된 MAC 주소 ${Array.isArray(macState) ? `· ${macs.length}개` : ''}</div>
@@ -7289,7 +7299,7 @@ function drawPingDevice(e, catLabel){
       </div>`;
     })() : '';
     return `<div class="card" style="min-width:0">
-      <div class="card-head"><h3>포트맵</h3><span class="sub">${multi ? '다중 선택 중 · 포트를 눌러 여러 개 고른 뒤 위 버튼으로 한 번에 처리' : '포트를 누르면 사용량·학습된 MAC·활성화/비활성화가 아래에 열립니다'} · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}</span></div>
+      <div class="card-head"><h3>포트맵</h3><span class="sub">${multi ? '다중 선택 중 · 포트를 눌러 여러 개 고른 뒤 위 버튼으로 한 번에 처리' : '포트를 누르면 사용량·학습된 MAC·활성화/비활성화가 아래에 열립니다'} · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}${(()=>{ const n = physIfaces.filter(errNow).length; return n ? ` · <b style="color:var(--warn)">⚠ 에러 증가 ${n}포트</b>` : ''; })()}</span></div>
       ${multiToolbar}
       <div style="background:var(--bg);border-radius:10px;padding:12px 14px;overflow-x:auto">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px 22px;min-width:min-content">${blocks.map(blockHtml).join('')}</div>
@@ -7298,7 +7308,7 @@ function drawPingDevice(e, catLabel){
         <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--good);margin-right:5px;vertical-align:-1px"></span>연결됨(사용중)</span>
         <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--text-faint);opacity:.45;margin-right:5px;vertical-align:-1px"></span>미사용</span>
         <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;border:1.5px dashed var(--text-faint);box-sizing:border-box;margin-right:5px;vertical-align:-1px"></span>비활성화</span>
-        <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--warn);margin-right:5px;vertical-align:-1px"></span>에러 발생</span>
+        <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;border:2px solid var(--warn);box-sizing:border-box;margin-right:5px;vertical-align:-1px"></span>⚠ 최근 5분 에러/드랍 증가 (칸 색은 연결 상태 그대로)</span>
         ${poe ? `<span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--poe)"/></svg>PoE 공급중</span>
         <span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--crit)"/></svg>PoE 오류</span>` : ''}
         ${!dense ? '<span style="color:var(--text-faint)">칸 안 숫자 = 현재 사용량 Mbps (In+Out 합계)</span>' : ''}
@@ -7347,7 +7357,9 @@ function drawPingDevice(e, catLabel){
           </span>
           <span style="display:flex;align-items:center;gap:8px;flex:none">
             ${macCount>0 ? `<span class="mono" style="font-size:10px;color:var(--text-faint)" title="이 포트에서 학습된 MAC 주소">MAC ${macCount}</span>` : ''}
-            ${hasErr ? `<span class="mono" style="font-size:10px;color:var(--warn)" title="에러/드랍 누적 발생">⚠ ${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>` : ''}
+            ${hasErr ? ((f.errRecent||0)>0
+              ? `<span class="mono" style="font-size:10px;color:var(--warn);font-weight:700" title="최근 5분 동안 에러/드랍이 ${fmt0(f.errRecent)}개 늘었습니다 (숫자는 부팅 후 누적 에러/드랍)">⚠ ${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>`
+              : `<span class="mono" style="font-size:10px;color:var(--text-faint)" title="부팅 후 누적 에러/드랍 -- 최근 5분 동안은 늘지 않음">${fmt0((f.inErrors||0)+(f.outErrors||0))}/${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</span>`) : ''}
             ${f.status==='up' ? `<span class="mono" style="font-size:10px;color:var(--text-faint)">${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps${utilMax>0 ? ` (${fmt0(utilMax)}%)` : ''}</span>` : ''}
             <span class="pill ${f.status==='up'?'good':'neutral'}"><span class="dot"></span>${f.status==='up'?'Up':(f.adminStatus==='down'?'비활성화':'Down')}</span>
           </span>
