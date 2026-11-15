@@ -7189,9 +7189,13 @@ function drawPingDevice(e, catLabel){
     // 이름으로 SFP 표시만 붙인다.
     const SFP_LAYOUTS = [[48,4],[48,2],[24,4],[24,2],[16,2],[8,2]];
     const sfpPrefixRe = /^(TenGig|TwentyFiveGig|FortyGig|HundredGig|Te|Twe|Fo|Hu|xe-|et-)/i;
+    // 관리 포트(HPE Comware M-GigabitEthernet0/0/0, Cisco Mgmt0, Juniper fxp0/em0/me0)는
+    // 번호만 보이면 "0"이라 헷갈려서 MGMT 표시를 붙인다.
+    const mgmtPrefixRe = /^(M-|Mgmt|Management|fxp|em|me)/i;
     const blocks = [];
     groups.forEach(g=>{
       const prefix = portParts(g[0]).prefix;
+      if(mgmtPrefixRe.test(prefix)){ blocks.push({ports:g, caption:'MGMT'}); return; }
       if(sfpPrefixRe.test(prefix)){ blocks.push({ports:g, caption:'SFP'}); return; }
       const hit = portParts(g[0]).num!=null && SFP_LAYOUTS.find(([base,k])=>g.length===base+k);
       if(hit){ blocks.push({ports:g.slice(0,hit[0]), caption:''}); blocks.push({ports:g.slice(hit[0]), caption:'SFP'}); }
@@ -7200,7 +7204,12 @@ function drawPingDevice(e, catLabel){
     // 사용자 요청("포트가 한쪽으로만 몰렸어, 전체적으로 분산")으로 묶음들을
     // 카드 폭 전체에 양끝 정렬하고, 각 포트 칸은 남는 폭만큼(최대 52px)
     // 넓어지게 함 -- 실제 스위치처럼 메인 포트는 왼쪽, SFP는 오른쪽 끝.
-    const dense = physIfaces.length > 30;  // 48포트급은 간격을 좁혀 가로 스크롤 없이 한 화면에
+    // 48포트급은 간격을 좁혀 가로 스크롤 없이 한 화면에. 포트 "개수"가 아니라
+    // 실제로 그려지는 칸 "열 수"로 판단 -- HPE 5500-24G는 24+SFP4+10G 2개+관리
+    // 포트로 31개라 개수 기준(>30)에 걸려 칸 안 사용량이 사라졌었는데, 열 수로는
+    // 16열이라 숫자가 충분히 들어간다(48포트급은 26열 이상).
+    const totalCols = blocks.reduce((s,b)=>s+Math.ceil(b.ports.length/(b.ports.length>1?2:1)), 0);
+    const dense = totalCols > 18;
     const blockHtml = b => {
       const rows = b.ports.length>1 ? 2 : 1;
       const cols = Math.ceil(b.ports.length/rows);
