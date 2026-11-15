@@ -68,6 +68,35 @@ def write_backup_file(device_name, captured_at_ms, content):
     return path
 
 
+def build_backups_zip(device_id=None):
+    """사용자 요청("전체 백업 한번에 zip으로"): 내용이 저장된 모든 백업
+    버전을 장비별 폴더로 묶은 zip(bytes). device_id를 주면 그 장비 것만.
+    zip 안 경로/이름은 서버의 .cfg 사본과 같다(<장비명>/<장비명>_날짜-시각.cfg).
+    삭제된 장비의 옛 백업은 이름을 알 수 없어 장비 id 폴더로 넣는다.
+    반환: (zip bytes, 파일 수)."""
+    import io
+    import zipfile
+    names = {d['id']: d['name'] for d in storage.load_devices()}
+    buf = io.BytesIO()
+    count = 0
+    used = set()
+    with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        for r in storage.list_config_backup_contents():
+            if device_id is not None and r['device_id'] != device_id:
+                continue
+            name = names.get(r['device_id']) or r['device_id']
+            path = os.path.relpath(backup_file_path(name, r['captured_at']), CONFIG_FILES_DIR).replace(os.sep, '/')
+            # 같은 이름 장비 2대가 같은 초에 백업된 드문 경우에도 덮어쓰지 않게
+            base, n = path, 2
+            while path in used:
+                path = base[:-4] + f'_{n}.cfg'
+                n += 1
+            used.add(path)
+            zf.writestr(path, r['content'])
+            count += 1
+    return buf.getvalue(), count
+
+
 def export_missing_backup_files():
     """DB에는 있는데 파일로 안 남은 백업(이 기능 전에 받은 것, 또는 파일
     쓰기가 실패했던 것)을 채운다. 서버 시작 때 한 번 -- 이미 있는 파일은

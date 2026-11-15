@@ -2950,6 +2950,31 @@ def api_get_config_backup_raw(device_id, backup_id):
     return resp
 
 
+@app.get('/api/config-backups/export.zip')
+@require_role('VIEWER')
+def api_export_config_backups_zip():
+    """전체(또는 ?device=<id> 한 장비) config 백업을 zip 하나로. 각 버전은
+    이미 /raw로 VIEWER가 하나씩 받을 수 있는 것과 같은 범위라 권한도 같게
+    두되, 한 번에 전부 가져가는 동작이라 감사 로그는 남긴다."""
+    device_id = request.args.get('device') or None
+    if device_id is not None and not storage.load_device(device_id):
+        return jsonify({'error': 'device not found'}), 404
+    data, count = config_backup.build_backups_zip(device_id)
+    if not count:
+        return jsonify({'error': '내려받을 config 백업이 없습니다'}), 404
+    audit('CONFIG_BACKUP_EXPORT_ZIP', target=device_id or 'ALL', details=f'{count} files')
+    ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+    if device_id:
+        fname = f"{config_backup.safe_file_part(storage.load_device(device_id)['name'])}_config-backups_{ts}.zip"
+    else:
+        fname = f'InfraSight_config-backups_{ts}.zip'
+    ascii_name = ''.join(c if (c.isascii() and (c.isalnum() or c in '._-')) else '_' for c in fname)
+    resp = Response(data, mimetype='application/zip')
+    resp.headers['Content-Disposition'] = (
+        f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{urllib.parse.quote(fname)}")
+    return resp
+
+
 @app.post('/api/devices/<device_id>/config-backups/run')
 @require_role('OPERATOR')
 def api_run_config_backup(device_id):

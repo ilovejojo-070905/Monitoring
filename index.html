@@ -2462,7 +2462,10 @@ function configBackupCardHtml(e){
     <div class="card" style="min-width:0">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
         <div><h3>설정(config) 자동 백업</h3><span class="sub">${subText}</span></div>
-        ${CURRENT_ROLE_RANK >= 1 ? `<button type="button" class="btn" data-cfgbk-run="${e.id}" ${CONFIG_BACKUP_INFLIGHT.has(e.id)?'disabled':''} style="margin-left:auto;font-size:12px;padding:6px 12px">${CONFIG_BACKUP_INFLIGHT.has(e.id)?'백업 중...':'지금 백업'}</button>` : ''}
+        <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+          ${contentBackups.length ? `<a class="btn" href="/api/config-backups/export.zip?device=${encodeURIComponent(e.id)}" download data-cfgbk-zip title="이 장비의 모든 백업 버전(${contentBackups.length}개)을 zip 하나로 내려받기" style="font-size:12px;padding:6px 12px;text-decoration:none;display:inline-flex;align-items:center;gap:5px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>전체 버전 zip</a>` : ''}
+          ${CURRENT_ROLE_RANK >= 1 ? `<button type="button" class="btn" data-cfgbk-run="${e.id}" ${CONFIG_BACKUP_INFLIGHT.has(e.id)?'disabled':''} style="font-size:12px;padding:6px 12px">${CONFIG_BACKUP_INFLIGHT.has(e.id)?'백업 중...':'지금 백업'}</button>` : ''}
+        </span>
       </div>
       ${CONFIG_BACKUP_FILEDIR[e.id] ? `<div style="font-size:11px;color:var(--text-dim);display:flex;gap:6px;align-items:baseline;min-width:0" title="설정이 바뀔 때마다 이 폴더에 장비명_날짜-시각.cfg 파일로도 저장됩니다 (InfraSight 서버 PC 기준 경로)"><span style="flex:none">파일 저장 위치</span><span class="mono" style="overflow-x:auto;white-space:nowrap;color:var(--text)">${escapeHtml(CONFIG_BACKUP_FILEDIR[e.id])}</span></div>` : ''}
       <span id="cfgbk-run-error-${e.id}" style="color:var(--crit);font-size:11px"></span>
@@ -3988,6 +3991,8 @@ function renderRegisterSkeleton(){
           <button type="submit" class="btn primary">저장</button>
           <span id="cfgbk-settings-error" style="color:var(--crit);font-size:11.5px"></span>
           <span id="cfgbk-settings-saved" style="color:var(--good);font-size:11.5px"></span>
+          <span style="flex:1"></span>
+          <a class="btn" href="/api/config-backups/export.zip" download data-cfgbk-zip title="모든 네트워크 장비의 config 백업 전체 버전을 장비별 폴더로 묶어 zip 하나로 내려받습니다" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>전체 장비 백업 zip 다운로드</a>
         </div>
       </form>
       </div></div>
@@ -6820,6 +6825,17 @@ function openDrawerFor(id){
   const f = FACS.find(x=>x.id===id);
   const entity = s||d||n||f;
   if(!entity) return;
+  // 사용자 보고("상세창 클릭 후 아래로 내려서 창 닫고, 다시 클릭하면 아래로
+  // 내려있는 상태가 됨"): 드로어를 닫아도 #drawerBody는 DOM에 남아 있어서
+  // 그 scrollTop과 안쪽 영역들의 스크롤이 그대로였고, 다음에 열 때
+  // drawPingDevice의 captureScrollPositions()가 그 옛 위치를 다시 복원했다.
+  // 1초 주기 다시 그리기(refreshOpenDrawer, 같은 id)가 아닌 "새로 열기"면
+  // 옛 내용을 비우고 맨 위에서 시작한다.
+  if(id !== openDrawerId){
+    const body = $('#drawerBody');
+    body.innerHTML = '';
+    body.scrollTop = 0;
+  }
   if(id !== openDrawerId && ifaceModalState && ifaceModalState.deviceId !== id) closeIfaceModal();
   if(id !== ifaceBulkSelectionDeviceId){ ifaceBulkSelection = new Set(); ifaceBulkSelectionDeviceId = id; portMapMulti = false; }
   openDrawerId = id;

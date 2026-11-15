@@ -741,6 +741,26 @@ def test_config_backup_files():
         cb.CONFIG_FILES_DIR = orig_dir
         shutil.rmtree(tmp, ignore_errors=True)
 
+    import io, zipfile
+    dev = 'unittest_zip_dev'
+    storage.delete_config_backups_for_device(dev)
+    try:
+        storage.save_config_backup(dev, True, True, 'v1\r\n', 'h1', None)
+        time.sleep(1.05)  # 파일 이름이 초 단위라 두 버전이 다른 이름이 되게
+        storage.save_config_backup(dev, True, True, 'v2\r\n', 'h2', None)
+        storage.save_config_backup(dev, False, False, None, None, 'login failed')  # 내용 없는 실패 행은 빠져야 함
+        data, count = cb.build_backups_zip(dev)
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        names = sorted(zf.namelist())
+        check('G8 zip has one .cfg per stored version, in a per-device folder (failed attempt excluded)',
+              count == 2 and len(names) == 2 and all(n.startswith(dev + '/') and n.endswith('.cfg') for n in names), names)
+        check('G9 zip contents are the exact backups (line endings preserved)',
+              sorted(zf.read(n) for n in names) == [b'v1\r\n', b'v2\r\n'])
+        check('G10 device filter: another device id yields an empty zip',
+              cb.build_backups_zip('unittest_zip_none')[1] == 0)
+    finally:
+        storage.delete_config_backups_for_device(dev)
+
 
 def test_error_recent_increase():
     from collector import snmp_collector as sc
