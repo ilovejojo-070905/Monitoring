@@ -2934,13 +2934,19 @@ def api_get_config_backup_raw(device_id, backup_id):
     if not row or row['device_id'] != device_id or not row.get('content'):
         return jsonify({'error': 'not found'}), 404
     device_row = storage.load_device(device_id)
-    # 장비 이름은 등록 시점에 이미 validation._SAFE_NAME_RE(영숫자/한글/
-    # 공백/.()-_만 허용, 따옴표나 제어문자 불가)로 검증돼 있어 헤더에
-    # 그대로 넣어도 안전하다.
     name = device_row['name'] if device_row else device_id
-    ts = datetime.fromtimestamp(row['captured_at'] / 1000).strftime('%Y%m%d-%H%M%S')
+    # ?download=1이면 "다운로드" 버튼용(첨부 파일로 저장), 아니면 "보기"(새 탭
+    # 평문). 파일 이름은 서버에 남는 .cfg 사본과 똑같이(장비명_날짜-시각.cfg).
+    # 예전엔 장비 이름을 헤더에 그대로 넣었는데, "주니퍼"처럼 한글 이름은
+    # HTTP 헤더(latin-1)로 인코딩되지 않아 waitress가 응답을 못 보낼 수 있다 --
+    # 영문 대체 이름(filename=) + 원래 이름(RFC 5987 filename*=UTF-8'')을 함께
+    # 보내 브라우저가 한글 이름 그대로 저장하게 한다.
+    fname = os.path.basename(config_backup.backup_file_path(name, row['captured_at']))
+    ascii_name = ''.join(c if (c.isascii() and (c.isalnum() or c in '._-')) else '_' for c in fname)
+    disposition = 'attachment' if request.args.get('download') == '1' else 'inline'
     resp = Response(row['content'], mimetype='text/plain; charset=utf-8')
-    resp.headers['Content-Disposition'] = f'inline; filename="{name}-{ts}.cfg"'
+    resp.headers['Content-Disposition'] = (
+        f"{disposition}; filename=\"{ascii_name}\"; filename*=UTF-8''{urllib.parse.quote(fname)}")
     return resp
 
 

@@ -2472,7 +2472,8 @@ function configBackupCardHtml(e){
             <span class="mono">${fmtWhen(b.captured_at)}</span>
             <span style="display:flex;align-items:center;gap:8px;min-width:0">
               ${configBackupStatusPill(b)}
-              ${(b.success && b.changed) ? `<a href="/api/devices/${encodeURIComponent(e.id)}/config-backups/${b.id}/raw" target="_blank" rel="noopener" style="color:var(--info);text-decoration:none">보기</a>` : ''}
+              ${(b.success && b.changed) ? `<a href="/api/devices/${encodeURIComponent(e.id)}/config-backups/${b.id}/raw" target="_blank" rel="noopener" style="color:var(--info);text-decoration:none">보기</a>
+                <a href="/api/devices/${encodeURIComponent(e.id)}/config-backups/${b.id}/raw?download=1" download title="이 버전을 .cfg 파일로 내려받기" style="color:var(--info);text-decoration:none;display:inline-flex;align-items:center;gap:3px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>다운로드</a>` : ''}
               ${(b.success && b.changed && contentBackups.some(x=>x.captured_at<b.captured_at)) ? `<a href="#" data-cfgdiff-dev="${escapeHtml(e.id)}" data-cfgdiff-to="${b.id}" style="color:var(--accent-2);text-decoration:none;font-weight:600">이전과 비교</a>` : ''}
               ${(!b.success && b.error) ? `<span style="color:var(--crit);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(b.error)}">${escapeHtml(b.error)}</span>` : ''}
             </span>
@@ -2560,9 +2561,10 @@ function renderCfgDiff(){
     return `<div class="cfgdiff-hunk">변경 전 ${o ? o.o : '-'}번째 줄 / 변경 후 ${n ? n.n : '-'}번째 줄 부근</div>`;
   };
   const whenOf = id => { const b = versions.find(x=>x.id===id); return b ? fmtWhen(b.captured_at) : ''; };
+  const dlLink = id => `<a href="/api/devices/${encodeURIComponent(st.deviceId)}/config-backups/${id}/raw?download=1" download title="이 버전을 .cfg 파일로 내려받기" style="margin-left:10px;color:var(--chrome-text-dim);text-decoration:none;font-weight:600">⤓ 다운로드</a>`;
   const code = d && d.hunks && d.hunks.length
     ? `<div class="cfgdiff-code" data-scroll-key="cfgdiff-code">
-        <div class="cfgdiff-row cfgdiff-head"><span></span><span style="color:#ff8fa3">변경 전 · ${escapeHtml(whenOf(d.from.id))}</span><span class="ln r"></span><span style="color:#5ee8c0">변경 후 · ${escapeHtml(whenOf(d.to.id))}</span></div>
+        <div class="cfgdiff-row cfgdiff-head"><span></span><span style="color:#ff8fa3">변경 전 · ${escapeHtml(whenOf(d.from.id))}${dlLink(d.from.id)}</span><span class="ln r"></span><span style="color:#5ee8c0">변경 후 · ${escapeHtml(whenOf(d.to.id))}${dlLink(d.to.id)}</span></div>
         ${d.hunks.map(h => (st.full ? '' : hunkHead(h)) + pairRows(h).map(rowHtml).join('')).join('')}
       </div>` : '';
   $('#cfgDiffBody').innerHTML = `
