@@ -1237,6 +1237,8 @@ function macEntriesForIface(deviceId, ifIdx){
 // 그려주기만 한다(API 응답을 기다리지 않음 -- 다음 폴링 틱에서 캐시가
 // 채워지면 자연스럽게 반영).
 let CONFIG_BACKUP_CACHE = {};
+// 장비별 .cfg 파일 사본 폴더(서버 경로) -- 카드에 "파일 저장 위치"로 표시.
+let CONFIG_BACKUP_FILEDIR = {};
 async function loadConfigBackupsFor(deviceId){
   if(CONFIG_BACKUP_CACHE[deviceId]) return;
   CONFIG_BACKUP_CACHE[deviceId] = 'loading';
@@ -1245,6 +1247,7 @@ async function loadConfigBackupsFor(deviceId){
     if(!r.ok) throw new Error('load failed');
     const j = await r.json();
     CONFIG_BACKUP_CACHE[deviceId] = j.backups || [];
+    if(j.fileDir) CONFIG_BACKUP_FILEDIR[deviceId] = j.fileDir;
   }catch(e){
     delete CONFIG_BACKUP_CACHE[deviceId];
   }
@@ -2461,6 +2464,7 @@ function configBackupCardHtml(e){
         <div><h3>설정(config) 자동 백업</h3><span class="sub">${subText}</span></div>
         ${CURRENT_ROLE_RANK >= 1 ? `<button type="button" class="btn" data-cfgbk-run="${e.id}" ${CONFIG_BACKUP_INFLIGHT.has(e.id)?'disabled':''} style="margin-left:auto;font-size:12px;padding:6px 12px">${CONFIG_BACKUP_INFLIGHT.has(e.id)?'백업 중...':'지금 백업'}</button>` : ''}
       </div>
+      ${CONFIG_BACKUP_FILEDIR[e.id] ? `<div style="font-size:11px;color:var(--text-dim);display:flex;gap:6px;align-items:baseline;min-width:0" title="설정이 바뀔 때마다 이 폴더에 장비명_날짜-시각.cfg 파일로도 저장됩니다 (InfraSight 서버 PC 기준 경로)"><span style="flex:none">파일 저장 위치</span><span class="mono" style="overflow-x:auto;white-space:nowrap;color:var(--text)">${escapeHtml(CONFIG_BACKUP_FILEDIR[e.id])}</span></div>` : ''}
       <span id="cfgbk-run-error-${e.id}" style="color:var(--crit);font-size:11px"></span>
       <div data-scroll-key="cfgbk-list-${e.id}" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;margin-top:8px">
         ${backups.length ? backups.map(b=>`

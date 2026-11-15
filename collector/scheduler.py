@@ -276,6 +276,12 @@ def _run_config_backup_tick():
 
 def start():
     local_collector.prime_psutil()
+    # config 백업 .cfg 파일 사본 중 빠진 것 채우기(이 기능 이전 백업 포함) --
+    # 이미 있는 파일은 건너뛰어 매 시작마다 돌려도 안전.
+    try:
+        config_backup.export_missing_backup_files()
+    except Exception as e:
+        health.record_tick_error('scheduler', f"config_backup file export: {e}")
     for d in storage.load_devices():
         if d['mode'] == 'agent':
             agent_collector.seed_last_report_from_db(d)

@@ -11,6 +11,7 @@
 logs/
 run/
 backups/
+config-backups/
 server.log
 server_phase*.log
 caddy.log

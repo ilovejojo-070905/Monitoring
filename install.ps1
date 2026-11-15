@@ -66,6 +66,8 @@ function Protect-SensitiveFiles {
     param([string]$InstallDir)
     $targets = @(
         (Join-Path $InstallDir 'backups'),
+        # 장비 설정 .cfg 사본(비밀번호 해시/SNMP 커뮤니티 등 포함) -- DB 백업과 같은 수준으로 보호.
+        (Join-Path $InstallDir 'config-backups'),
         (Join-Path $InstallDir 'infrasight.db'),
         (Join-Path $InstallDir '.infrasight_credentials_key')
     )
@@ -433,6 +435,7 @@ Pop-Location
 # 가서야 생기면 이 설치 시점 권한 강화를 못 받고 상위 폴더 기본 ACL을
 # 그대로 상속받으므로, 여기서 미리 만들어 바로 강화한다.
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'backups') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'config-backups') | Out-Null
 Protect-SensitiveFiles -InstallDir $InstallDir
 Write-Ok '완료'
 

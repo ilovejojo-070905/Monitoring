@@ -2884,7 +2884,8 @@ def api_list_config_backups(device_id):
     # content는 목록에서는 뺀다(전체 설정 텍스트가 수천 줄일 수 있어
     # 목록 응답이 쓸데없이 커짐) -- 필요하면 아래 단건 조회로 받는다.
     out = [{k: v for k, v in r.items() if k != 'content'} for r in rows]
-    return jsonify({'backups': out})
+    device_row = storage.load_device(device_id)
+    return jsonify({'backups': out, 'fileDir': config_backup.backup_file_dir(device_row['name'])})
 
 
 @app.get('/api/devices/<device_id>/config-backups/<int:backup_id>')

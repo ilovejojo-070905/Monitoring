@@ -67,6 +67,8 @@ function Protect-SensitiveFiles {
     param([string]$InstallDir)
     $targets = @(
         (Join-Path $InstallDir 'backups'),
+        # 장비 설정 .cfg 사본(비밀번호 해시/SNMP 커뮤니티 등 포함) -- DB 백업과 같은 수준으로 보호.
+        (Join-Path $InstallDir 'config-backups'),
         (Join-Path $InstallDir 'infrasight.db'),
         (Join-Path $InstallDir '.infrasight_credentials_key')
     )
@@ -232,6 +234,7 @@ Write-Ok "최신 커밋으로 갱신됨: $headNow"
 Write-Step '[3/5] 파이썬 패키지 확인 (requirements.txt)'
 Invoke-Native { & $pythonExe -m pip install --quiet --disable-pip-version-check -r (Join-Path $InstallDir 'requirements.txt') }
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'backups') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'config-backups') | Out-Null
 Protect-SensitiveFiles -InstallDir $InstallDir
 Write-Ok '확인 완료'
 

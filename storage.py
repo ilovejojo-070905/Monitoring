@@ -1567,6 +1567,19 @@ def save_config_backup(device_id, success, changed, content, content_hash, error
         (device_id, now, 1 if success else 0, 1 if changed else 0, content, content_hash, error))
     conn.commit()
     conn.close()
+    return now
+
+
+def list_config_backup_contents():
+    """내용이 저장된 모든 백업의 (device_id, captured_at, content) --
+    config_backup.export_missing_backup_files()가 파일로 안 남은 옛 백업을
+    채울 때 쓴다."""
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT device_id, captured_at, content FROM device_config_backups WHERE content IS NOT NULL '
+        'ORDER BY captured_at').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def load_config_backups(device_id, limit=50):

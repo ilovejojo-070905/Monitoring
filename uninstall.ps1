@@ -272,6 +272,14 @@ if (-not $DeleteBackupHistory) {
     } else {
         Write-Warn2 'backups\ 폴더를 찾지 못했습니다 (자동 백업이 한 번도 실행되지 않았을 수 있습니다).'
     }
+    # 장비 설정(config) .cfg 파일 사본도 같은 "백업 이력"으로 취급해 함께 보존.
+    $cfgFilesDir = Join-Path $InstallDir 'config-backups'
+    $cfgFileCount = (Get-ChildItem $cfgFilesDir -File -Recurse -Filter *.cfg -ErrorAction SilentlyContinue | Measure-Object).Count
+    if ($cfgFileCount -gt 0) {
+        if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null }
+        Copy-Item $cfgFilesDir (Join-Path $backupDir 'config-backups') -Recurse -ErrorAction SilentlyContinue
+        Write-Ok "바탕화면\InfraSight-Backups\$stamp\config-backups\ 에 장비 설정 파일 보존됨 (파일 $cfgFileCount 개)"
+    }
 } else {
     Write-Warn2 '-DeleteBackupHistory 지정됨 -- backups\ 과거 백업 이력을 보존하지 않고 같이 삭제합니다.'
 }

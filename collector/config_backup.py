@@ -9,12 +9,83 @@ get_config_backup_settings)으로 활성화하면, 지정한 주기(시간 단�
 저장하고 알림(incident)을 남긴다. 같으면 저장하지 않고(용량 절약)
 "마지막 확인 시각"만 갱신한다.
 """
+import os
+import re
 import time
 import hashlib
 import difflib
+import logging
+from datetime import datetime
 
 import storage
 from collector import device_control, snmp_profiles, state
+
+log = logging.getLogger(__name__)
+
+# 사용자 요청("config 파일로 남기고 싶어"): DB 저장과 별개로, 내용이 저장되는
+# 백업(최초 + 실제 변경분)마다 설치 폴더 아래 장비별 폴더에 .cfg 파일로도
+# 남긴다 -- 예: C:\InfraSight\config-backups\Arbua\Arbua_20261115-211019.cfg.
+# DB가 원본이고 파일은 사본이라, 파일 쓰기가 실패해도 백업 자체는 실패로
+# 치지 않는다. 장비를 삭제해도 파일은 지우지 않는다(지난 설정 보관용).
+CONFIG_FILES_DIR = os.path.join(storage.BASE_DIR, 'config-backups')
+_FS_UNSAFE_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+_WIN_RESERVED = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}
+
+
+def safe_file_part(name):
+    """장비 이름을 Windows 폴더/파일 이름으로 안전하게 -- 금지 문자는 _로,
+    끝의 점/공백 제거, 예약어(CON/NUL 등)는 앞에 _를 붙인다."""
+    s = _FS_UNSAFE_RE.sub('_', str(name or '')).strip().rstrip('. ')
+    if not s or set(s) <= {'.'}:
+        s = 'device'
+    if s.upper().split('.')[0] in _WIN_RESERVED:
+        s = '_' + s
+    return s[:80]
+
+
+def backup_file_dir(device_name):
+    return os.path.join(CONFIG_FILES_DIR, safe_file_part(device_name))
+
+
+def backup_file_path(device_name, captured_at_ms):
+    part = safe_file_part(device_name)
+    ts = datetime.fromtimestamp(captured_at_ms / 1000).strftime('%Y%m%d-%H%M%S')
+    return os.path.join(CONFIG_FILES_DIR, part, f'{part}_{ts}.cfg')
+
+
+def write_backup_file(device_name, captured_at_ms, content):
+    """이미 있으면 그대로 두고(같은 시각 = 같은 백업) 경로만 돌려준다.
+    임시 파일에 다 쓴 뒤 바꿔치기해서 쓰다 만 .cfg가 남지 않게 한다.
+    장비가 보낸 줄바꿈을 그대로 보존(newline='')."""
+    path = backup_file_path(device_name, captured_at_ms)
+    if os.path.exists(path):
+        return path
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8', newline='') as f:
+        f.write(content)
+    os.replace(tmp, path)
+    return path
+
+
+def export_missing_backup_files():
+    """DB에는 있는데 파일로 안 남은 백업(이 기능 전에 받은 것, 또는 파일
+    쓰기가 실패했던 것)을 채운다. 서버 시작 때 한 번 -- 이미 있는 파일은
+    건너뛰므로 몇 번 돌려도 안전. 반환: 새로 쓴 파일 수."""
+    names = {d['id']: d['name'] for d in storage.load_devices()}
+    written = 0
+    for r in storage.list_config_backup_contents():
+        name = names.get(r['device_id'])
+        if not name:
+            continue  # 삭제된 장비 -- 이름을 알 수 없어 건너뜀
+        if os.path.exists(backup_file_path(name, r['captured_at'])):
+            continue
+        try:
+            write_backup_file(name, r['captured_at'], r['content'])
+            written += 1
+        except OSError as e:
+            log.warning('config backup file export failed for %s: %s', r['device_id'], e)
+    return written
 
 
 def _content_hash(text):
@@ -80,10 +151,16 @@ def backup_one_device(device_row):
     new_hash = _content_hash(content)
     prev = storage.get_latest_config_backup_content(device_id)
     changed = prev is None or prev.get('content_hash') != new_hash
-    storage.save_config_backup(
+    captured_at = storage.save_config_backup(
         device_id, success=True, changed=changed, content=content if changed else None,
         content_hash=new_hash, error=None)
     if changed:
+        try:
+            write_backup_file(device_row['name'], captured_at, content)
+        except OSError as e:
+            # DB에는 이미 저장됐으니 백업은 성공 -- 파일은 다음 서버 시작 때
+            # export_missing_backup_files()가 다시 채운다.
+            log.warning('config backup file write failed for %s: %s', device_id, e)
         is_first = prev is None
         if is_first:
             message = f"{device_row['name']} 설정이 최초로 백업되었습니다"

@@ -32,6 +32,7 @@ Safety contract (same spirit as functional_tests.py):
 """
 import asyncio
 import concurrent.futures
+import datetime as datetime_mod
 import os
 import shutil
 import socket
@@ -711,6 +712,34 @@ def test_config_backup_diff():
               storage.get_previous_config_backup_content(dev, rows[-1]['captured_at']) is None)
     finally:
         storage.delete_config_backups_for_device(dev)
+
+
+def test_config_backup_files():
+    from collector import config_backup as cb
+    check('G1 Windows-forbidden characters replaced in folder/file name',
+          cb.safe_file_part('SW:1/2*?"<>|') == 'SW_1_2______', cb.safe_file_part('SW:1/2*?"<>|'))
+    check('G2 reserved device names (CON/NUL) and trailing dots/spaces made safe',
+          cb.safe_file_part('CON') == '_CON' and cb.safe_file_part('nul.txt') == '_nul.txt' and cb.safe_file_part('core. ') == 'core'
+          and cb.safe_file_part('..') == 'device' and cb.safe_file_part('') == 'device')
+    check('G3 Korean device names kept as-is', cb.safe_file_part('3층 HPE 5500') == '3층 HPE 5500')
+    tmp = tempfile.mkdtemp(prefix='unittest_cfgfiles_')
+    orig_dir = cb.CONFIG_FILES_DIR
+    cb.CONFIG_FILES_DIR = tmp
+    try:
+        ts = int(datetime_mod.datetime(2026, 11, 15, 21, 10, 19).timestamp() * 1000)
+        p = cb.write_backup_file('Arbua', ts, 'hostname Arbua\r\nend\r\n')
+        check('G4 file path is <dir>/<name>/<name>_YYYYMMDD-HHMMSS.cfg',
+              p == os.path.join(tmp, 'Arbua', 'Arbua_20261115-211019.cfg'), p)
+        with open(p, 'rb') as f:
+            raw = f.read()
+        check('G5 device line endings preserved byte-for-byte (no CRLF doubling)', raw == 'hostname Arbua\r\nend\r\n'.encode(), raw)
+        cb.write_backup_file('Arbua', ts, 'DIFFERENT')
+        with open(p, 'rb') as f:
+            check('G6 existing file for the same backup is not overwritten', f.read() == raw)
+        check('G7 no leftover .tmp file', not any(n.endswith('.tmp') for n in os.listdir(os.path.dirname(p))))
+    finally:
+        cb.CONFIG_FILES_DIR = orig_dir
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_error_recent_increase():
@@ -2367,7 +2396,7 @@ def main():
         test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env, test_cisco_fru_env,
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
-        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase, test_config_backup_diff,
+        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase, test_config_backup_diff, test_config_backup_files,
         test_related_network_failure_correlation,
         test_ack_then_recovery, test_ack_then_escalate_reopens, test_agent_mode_escalation,
         test_maintenance_suppresses_and_renotifies, test_escalation_tier_order_stable_across_enable_disable,
