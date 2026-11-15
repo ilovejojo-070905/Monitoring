@@ -7145,8 +7145,10 @@ function drawPingDevice(e, catLabel){
       if(f.status==='up') return 'background:var(--good);border-color:var(--good);box-shadow:0 0 8px rgba(0,176,135,.6)';
       return 'background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.12)';
     };
-    // 칸 안에 넣을 짧은 사용량 표기(In+Out 합계): 1.2G / 35M / 4.5M / 80K
-    const usageShort = v => v>=1000 ? (v/1000).toFixed(v>=10000?0:1)+'G' : v>=10 ? Math.round(v)+'M' : v>=0.1 ? v.toFixed(1)+'M' : v>0 ? Math.max(1,Math.round(v*1000))+'K' : '0';
+    // 칸 안 사용량(In+Out 합계) -- 사용자 요청("사용량 수치를 Mbps로, 글자도
+    // 크게")으로 G/M/K 단위 혼용 대신 전부 Mbps 숫자로 통일(숫자 아래 "Mbps").
+    // 칸 폭(약 40px)에 4자 안팎으로 들어가도록 크기별 자릿수만 조절.
+    const usageMbps = v => v>=100 ? String(Math.round(v)) : v>=1 ? v.toFixed(1) : v>=0.01 ? v.toFixed(2) : v>0 ? '<.01' : '0';
     const cell = (f, bottomRow) => {
       const selected = portMapSel && portMapSel.deviceId===e.id && portMapSel.idx===f.idx;
       const statusText = f.adminStatus==='down' ? '비활성화' : (f.status==='up' ? 'Up' : 'Down');
@@ -7159,9 +7161,9 @@ function drawPingDevice(e, catLabel){
       const boltColor = !f.poe ? '' : f.poe.status==='delivering' ? 'var(--poe)' : f.poe.status==='fault' ? 'var(--crit)' : '';
       // 48포트급(dense)은 칸이 14~20px라 숫자가 안 들어가서 생략 -- 툴팁/아래 패널로 확인.
       const showUsage = !dense && f.status==='up' && f.adminStatus!=='down';
-      const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="position:relative;width:100%;height:26px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer;overflow:hidden">
+      const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="position:relative;width:100%;height:${dense?26:36}px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer;overflow:hidden">
         ${boltColor ? `<svg width="7" height="9" viewBox="0 0 8 10" style="position:absolute;top:2px;left:2px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor}" stroke="rgba(0,0,0,.55)" stroke-width=".7"/></svg>` : ''}
-        ${showUsage ? `<span style="font:700 9px/1 var(--font-mono);color:rgba(0,0,0,.72);white-space:nowrap;letter-spacing:-.02em">${usageShort(usage)}</span>` : ''}
+        ${showUsage ? `<span style="display:flex;flex-direction:column;align-items:center;gap:1px;color:rgba(0,0,0,.78);white-space:nowrap"><b style="font:800 12px/1 var(--font-mono);letter-spacing:-.03em">${usageMbps(usage)}</b><span style="font:700 8px/1 var(--font-mono);opacity:.75">Mbps</span></span>` : ''}
       </div>`;
       // 실제 스위치 전면처럼 윗줄 번호는 포트 위에, 아랫줄 번호는 포트 아래에.
       const label = `<span style="font:600 9px/1 var(--font-mono);color:var(--chrome-text-dim);height:9px">${escapeHtml(portLabel(f))}</span>`;
@@ -7265,7 +7267,7 @@ function drawPingDevice(e, catLabel){
         <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--warn);margin-right:5px;vertical-align:-1px"></span>에러 발생</span>
         ${poe ? `<span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--poe)"/></svg>PoE 공급중</span>
         <span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--crit)"/></svg>PoE 오류</span>` : ''}
-        ${!dense ? '<span style="color:var(--text-faint)">칸 안 숫자 = 현재 사용량(In+Out)</span>' : ''}
+        ${!dense ? '<span style="color:var(--text-faint)">칸 안 숫자 = 현재 사용량 Mbps (In+Out 합계)</span>' : ''}
       </div>
       ${portPanel}
     </div>`;
