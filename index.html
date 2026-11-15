@@ -6654,7 +6654,7 @@ function openDrawerFor(id){
   const entity = s||d||n||f;
   if(!entity) return;
   if(id !== openDrawerId && ifaceModalState && ifaceModalState.deviceId !== id) closeIfaceModal();
-  if(id !== ifaceBulkSelectionDeviceId){ ifaceBulkSelection = new Set(); ifaceBulkSelectionDeviceId = id; }
+  if(id !== ifaceBulkSelectionDeviceId){ ifaceBulkSelection = new Set(); ifaceBulkSelectionDeviceId = id; portMapMulti = false; }
   openDrawerId = id;
   const catLabel = s?'서버 (SMS)':d?'데이터베이스 (DBMS)':n?'네트워크 (NMS)':'전산실 설비 (FMS)';
   const cat = s?'server':d?'db':n?'net':'fac';
@@ -6730,6 +6730,7 @@ function closeDrawer(){
   openDrawerId = null;
   ifaceBulkSelection = new Set();
   ifaceBulkSelectionDeviceId = null;
+  portMapMulti = false;
   uiPointerActive = false;
   closeIfaceModal();
   $('#overlay').classList.remove('show'); $('#drawer').classList.remove('show');
@@ -6757,6 +6758,14 @@ let ifaceModalState = null;
 // 선택 상태와 "명령 전송 중" 상태는 렌더 밖(전역)에 둔다.
 let portMapSel = null;
 const PORTMAP_INFLIGHT = new Set();
+// 포트맵 다중 선택 모드 -- 사용자 요청("활성화/비활성화를 한 개씩 하는 게
+// 번거로워, 여러 개 선택해서 할 수 있게"). 켜져 있으면 포트 칸 클릭이 상세
+// 패널 대신 선택/해제가 되고, 선택 집합은 아래 인터페이스 목록 체크박스와
+// 같은 ifaceBulkSelection을 그대로 쓴다(두 곳 선택이 항상 일치).
+let portMapMulti = false;
+// 일괄 shutdown/no-shutdown 전송 중 여부. 드로어가 1초마다 다시 그려져서
+// 버튼 요소에 직접 "전송 중..."을 써두면 다음 렌더에서 사라지므로 전역에 둔다.
+let ifaceBulkInflight = false;
 // 인터페이스 여러 개를 한 번에 shutdown/no-shutdown하기 위한 선택 상태.
 // 드로어가 열려있는 장비 id별로 유지할 필요는 없다 -- 장비를 바꿔 열면
 // (openDrawerFor에서 비교) 그냥 비운다.
@@ -7149,8 +7158,10 @@ function drawPingDevice(e, catLabel){
     // 크게")으로 G/M/K 단위 혼용 대신 전부 Mbps 숫자로 통일(숫자 아래 "Mbps").
     // 칸 폭(약 40px)에 4자 안팎으로 들어가도록 크기별 자릿수만 조절.
     const usageMbps = v => v>=100 ? String(Math.round(v)) : v>=1 ? v.toFixed(1) : v>=0.01 ? v.toFixed(2) : v>0 ? '<.01' : '0';
+    const canBulk = CURRENT_ROLE==='ADMIN' && e.category==='net';
+    const multi = canBulk && portMapMulti;
     const cell = (f, bottomRow) => {
-      const selected = portMapSel && portMapSel.deviceId===e.id && portMapSel.idx===f.idx;
+      const selected = multi ? ifaceBulkSelection.has(f.idx) : (portMapSel && portMapSel.deviceId===e.id && portMapSel.idx===f.idx);
       const statusText = f.adminStatus==='down' ? '비활성화' : (f.status==='up' ? 'Up' : 'Down');
       const speedText = f.speedMbps ? ` · ${fmt0(f.speedMbps)}Mbps` : '';
       const usage = (f.inMbps||0)+(f.outMbps||0);
@@ -7163,6 +7174,7 @@ function drawPingDevice(e, catLabel){
       const showUsage = !dense && f.status==='up' && f.adminStatus!=='down';
       const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="position:relative;width:100%;height:${dense?26:36}px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer;overflow:hidden">
         ${boltColor ? `<svg width="7" height="9" viewBox="0 0 8 10" style="position:absolute;top:2px;left:2px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor}" stroke="rgba(0,0,0,.55)" stroke-width=".7"/></svg>` : ''}
+        ${multi && selected ? `<svg width="11" height="11" viewBox="0 0 12 12" style="position:absolute;top:1px;right:1px"><circle cx="6" cy="6" r="5.5" fill="var(--accent-2)" stroke="rgba(0,0,0,.45)" stroke-width=".8"/><path d="M3.3 6.2 5.2 8l3.5-4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>` : ''}
         ${showUsage ? `<span style="display:flex;flex-direction:column;align-items:center;gap:1px;color:rgba(0,0,0,.78);white-space:nowrap"><b style="font:800 12px/1 var(--font-mono);letter-spacing:-.03em">${usageMbps(usage)}</b><span style="font:700 8px/1 var(--font-mono);opacity:.75">Mbps</span></span>` : ''}
       </div>`;
       // 실제 스위치 전면처럼 윗줄 번호는 포트 위에, 아랫줄 번호는 포트 아래에.
@@ -7224,7 +7236,19 @@ function drawPingDevice(e, catLabel){
     // 활성화·비활성화는 인터페이스 목록의 일괄 제어와 같은 API
     // (/interfaces-bulk/shutdown|no-shutdown)와 같은 확인 방식(장비 이름
     // 직접 입력)을 포트 하나에 대해 그대로 쓴다.
-    const selF = portMapSel && portMapSel.deviceId===e.id ? ifaces.find(x=>x.idx===portMapSel.idx) : null;
+    const selF = !multi && portMapSel && portMapSel.deviceId===e.id ? ifaces.find(x=>x.idx===portMapSel.idx) : null;
+    // 다중 선택 툴바(ADMIN + 네트워크 장비만). 선택 개수는 인터페이스 목록
+    // 체크박스와 같은 집합이라 목록에서 고른 것도 함께 센다.
+    const selN = ifaceBulkSelection.size;
+    const tbBtn = 'font-size:10.5px;padding:3px 8px;white-space:nowrap';
+    const multiToolbar = canBulk ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px;font-size:11px">
+        <button type="button" class="btn" id="portmap-multi-btn" style="${tbBtn};${multi?'border-color:var(--accent-2);color:var(--accent-2);font-weight:700':''}">${multi ? '다중 선택 끝내기' : '여러 포트 선택'}</button>
+        ${multi ? `<span style="color:var(--text-dim)">포트를 눌러 선택/해제 · <b>${selN}개 선택됨</b></span>
+          <button type="button" class="btn" id="portmap-sel-clear-btn" ${selN===0?'disabled':''} style="${tbBtn}">선택 해제</button>
+          <span style="flex:1"></span>
+          <button type="button" class="btn" id="portmap-bulk-down-btn" ${selN===0||ifaceBulkInflight?'disabled':''} style="${tbBtn};${selN?'color:#ef3b5c;border-color:rgba(239,59,92,.55)':''}">${ifaceBulkInflight ? '전송 중...' : '선택 비활성화'}</button>
+          <button type="button" class="btn" id="portmap-bulk-up-btn" ${selN===0||ifaceBulkInflight?'disabled':''} style="${tbBtn}">${ifaceBulkInflight ? '전송 중...' : '선택 활성화'}</button>` : ''}
+      </div>` : '';
     const portPanel = selF ? (()=>{
       const f = selF;
       const macs = macEntriesForIface(e.id, f.idx);
@@ -7265,7 +7289,8 @@ function drawPingDevice(e, catLabel){
       </div>`;
     })() : '';
     return `<div class="card" style="min-width:0">
-      <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 사용량·학습된 MAC·활성화/비활성화가 아래에 열립니다 · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}</span></div>
+      <div class="card-head"><h3>포트맵</h3><span class="sub">${multi ? '다중 선택 중 · 포트를 눌러 여러 개 고른 뒤 위 버튼으로 한 번에 처리' : '포트를 누르면 사용량·학습된 MAC·활성화/비활성화가 아래에 열립니다'} · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}</span></div>
+      ${multiToolbar}
       <div style="background:var(--bg);border-radius:10px;padding:12px 14px;overflow-x:auto">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px 22px;min-width:min-content">${blocks.map(blockHtml).join('')}</div>
       </div>
@@ -7295,8 +7320,8 @@ function drawPingDevice(e, catLabel){
       </label>
       <span style="color:var(--text-faint)">${ifaceBulkSelection.size}개 선택됨</span>
       <span style="flex:1"></span>
-      <button type="button" class="btn" id="iface-bulk-down-btn" ${ifaceBulkSelection.size===0?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">선택 비활성화</button>
-      <button type="button" class="btn" id="iface-bulk-up-btn" ${ifaceBulkSelection.size===0?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">선택 활성화</button>
+      <button type="button" class="btn" id="iface-bulk-down-btn" ${ifaceBulkSelection.size===0||ifaceBulkInflight?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">${ifaceBulkInflight ? '전송 중...' : '선택 비활성화'}</button>
+      <button type="button" class="btn" id="iface-bulk-up-btn" ${ifaceBulkSelection.size===0||ifaceBulkInflight?'disabled':''} style="font-size:10.5px;padding:3px 8px;white-space:nowrap">${ifaceBulkInflight ? '전송 중...' : '선택 활성화'}</button>
     </div>` : '';
   // 사용자 보고("cisco 인터페이스 디스크립션을 길게 변경했는데 인터페이스
   // 목록에 짤려서 보여, 이걸 볼 수 있게 스크롤 만들어줘"): 이름/설명
@@ -7472,12 +7497,33 @@ function drawPingDevice(e, catLabel){
     });
   });
   // 포트맵 칸 클릭 = 아래 상세 패널 열기/닫기(같은 칸을 다시 누르면 닫힘).
+  // 다중 선택 모드에선 선택/해제(인터페이스 목록 체크박스와 같은 집합).
+  const portMultiOn = portMapMulti && CURRENT_ROLE==='ADMIN' && e.category==='net';
   $$('.portmap-cell', $('#drawerBody')).forEach(cell=>{
     cell.addEventListener('click', ()=>{
-      portMapSel = (portMapSel && portMapSel.deviceId===e.id && portMapSel.idx===cell.dataset.idx) ? null : {deviceId:e.id, idx:cell.dataset.idx};
+      const idx = cell.dataset.idx;
+      if(portMultiOn){
+        if(ifaceBulkSelection.has(idx)) ifaceBulkSelection.delete(idx); else ifaceBulkSelection.add(idx);
+      } else {
+        portMapSel = (portMapSel && portMapSel.deviceId===e.id && portMapSel.idx===idx) ? null : {deviceId:e.id, idx};
+      }
       redrawIfaceSection(e, catLabel);
     });
   });
+  const portMultiBtn = document.getElementById('portmap-multi-btn');
+  if(portMultiBtn) portMultiBtn.addEventListener('click', ()=>{
+    portMapMulti = !portMapMulti;
+    portMapSel = null;
+    // "끝내기"는 취소 의미 -- 고른 것을 남겨두면 목록 쪽 일괄 버튼으로 모르고 실행될 수 있음.
+    if(!portMapMulti) ifaceBulkSelection.clear();
+    redrawIfaceSection(e, catLabel);
+  });
+  const portSelClearBtn = document.getElementById('portmap-sel-clear-btn');
+  if(portSelClearBtn) portSelClearBtn.addEventListener('click', ()=>{ ifaceBulkSelection.clear(); redrawIfaceSection(e, catLabel); });
+  const portBulkDownBtn = document.getElementById('portmap-bulk-down-btn');
+  const portBulkUpBtn = document.getElementById('portmap-bulk-up-btn');
+  if(portBulkDownBtn) portBulkDownBtn.addEventListener('click', ()=>runBulkIfaceAction(true));
+  if(portBulkUpBtn) portBulkUpBtn.addEventListener('click', ()=>runBulkIfaceAction(false));
   const portCloseBtn = document.getElementById('portmap-close-btn');
   if(portCloseBtn) portCloseBtn.addEventListener('click', ()=>{ portMapSel = null; redrawIfaceSection(e, catLabel); });
   const portChartBtn = document.getElementById('portmap-chart-btn');
@@ -7543,19 +7589,27 @@ function drawPingDevice(e, catLabel){
   // 위 bulkEligible 주석 참고)과 같은 확인 방식(장비 이름 직접 입력)을
   // 쓰되, 대상이 여러 개라는 걸 메시지에 그대로 나열해서 사용자가 뭘
   // 끄는지 정확히 보고 확인하게 한다.
+  // 포트맵 다중 선택 툴바도 같은 함수를 쓴다(선택 집합이 같음).
   async function runBulkIfaceAction(goingDown){
-    const idxList = Array.from(ifaceBulkSelection);
-    const names = idxList.map(idx => { const f = ifaces.find(x=>x.idx===idx); return f ? f.name : null; }).filter(Boolean);
+    if(ifaceBulkInflight) return;
+    const sel = Array.from(ifaceBulkSelection).map(idx => ifaces.find(x=>x.idx===idx)).filter(Boolean);
+    const names = sel.map(f=>f.name);
     if(!names.length) return;
-    const btn = document.getElementById(goingDown ? 'iface-bulk-down-btn' : 'iface-bulk-up-btn');
+    // 비활성화는 끊기는 영향을 보고 판단하도록 지금 연결된 포트 수와 학습된
+    // MAC 수를 같이 보여준다. 장비 관리 접속이 지나는 업링크가 섞여 있으면
+    // 이 장비 자체에 접속이 끊길 수 있다는 경고도 함께.
+    const upN = sel.filter(f=>f.status==='up' && f.adminStatus!=='down').length;
+    const macN = sel.reduce((s,f)=>s+macEntriesForIface(e.id, f.idx).length, 0);
+    const impact = goingDown && (upN || macN)
+      ? `\n현재 연결된 포트 ${upN}개${macN ? ` · 학습된 MAC ${macN}개` : ''}\n※ 이 장비로 접속하는 업링크 포트가 포함되면 InfraSight에서도 이 장비에 접속할 수 없게 됩니다.`
+      : '';
     const msg = goingDown
-      ? `"${e.name}"의 다음 ${names.length}개 인터페이스를 비활성화(shutdown)할까요?\n${names.join(', ')}\n지금 이 포트들로 흐르는 트래픽이 즉시 끊깁니다.\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`
+      ? `"${e.name}"의 다음 ${names.length}개 인터페이스를 비활성화(shutdown)할까요?\n${names.join(', ')}\n지금 이 포트들로 흐르는 트래픽이 즉시 끊깁니다.${impact}\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`
       : `"${e.name}"의 다음 ${names.length}개 인터페이스를 다시 활성화(no shutdown)할까요?\n${names.join(', ')}\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`;
     const ok = await showTypedConfirm(msg, e.name, {title: goingDown ? '인터페이스 일괄 비활성화' : '인터페이스 일괄 활성화', okText: goingDown ? '비활성화' : '활성화'});
     if(!ok) return;
-    btn.disabled = true;
-    const prevText = btn.textContent;
-    btn.textContent = '전송 중...';
+    ifaceBulkInflight = true;
+    redrawIfaceSection(findEntity(e.id) || e, catLabel);
     try{
       const path = goingDown ? 'shutdown' : 'no-shutdown';
       const r = await apiFetch(`/api/devices/${encodeURIComponent(e.id)}/interfaces-bulk/${path}`, {
@@ -7564,11 +7618,11 @@ function drawPingDevice(e, catLabel){
       const j = await r.json();
       if(!r.ok) throw new Error(j.error||'명령 전송 실패');
       ifaceBulkSelection.clear();
-      redrawIfaceSection(e, catLabel);
     }catch(err){
       await showConfirm(err.message, {title: goingDown ? '인터페이스 일괄 비활성화 실패' : '인터페이스 일괄 활성화 실패', okText:'확인'});
-      btn.disabled = false;
-      btn.textContent = prevText;
+    }finally{
+      ifaceBulkInflight = false;
+      if(openDrawerId===e.id) redrawIfaceSection(findEntity(e.id) || e, catLabel);
     }
   }
   const bulkDownBtn = document.getElementById('iface-bulk-down-btn');
