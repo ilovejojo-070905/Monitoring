@@ -456,6 +456,16 @@
   .kv{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;min-width:0}
   .kv span{font-size:12.5px;color:var(--text-faint)}
   .kv b{font-family:var(--font-mono);font-size:17px;overflow-wrap:break-word;word-break:break-word;max-width:100%}
+  /* 포트맵 선택 포트 상세 패널 -- 사용자 요청("인터페이스 정보 바탕 색상을
+     포트맵 인터페이스 바탕색이랑 같이")으로 포트맵과 같은 짙은 남색(--bg)
+     바탕. 그 안의 kv/버튼/pill만 어두운 바탕용으로 덮어쓴다. */
+  .portmap-panel{background:var(--bg);color:var(--chrome-text)}
+  .portmap-panel .kv{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.1)}
+  .portmap-panel .kv span{color:var(--chrome-text-faint)}
+  .portmap-panel .kv b{color:var(--chrome-text)}
+  .portmap-panel .btn{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.18);color:var(--chrome-text)}
+  .portmap-panel .btn:hover:not(:disabled){background:rgba(255,255,255,.16)}
+  .portmap-panel .pill.neutral{background:rgba(255,255,255,.1);color:var(--chrome-text-dim)}
 
   /* ---------- incidents ---------- */
   .sev-strip{width:3px;border-radius:3px;display:inline-block;height:16px;vertical-align:middle;margin-right:8px;box-shadow:0 0 6px currentColor}
@@ -7213,15 +7223,15 @@ function drawPingDevice(e, catLabel){
       const isAdminDown = f.adminStatus==='down';
       const pill = isAdminDown ? '<span class="pill neutral"><span class="dot"></span>비활성화</span>'
         : f.status==='up' ? '<span class="pill good"><span class="dot"></span>Up</span>' : '<span class="pill neutral"><span class="dot"></span>Down</span>';
-      const util = p => p!=null ? ` <span style="color:var(--text-faint);font-weight:500">(${fmt1(p)}%)</span>` : '';
-      return `<div style="margin-top:12px;border:1px solid var(--border-strong);border-radius:10px;padding:12px 14px;background:var(--surface-2)">
+      const util = p => p!=null ? ` <span style="color:var(--chrome-text-faint);font-weight:500">(${fmt1(p)}%)</span>` : '';
+      return `<div class="portmap-panel" style="margin-top:12px;border-radius:10px;padding:12px 14px">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <b class="mono" style="font-size:13px">${escapeHtml(f.name)}</b>
-          ${f.description ? `<span style="font-size:11.5px;color:var(--text-dim)">${escapeHtml(f.description)}</span>` : ''}
+          ${f.description ? `<span style="font-size:11.5px;color:var(--chrome-text-dim)">${escapeHtml(f.description)}</span>` : ''}
           ${pill}
-          ${f.poe ? `<span style="font-size:11px;color:var(--text-dim)">${escapeHtml(poeLabel(f.poe))}</span>` : ''}
+          ${f.poe ? `<span style="font-size:11px;color:var(--chrome-text-dim)">${escapeHtml(poeLabel(f.poe))}</span>` : ''}
           <span style="flex:1"></span>
-          ${canControl ? `<button type="button" class="btn" id="portmap-toggle-btn" ${inflight?'disabled':''} style="font-size:11px;padding:4px 10px;white-space:nowrap;${isAdminDown?'':'color:var(--crit);border-color:var(--crit-soft)'}">${inflight ? '전송 중...' : (isAdminDown ? '활성화 (no shutdown)' : '비활성화 (shutdown)')}</button>` : ''}
+          ${canControl ? `<button type="button" class="btn" id="portmap-toggle-btn" ${inflight?'disabled':''} style="font-size:11px;padding:4px 10px;white-space:nowrap;${isAdminDown?'':'color:#ff6b84;border-color:rgba(239,59,92,.55)'}">${inflight ? '전송 중...' : (isAdminDown ? '활성화 (no shutdown)' : '비활성화 (shutdown)')}</button>` : ''}
           <button type="button" class="btn" id="portmap-chart-btn" style="font-size:11px;padding:4px 10px;white-space:nowrap">트래픽 차트</button>
           <button type="button" class="btn" id="portmap-close-btn" title="닫기" style="font-size:11px;padding:4px 8px">✕</button>
         </div>
@@ -7233,14 +7243,14 @@ function drawPingDevice(e, catLabel){
           <div class="kv"><span>에러 / 드랍</span><b style="color:${hasErr(f)?'var(--warn)':'inherit'}">${fmt0((f.inErrors||0)+(f.outErrors||0))} / ${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</b></div>
         </div>
         <div style="margin-top:10px;font-size:11.5px">
-          <div style="color:var(--text-dim);font-weight:600;margin-bottom:4px">학습된 MAC 주소 ${Array.isArray(macState) ? `· ${macs.length}개` : ''}</div>
-          ${!Array.isArray(macState) ? `<span style="color:var(--text-faint)">${macState==='loading' ? 'MAC 테이블 불러오는 중...' : '이 장비에서 MAC 테이블을 가져오지 못했습니다'}</span>`
-            : !macs.length ? '<span style="color:var(--text-faint)">이 포트에서 학습된 MAC 주소가 없습니다</span>'
+          <div style="color:var(--chrome-text-dim);font-weight:600;margin-bottom:4px">학습된 MAC 주소 ${Array.isArray(macState) ? `· ${macs.length}개` : ''}</div>
+          ${!Array.isArray(macState) ? `<span style="color:var(--chrome-text-faint)">${macState==='loading' ? 'MAC 테이블 불러오는 중...' : '이 장비에서 MAC 테이블을 가져오지 못했습니다'}</span>`
+            : !macs.length ? '<span style="color:var(--chrome-text-faint)">이 포트에서 학습된 MAC 주소가 없습니다</span>'
             : `<div data-scroll-key="portmap-mac-${escapeHtml(e.id)}-${escapeHtml(f.idx)}" style="max-height:132px;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:2px 14px">
-                ${macs.map(m=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 2px;border-bottom:1px solid var(--border)"><span class="mono">${escapeHtml(m.mac)}</span><span style="color:var(--text-faint)">${m.vlan_id!=null ? `VLAN ${escapeHtml(m.vlan_id)}` : ''}</span></div>`).join('')}
+                ${macs.map(m=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 2px;border-bottom:1px solid rgba(255,255,255,.08)"><span class="mono">${escapeHtml(m.mac)}</span><span style="color:var(--chrome-text-faint)">${m.vlan_id!=null ? `VLAN ${escapeHtml(m.vlan_id)}` : ''}</span></div>`).join('')}
               </div>`}
         </div>
-        ${!canControl && e.category==='net' ? '<div style="margin-top:8px;font-size:10.5px;color:var(--text-faint)">포트 활성화/비활성화는 관리자(ADMIN) 계정에서만 할 수 있습니다.</div>' : ''}
+        ${!canControl && e.category==='net' ? '<div style="margin-top:8px;font-size:10.5px;color:var(--chrome-text-faint)">포트 활성화/비활성화는 관리자(ADMIN) 계정에서만 할 수 있습니다.</div>' : ''}
       </div>`;
     })() : '';
     return `<div class="card" style="min-width:0">
