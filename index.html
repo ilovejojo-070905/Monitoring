@@ -453,17 +453,23 @@
   .iface-modal-body{padding:18px 20px 26px;display:flex;flex-direction:column;gap:16px}
   /* ---------- config 백업 비교(diff) 팝업 -- 드로어 위에 뜬다 ---------- */
   #cfgDiffOverlay{z-index:55}
-  #cfgDiffModal{width:min(1100px,95vw);max-height:88vh;z-index:56}
+  #cfgDiffModal{width:min(1280px,96vw);max-height:90vh;z-index:56}
   .cfgdiff-body{padding:14px 20px 20px;display:flex;flex-direction:column;gap:10px;min-height:0}
   .cfgdiff-code{background:var(--bg);color:var(--chrome-text);border-radius:10px;font:12px/1.55 var(--font-mono);overflow:auto;max-height:62vh}
-  .cfgdiff-line{display:grid;grid-template-columns:44px 44px 18px 1fr;white-space:pre}
-  .cfgdiff-line>span{padding:0 6px}
-  .cfgdiff-line .ln{color:var(--chrome-text-faint);text-align:right;user-select:none}
-  .cfgdiff-line .mk{user-select:none;text-align:center}
-  .cfgdiff-line.add{background:rgba(0,176,135,.20)}
-  .cfgdiff-line.add .mk{color:#3ee0b0}
-  .cfgdiff-line.del{background:rgba(239,59,92,.20)}
-  .cfgdiff-line.del .mk{color:#ff6b84}
+  /* 좌우 비교(사용자 요청: "좌측에는 변경 전, 우측에는 변경 후") -- 한 행 =
+     왼쪽(줄번호, 변경 전 내용) + 오른쪽(줄번호, 변경 후 내용). 긴 줄은
+     접어서(pre-wrap) 좌우 행 높이가 항상 같이 맞도록. */
+  .cfgdiff-row{display:grid;grid-template-columns:42px minmax(0,1fr) 42px minmax(0,1fr)}
+  .cfgdiff-row>span{padding:0 8px;white-space:pre-wrap;word-break:break-all}
+  .cfgdiff-row .ln{color:var(--chrome-text-faint);text-align:right;user-select:none;padding:0 6px}
+  .cfgdiff-row .ln.r{border-left:1px solid rgba(255,255,255,.14)}
+  .cfgdiff-row .del{background:rgba(239,59,92,.22)}
+  .cfgdiff-row .ln.del{color:#ff6b84;background:rgba(239,59,92,.32)}
+  .cfgdiff-row .add{background:rgba(0,176,135,.22)}
+  .cfgdiff-row .ln.add{color:#3ee0b0;background:rgba(0,176,135,.32)}
+  .cfgdiff-row .gap{background:repeating-linear-gradient(135deg,rgba(255,255,255,.03) 0 6px,transparent 6px 12px)}
+  .cfgdiff-head{position:sticky;top:0;z-index:1;background:#16264a;font:700 11.5px/1 var(--font-sans,inherit);border-bottom:1px solid rgba(255,255,255,.14)}
+  .cfgdiff-head>span{padding:8px;white-space:nowrap}
   .cfgdiff-hunk{padding:3px 10px;color:var(--chrome-text-faint);background:rgba(255,255,255,.05);border-top:1px solid rgba(255,255,255,.08);border-bottom:1px solid rgba(255,255,255,.08)}
   .drawer-body{padding:18px 20px 40px;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
   .kv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -2517,7 +2523,7 @@ function renderCfgDiff(){
   if(!st) return;
   const ent = findEntity(st.deviceId);
   $('#cfgDiffTitle').textContent = `${ent ? ent.name+' ' : ''}설정 비교`;
-  $('#cfgDiffSub').textContent = '빨간 줄 = 이전 버전에만 있음(삭제) · 초록 줄 = 새 버전에만 있음(추가)';
+  $('#cfgDiffSub').textContent = '왼쪽 = 변경 전 · 오른쪽 = 변경 후 · 빨강 = 지워지거나 바뀐 줄, 초록 = 추가되거나 바뀐 줄';
   const versions = cfgDiffVersions(st.deviceId);
   const opt = (b, sel) => `<option value="${b.id}" ${b.id===sel?'selected':''}>${escapeHtml(fmtWhen(b.captured_at))}</option>`;
   const d = st.data;
@@ -2527,19 +2533,40 @@ function renderCfgDiff(){
     : (d.added || d.removed)
       ? `<b style="color:var(--good)">+${fmt0(d.added)}줄 추가</b> <span style="color:var(--text-faint)">·</span> <b style="color:var(--crit)">-${fmt0(d.removed)}줄 삭제</b>`
       : '<b style="color:var(--text-dim)">두 버전의 설정이 같습니다</b>';
-  const lineHtml = l => `<div class="cfgdiff-line ${l.t==='+'?'add':l.t==='-'?'del':''}"><span class="ln">${l.o??''}</span><span class="ln">${l.n??''}</span><span class="mk">${l.t===' '?'':l.t}</span><span>${escapeHtml(l.s) || ' '}</span></div>`;
+  // 서버의 한 줄짜리(unified) 결과를 좌우 행으로 짝짓기: 같은 줄은 양쪽에,
+  // 연달아 지워진 줄(-)과 바로 뒤 추가된 줄(+)은 같은 행에 나란히(=수정된
+  // 줄), 짝이 없는 쪽은 빗금 빈칸.
+  const pairRows = h => {
+    const rows = [];
+    for(let i=0; i<h.length;){
+      if(h[i].t===' '){ rows.push({l:h[i], r:h[i]}); i++; continue; }
+      const dels = [], adds = [];
+      while(i<h.length && h[i].t==='-') dels.push(h[i++]);
+      while(i<h.length && h[i].t==='+') adds.push(h[i++]);
+      for(let k=0; k<Math.max(dels.length, adds.length); k++) rows.push({l:dels[k]||null, r:adds[k]||null});
+    }
+    return rows;
+  };
+  const side = (l, cls, rightSide) => l
+    ? `<span class="ln ${rightSide?'r ':''}${cls}">${rightSide ? l.n : l.o}</span><span class="${cls}">${escapeHtml(l.s) || ' '}</span>`
+    : `<span class="ln ${rightSide?'r ':''}gap"></span><span class="gap"></span>`;
+  const rowHtml = row => `<div class="cfgdiff-row">${side(row.l, row.l && row.l.t==='-' ? 'del' : '', false)}${side(row.r, row.r && row.r.t==='+' ? 'add' : '', true)}</div>`;
   const hunkHead = h => {
     const o = h.find(l=>l.o!=null), n = h.find(l=>l.n!=null);
-    return `<div class="cfgdiff-hunk">이전 ${o ? o.o : '-'}번째 줄 / 새 ${n ? n.n : '-'}번째 줄 부근</div>`;
+    return `<div class="cfgdiff-hunk">변경 전 ${o ? o.o : '-'}번째 줄 / 변경 후 ${n ? n.n : '-'}번째 줄 부근</div>`;
   };
+  const whenOf = id => { const b = versions.find(x=>x.id===id); return b ? fmtWhen(b.captured_at) : ''; };
   const code = d && d.hunks && d.hunks.length
-    ? `<div class="cfgdiff-code" data-scroll-key="cfgdiff-code">${d.hunks.map(h => (st.full ? '' : hunkHead(h)) + h.map(lineHtml).join('')).join('')}</div>` : '';
+    ? `<div class="cfgdiff-code" data-scroll-key="cfgdiff-code">
+        <div class="cfgdiff-row cfgdiff-head"><span></span><span style="color:#ff8fa3">변경 전 · ${escapeHtml(whenOf(d.from.id))}</span><span class="ln r"></span><span style="color:#5ee8c0">변경 후 · ${escapeHtml(whenOf(d.to.id))}</span></div>
+        ${d.hunks.map(h => (st.full ? '' : hunkHead(h)) + pairRows(h).map(rowHtml).join('')).join('')}
+      </div>` : '';
   $('#cfgDiffBody').innerHTML = `
     <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;font-size:12px">
-      <div class="field" style="margin:0"><label>이전 버전 (기준)</label>
+      <div class="field" style="margin:0"><label>변경 전 (왼쪽)</label>
         <select id="cfgdiff-from" ${st.loading?'disabled':''}>${versions.filter(b=>b.id!==st.toId).map(b=>opt(b, st.fromId)).join('')}</select></div>
       <span style="padding-bottom:8px;color:var(--text-faint)">→</span>
-      <div class="field" style="margin:0"><label>새 버전 (비교 대상)</label>
+      <div class="field" style="margin:0"><label>변경 후 (오른쪽)</label>
         <select id="cfgdiff-to" ${st.loading?'disabled':''}>${versions.map(b=>opt(b, st.toId)).join('')}</select></div>
       <label style="display:flex;align-items:center;gap:5px;padding-bottom:8px;cursor:pointer;color:var(--text-dim)">
         <input type="checkbox" id="cfgdiff-full" ${st.full?'checked':''} ${st.loading?'disabled':''}>변경 없는 줄도 모두 보기</label>
