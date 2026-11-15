@@ -606,6 +606,7 @@ def test_sample_snmp_flags_low_confidence_traffic():
         # 기본값(10Gbps 가정)보다 훨씬 낮게 잡아서, 3틱의 카운터 급감이
         # "랩어라운드로도 말이 안 되는" 수준이 되게 함(아래 J13).
         'ifHighSpeed': {'1': '1000'},
+        'ifType': {'1': '6'},
         'pethDetect': {'1.1': '3'}, 'pethClass': {'1.1': '4'},
         'pethMainPower': {'1': '370'}, 'pethMainConsumption': {'1': '15'},
     }
@@ -653,6 +654,8 @@ def test_sample_snmp_flags_low_confidence_traffic():
               entity['interfaces'][0].get('poe') == {'status': 'delivering', 'class': 3}
               and entity.get('poe') == {'powerW': 370, 'consumptionW': 15, 'portsDelivering': 1, 'portsMapped': 1},
               (entity['interfaces'][0].get('poe'), entity.get('poe')))
+        check('F1 ethernet ifType interface flagged physical in sample_snmp output',
+              entity['interfaces'][0].get('physical') is True, entity['interfaces'][0].get('physical'))
     finally:
         sc._snmp_poll = orig_poll
         conn = storage.get_db()
@@ -685,6 +688,11 @@ def test_poe_port_mapping():
 
     m = sc.map_poe_ports(hp_ifaces, {}, {})
     check('P4 non-PoE device -> empty mapping', m == {}, m)
+
+    # 포트맵 물리 포트 필터: 이더넷 계열만 True, VLAN/Loopback/LAG/Null0은 False, 모르면 None
+    got = {t: sc.is_physical_iface(t) for t in ('6', '117', '136', '53', '24', '161', '1', None, 'x')}
+    check('F2 ifType physical filter (ethernet yes; vlan/loopback/lag/null no; unknown None)',
+          got == {'6': True, '117': True, '136': False, '53': False, '24': False, '161': False, '1': False, None: None, 'x': None}, got)
 
 
 def test_server_category_module_filter():

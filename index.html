@@ -7097,6 +7097,13 @@ function drawPingDevice(e, catLabel){
   // 기존 트래픽 차트/제어 기능을 그대로 재사용한다.
   const portMapHtml = ifaces.length ? (()=>{
     const hasErr = f => (f.inErrors||0)+(f.outErrors||0)+(f.inDiscards||0)+(f.outDiscards||0) > 0;
+    // 물리 포트만(VLAN/Loopback/Port-channel 등 제외) -- 백엔드가 표준 ifType으로
+    // 판정한 physical 값 사용. 아직 ifType을 못 받았거나(등록 직후) 장비가
+    // 이더넷 계열로 응답하지 않아 하나도 안 남으면 전체를 그대로 보여준다.
+    const physOnly = ifaces.filter(f=>f.physical===true);
+    const physIfaces = physOnly.length ? physOnly : ifaces;
+    const portParts = f => { const m = String(f.name||'').match(/^(.*?)(\d+)$/); return m ? {prefix:m[1], num:parseInt(m[2],10)} : {prefix:String(f.name||''), num:null}; };
+    const portLabel = f => { const p = portParts(f); return p.num!=null ? (/[A-Za-z]$/.test(p.prefix) && p.prefix.length<=2 ? p.prefix+p.num : String(p.num)) : String(f.name||''); };
     // PoE(표준 POWER-ETHERNET-MIB, collector/snmp_collector.py map_poe_ports) --
     // 포트별 실제 소비전력(W)은 표준 MIB에 없어서 상태와 Class만 보여준다.
     const poeLabel = p => {
@@ -7108,7 +7115,7 @@ function drawPingDevice(e, catLabel){
       if(f.adminStatus==='down') return 'var(--text-faint)';
       return f.status==='up' ? 'var(--good)' : 'var(--text-faint)';
     };
-    const cell = f => {
+    const cell = (f, bottomRow) => {
       const selected = ifaceModalState && ifaceModalState.deviceId===e.id && ifaceModalState.idx===f.idx;
       const statusText = f.adminStatus==='down' ? '비활성화' : (f.status==='up' ? 'Up' : 'Down');
       const speedText = f.speedMbps ? ` · ${fmt0(f.speedMbps)}Mbps` : '';
@@ -7116,17 +7123,33 @@ function drawPingDevice(e, catLabel){
       const poeText = f.poe ? ` · ${poeLabel(f.poe)}` : '';
       const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${poeText}${hasErr(f) ? ' · 에러/드랍 발생' : ''}`;
       const boltColor = !f.poe ? '' : f.poe.status==='delivering' ? 'var(--poe)' : f.poe.status==='fault' ? 'var(--crit)' : '';
-      return `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="width:22px;height:28px;border-radius:4px;background:rgba(255,255,255,.08);border:1.5px solid ${selected?'var(--accent-2)':'transparent'};display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:3px 0 4px;box-sizing:border-box;cursor:pointer">
+      const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="width:24px;height:28px;border-radius:4px;background:rgba(255,255,255,.08);border:1.5px solid ${selected?'var(--accent-2)':'transparent'};display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:3px 0 4px;box-sizing:border-box;cursor:pointer">
         <svg width="8" height="10" viewBox="0 0 8 10" style="visibility:${boltColor?'visible':'hidden'}"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor||'none'}"/></svg>
         <span style="width:7px;height:7px;border-radius:50%;background:${cellDot(f)}"></span>
       </div>`;
+      // 실제 스위치 전면처럼 윗줄 번호는 포트 위에, 아랫줄 번호는 포트 아래에.
+      const label = `<span style="font:600 9px/1 var(--font-mono);color:var(--chrome-text-faint);height:9px">${escapeHtml(portLabel(f))}</span>`;
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px">${bottomRow ? box+label : label+box}</div>`;
     };
+    // 실제 스위치 전면처럼 모듈(이름에서 마지막 포트번호를 뗀 앞부분, 예:
+    // "GigabitEthernet1/0/", HP는 "") 단위로 묶고, 각 묶음을 두 줄로 --
+    // 홀수 포트는 윗줄, 짝수 포트는 아랫줄(HP 2530/Cisco 2960 등 일반적인
+    // 전면 배치). 포트 하나뿐인 묶음(관리 포트 등)은 한 줄.
+    const groups = [];
+    const groupByPrefix = {};
+    physIfaces.forEach(f=>{
+      const p = portParts(f);
+      if(!groupByPrefix[p.prefix]){ groupByPrefix[p.prefix] = []; groups.push(groupByPrefix[p.prefix]); }
+      groupByPrefix[p.prefix].push(f);
+    });
+    groups.forEach(g=>g.sort((a,b)=>(portParts(a).num??0)-(portParts(b).num??0)));
+    const groupHtml = g => `<div style="display:grid;grid-auto-flow:column;grid-template-rows:repeat(${g.length>1?2:1},auto);gap:4px 5px">${g.map((f,i)=>cell(f, g.length>1 && i%2===1)).join('')}</div>`;
     const poe = e.poe;
     const poeSub = poe ? ` · PoE ${poe.portsDelivering}포트 공급중${poe.consumptionW!=null ? ` (${fmt0(poe.consumptionW)}${poe.powerW ? '/'+fmt0(poe.powerW) : ''}W)` : ''}` : '';
     return `<div class="card" style="min-width:0">
-      <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 상세 정보가 열립니다 · ${ifaces.filter(f=>f.status==='up').length}/${ifaces.length} Up${poeSub}</span></div>
+      <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 상세 정보가 열립니다 · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}</span></div>
       <div style="background:var(--bg);border-radius:10px;padding:12px 14px;overflow-x:auto">
-        <div style="display:flex;flex-wrap:wrap;gap:5px;min-width:min-content">${ifaces.map(cell).join('')}</div>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px;min-width:min-content">${groups.map(groupHtml).join('')}</div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:11px;color:var(--text-dim)">
         <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);margin-right:5px"></span>연결됨</span>

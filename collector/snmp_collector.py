@@ -108,6 +108,12 @@ OID_IF_OUT_DISCARDS = '1.3.6.1.2.1.2.2.1.19'
 # link speed likely to show up here) -- used as the utilization-% denominator.
 # ifSpeed (ifTable, bps) saturates at 4.3Gbps on gigabit+ links so it's not used.
 OID_IF_HIGH_SPEED = '1.3.6.1.2.1.31.1.1.1.15'
+# 포트맵에서 물리 포트만 보여주기 위한 ifType(2026-11-15). 표준 IANAifType
+# 값이라 벤더와 무관: VLAN(l3ipvlan 136/propVirtual 53), Loopback(24),
+# Port-channel(ieee8023adLag 161), Tunnel(131), Null0(other 1)은 전부
+# 이더넷 계열 밖이라 자연히 빠진다.
+OID_IF_TYPE = '1.3.6.1.2.1.2.2.1.3'
+PHYSICAL_IF_TYPES = {6, 7, 26, 62, 69, 117}  # ethernetCsmacd, iso88023, ethernet3Mbit, fastEther, fastEtherFX, gigabitEthernet
 # 신규 기능(2026-11-14, "포트맵에 PoE도 추가"): 벤더 전용 MIB가 아니라
 # 표준 POWER-ETHERNET-MIB(RFC 3621)만 쓴다. pethPsePortTable의 인덱스는
 # ifIndex가 아니라 (pethPsePortGroupIndex, pethPsePortIndex) 쌍이라서
@@ -446,6 +452,7 @@ async def _snmp_poll(ip, auth_data, port, category, timeout, vendor_profile, lld
             result['inDiscards'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_IN_DISCARDS, timeout=timeout)
             result['outDiscards'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_OUT_DISCARDS, timeout=timeout)
             result['ifHighSpeed'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_HIGH_SPEED, timeout=timeout)
+            result['ifType'] = await _snmp_walk(engine, ip, auth_data, port, OID_IF_TYPE, timeout=timeout)
             # PoE: 비PoE 장비는 첫 walk가 빈 결과로 바로 끝나므로 추가 비용은
             # 확장 주기마다 한 번의 라운드트립뿐. 응답이 있을 때만 나머지를 건다.
             result['pethDetect'] = await _snmp_walk(engine, ip, auth_data, port, OID_PETH_PORT_DETECTION, timeout=timeout)
@@ -578,6 +585,14 @@ def _safe_int(v):
         return int(v)
     except Exception:
         return None
+
+
+def is_physical_iface(if_type):
+    """True/False, ifType을 아직 모르면(확장 주기 전, 또는 장비가 응답 안 함) None."""
+    t = _safe_int(if_type)
+    if t is None:
+        return None
+    return t in PHYSICAL_IF_TYPES
 
 
 _PETH_DETECT_MAP = {1: 'disabled', 2: 'searching', 3: 'delivering', 4: 'fault', 5: 'test', 6: 'fault'}
@@ -1008,7 +1023,7 @@ def sample_snmp(entity, device_row):
     for _k in ('adminStatus', 'inErrors', 'outErrors', 'inDiscards', 'outDiscards', 'ifHighSpeed',
                'hrMemSize', 'hrMemUsed', 'hrMemUnits', 'entDescr', 'entModel', 'entSerial',
                'envTempDescr', 'envTempValue', 'envTempState', 'envFanState', 'envSupplyState',
-               'entModuleIdx', 'pethDetect', 'pethClass', 'pethMainPower', 'pethMainConsumption'):
+               'entModuleIdx', 'ifType', 'pethDetect', 'pethClass', 'pethMainPower', 'pethMainConsumption'):
         if _k in result:
             ext_cache[_k] = result[_k]
 
@@ -1126,6 +1141,7 @@ def sample_snmp(entity, device_row):
             in_disc = ext_cache.get('inDiscards') or {}
             out_disc = ext_cache.get('outDiscards') or {}
             high_speed = ext_cache.get('ifHighSpeed') or {}
+            if_type = ext_cache.get('ifType') or {}
             iface_hist = entity.setdefault('_ifaceHist', {})
             ifaces = []
             for idx, name in ifdescr.items():
@@ -1160,6 +1176,7 @@ def sample_snmp(entity, device_row):
                     'outErrors': _safe_int(out_err.get(idx)),
                     'inDiscards': _safe_int(in_disc.get(idx)),
                     'outDiscards': _safe_int(out_disc.get(idx)),
+                    'physical': is_physical_iface(if_type.get(idx)),
                     'hist': list(iface_hist[idx]),
                 })
             ifaces.sort(key=lambda x: int(x['idx']) if x['idx'].isdigit() else 0)
@@ -1179,7 +1196,13 @@ def sample_snmp(entity, device_row):
                 }
             else:
                 entity.pop('poe', None)
-            entity['interfaces'] = ifaces[:64]
+            # 64개 상한에서 잘릴 때 물리 포트가 먼저 남도록(VLAN이 많은 장비에서
+            # ifIndex가 작은 VLAN들이 실제 포트를 밀어내지 않게) 물리 포트
+            # 우선으로 고른 뒤 다시 ifIndex 순으로 정렬.
+            if len(ifaces) > 64:
+                ifaces = ([f for f in ifaces if f['physical']] + [f for f in ifaces if not f['physical']])[:64]
+                ifaces.sort(key=lambda x: int(x['idx']) if x['idx'].isdigit() else 0)
+            entity['interfaces'] = ifaces
         except Exception:
             pass
         try:
