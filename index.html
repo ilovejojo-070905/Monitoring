@@ -7110,10 +7110,14 @@ function drawPingDevice(e, catLabel){
       const s = {delivering:'PoE 전력 공급중', searching:'PoE 대기(기기 없음)', disabled:'PoE 꺼짐', fault:'PoE 오류', test:'PoE 테스트중'}[p.status] || 'PoE 상태 알 수 없음';
       return p.status==='delivering' && p.class!=null ? `${s} (Class ${p.class})` : s;
     };
-    const cellDot = f => {
-      if(hasErr(f)) return 'var(--warn)';
-      if(f.adminStatus==='down') return 'var(--text-faint)';
-      return f.status==='up' ? 'var(--good)' : 'var(--text-faint)';
+    // 사용자 요청("사용하는 포트는 녹색점으로 말고 더 잘보이게")으로 작은 점
+    // 대신 포트 칸 전체를 상태색으로 채운다. 비활성화(admin down)는 점선
+    // 테두리만, 링크 없음은 어두운 빈 칸.
+    const cellLook = f => {
+      if(hasErr(f)) return 'background:var(--warn);border-color:var(--warn);box-shadow:0 0 8px rgba(230,150,15,.55)';
+      if(f.adminStatus==='down') return 'background:transparent;border:1.5px dashed rgba(255,255,255,.3)';
+      if(f.status==='up') return 'background:var(--good);border-color:var(--good);box-shadow:0 0 8px rgba(0,176,135,.6)';
+      return 'background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.12)';
     };
     const cell = (f, bottomRow) => {
       const selected = ifaceModalState && ifaceModalState.deviceId===e.id && ifaceModalState.idx===f.idx;
@@ -7123,13 +7127,12 @@ function drawPingDevice(e, catLabel){
       const poeText = f.poe ? ` · ${poeLabel(f.poe)}` : '';
       const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${poeText}${hasErr(f) ? ' · 에러/드랍 발생' : ''}`;
       const boltColor = !f.poe ? '' : f.poe.status==='delivering' ? 'var(--poe)' : f.poe.status==='fault' ? 'var(--crit)' : '';
-      const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="width:24px;height:28px;border-radius:4px;background:rgba(255,255,255,.08);border:1.5px solid ${selected?'var(--accent-2)':'transparent'};display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:3px 0 4px;box-sizing:border-box;cursor:pointer">
-        <svg width="8" height="10" viewBox="0 0 8 10" style="visibility:${boltColor?'visible':'hidden'}"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor||'none'}"/></svg>
-        <span style="width:7px;height:7px;border-radius:50%;background:${cellDot(f)}"></span>
+      const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="width:100%;height:26px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer">
+        ${boltColor ? `<svg width="9" height="12" viewBox="0 0 8 10"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor}" stroke="rgba(0,0,0,.55)" stroke-width=".7"/></svg>` : ''}
       </div>`;
       // 실제 스위치 전면처럼 윗줄 번호는 포트 위에, 아랫줄 번호는 포트 아래에.
-      const label = `<span style="font:600 9px/1 var(--font-mono);color:var(--chrome-text-faint);height:9px">${escapeHtml(portLabel(f))}</span>`;
-      return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px">${bottomRow ? box+label : label+box}</div>`;
+      const label = `<span style="font:600 9px/1 var(--font-mono);color:var(--chrome-text-dim);height:9px">${escapeHtml(portLabel(f))}</span>`;
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0">${bottomRow ? box+label : label+box}</div>`;
     };
     // 실제 스위치 전면처럼 모듈(이름에서 마지막 포트번호를 뗀 앞부분, 예:
     // "GigabitEthernet1/0/", HP는 "") 단위로 묶고, 각 묶음을 두 줄로 --
@@ -7143,18 +7146,46 @@ function drawPingDevice(e, catLabel){
       groupByPrefix[p.prefix].push(f);
     });
     groups.forEach(g=>g.sort((a,b)=>(portParts(a).num??0)-(portParts(b).num??0)));
-    const groupHtml = g => `<div style="display:grid;grid-auto-flow:column;grid-template-rows:repeat(${g.length>1?2:1},auto);gap:4px 5px">${g.map((f,i)=>cell(f, g.length>1 && i%2===1)).join('')}</div>`;
+    // SFP 분리: HP 2530-24G(1~24 RJ45 + 25~28 SFP), Cisco 2960X(Gi1/0/25~28)처럼
+    // SFP가 같은 이름 체계로 이어 붙는 장비는 SNMP 표준 항목만으로는 구분할
+    // 방법이 없어서, 흔한 전면 구성(8/16/24/48포트 + SFP 2~4개)과 개수가
+    // 정확히 일치할 때만 뒤쪽 포트를 SFP 묶음으로 뗀다. Cisco Te1/1/x,
+    // Juniper xe-/et-처럼 이름부터 다른 고속 업링크는 이미 따로 묶여 있으니
+    // 이름으로 SFP 표시만 붙인다.
+    const SFP_LAYOUTS = [[48,4],[48,2],[24,4],[24,2],[16,2],[8,2]];
+    const sfpPrefixRe = /^(TenGig|TwentyFiveGig|FortyGig|HundredGig|Te|Twe|Fo|Hu|xe-|et-)/i;
+    const blocks = [];
+    groups.forEach(g=>{
+      const prefix = portParts(g[0]).prefix;
+      if(sfpPrefixRe.test(prefix)){ blocks.push({ports:g, caption:'SFP'}); return; }
+      const hit = portParts(g[0]).num!=null && SFP_LAYOUTS.find(([base,k])=>g.length===base+k);
+      if(hit){ blocks.push({ports:g.slice(0,hit[0]), caption:''}); blocks.push({ports:g.slice(hit[0]), caption:'SFP'}); }
+      else blocks.push({ports:g, caption:''});
+    });
+    // 사용자 요청("포트가 한쪽으로만 몰렸어, 전체적으로 분산")으로 묶음들을
+    // 카드 폭 전체에 양끝 정렬하고, 각 포트 칸은 남는 폭만큼(최대 52px)
+    // 넓어지게 함 -- 실제 스위치처럼 메인 포트는 왼쪽, SFP는 오른쪽 끝.
+    const dense = physIfaces.length > 30;  // 48포트급은 간격을 좁혀 가로 스크롤 없이 한 화면에
+    const blockHtml = b => {
+      const rows = b.ports.length>1 ? 2 : 1;
+      const cols = Math.ceil(b.ports.length/rows);
+      return `<div style="flex:0 1 auto;display:flex;flex-direction:column;gap:4px;min-width:0">
+        <span style="font:700 9px/1 var(--font-mono);letter-spacing:.08em;color:var(--chrome-text-faint);height:9px">${b.caption}</span>
+        <div style="display:grid;grid-auto-flow:column;grid-template-rows:repeat(${rows},auto);grid-template-columns:repeat(${cols},minmax(14px,52px));gap:4px ${dense?3:5}px">${b.ports.map((f,i)=>cell(f, rows>1 && i%2===1)).join('')}</div>
+      </div>`;
+    };
     const poe = e.poe;
     const poeSub = poe ? ` · PoE ${poe.portsDelivering}포트 공급중${poe.consumptionW!=null ? ` (${fmt0(poe.consumptionW)}${poe.powerW ? '/'+fmt0(poe.powerW) : ''}W)` : ''}` : '';
     return `<div class="card" style="min-width:0">
       <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 상세 정보가 열립니다 · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}</span></div>
       <div style="background:var(--bg);border-radius:10px;padding:12px 14px;overflow-x:auto">
-        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px;min-width:min-content">${groups.map(groupHtml).join('')}</div>
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px 22px;min-width:min-content">${blocks.map(blockHtml).join('')}</div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:11px;color:var(--text-dim)">
-        <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--good);margin-right:5px"></span>연결됨</span>
-        <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--text-faint);margin-right:5px"></span>미사용/비활성화</span>
-        <span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);margin-right:5px"></span>에러 발생</span>
+        <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--good);margin-right:5px;vertical-align:-1px"></span>연결됨(사용중)</span>
+        <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--text-faint);opacity:.45;margin-right:5px;vertical-align:-1px"></span>미사용</span>
+        <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;border:1.5px dashed var(--text-faint);box-sizing:border-box;margin-right:5px;vertical-align:-1px"></span>비활성화</span>
+        <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--warn);margin-right:5px;vertical-align:-1px"></span>에러 발생</span>
         ${poe ? `<span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--poe)"/></svg>PoE 공급중</span>
         <span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--crit)"/></svg>PoE 오류</span>` : ''}
       </div>
