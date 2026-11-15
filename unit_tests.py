@@ -673,6 +673,46 @@ def test_sample_snmp_flags_low_confidence_traffic():
         conn.close()
 
 
+def test_config_backup_diff():
+    from collector import config_backup as cb
+    old = "hostname SW1\n!\ninterface Gi1/0/1\n description PC\n!\ninterface Gi1/0/2\n shutdown\n!\nend"
+    new = "hostname SW1\n!\ninterface Gi1/0/1\n description SERVER\n!\ninterface Gi1/0/2\n!\nvlan 20\nend"
+    d = cb.diff_configs(old, new)
+    check('D1 diff counts added/removed lines', (d['added'], d['removed']) == (2, 2), (d['added'], d['removed']))
+    flat = [l for h in d['hunks'] for l in h]
+    check('D2 removed line carries old line number, added line carries new line number',
+          {'t': '-', 'o': 4, 'n': None, 's': ' description PC'} in flat
+          and {'t': '+', 'o': None, 'n': 4, 's': ' description SERVER'} in flat, flat)
+    check('D3 identical configs -> no hunks, zero counts',
+          cb.diff_configs(old, old) == {'added': 0, 'removed': 0, 'hunks': []})
+    full = cb.diff_configs(old, new, context=None)
+    check('D4 full view includes every line of both versions once',
+          len(full['hunks']) == 1 and sum(1 for l in full['hunks'][0] if l['t'] != '+') == len(old.splitlines())
+          and sum(1 for l in full['hunks'][0] if l['t'] != '-') == len(new.splitlines()))
+    # "!"가 수백 번 반복되는 긴 설정에서도(autojunk 함정) 실제 바뀐 한 줄만 잡혀야 함.
+    big_old = '\n'.join(f'interface Gi1/0/{i}\n description port{i}\n!' for i in range(1, 120))
+    big_new = big_old.replace(' description port77\n', ' description UPLINK\n')
+    bd = cb.diff_configs(big_old, big_new)
+    check('D5 long config with repeated "!" lines: only the one changed line reported',
+          (bd['added'], bd['removed']) == (1, 1), (bd['added'], bd['removed']))
+
+    dev = 'unittest_cfgbk_dev'
+    storage.delete_config_backups_for_device(dev)
+    try:
+        storage.save_config_backup(dev, True, True, old, 'h1', None)
+        time.sleep(0.01)
+        storage.save_config_backup(dev, True, True, new, 'h2', None)
+        rows = storage.load_config_backups(dev)
+        newest = rows[0]
+        prev = storage.get_previous_config_backup_content(dev, newest['captured_at'])
+        check('D6 previous-version lookup returns the older content row',
+              prev is not None and prev['content'] == old, prev and prev['id'])
+        check('D7 first backup has no previous version',
+              storage.get_previous_config_backup_content(dev, rows[-1]['captured_at']) is None)
+    finally:
+        storage.delete_config_backups_for_device(dev)
+
+
 def test_error_recent_increase():
     from collector import snmp_collector as sc
     s = []
@@ -2327,7 +2367,7 @@ def main():
         test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env, test_cisco_fru_env,
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
-        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase,
+        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase, test_config_backup_diff,
         test_related_network_failure_correlation,
         test_ack_then_recovery, test_ack_then_escalate_reopens, test_agent_mode_escalation,
         test_maintenance_suppresses_and_renotifies, test_escalation_tier_order_stable_across_enable_disable,

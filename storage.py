@@ -1606,6 +1606,17 @@ def get_latest_config_backup_content(device_id):
     return dict(row) if row else None
 
 
+def get_previous_config_backup_content(device_id, before_captured_at):
+    """before_captured_at보다 앞선, 내용이 있는(changed=1) 가장 최근 백업 --
+    "이 버전을 바로 이전 버전과 비교" 기본값용. 없으면(최초 백업) None."""
+    conn = get_db()
+    row = conn.execute(
+        'SELECT * FROM device_config_backups WHERE device_id=? AND content IS NOT NULL AND captured_at<? '
+        'ORDER BY captured_at DESC LIMIT 1', (device_id, before_captured_at)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def delete_config_backups_for_device(device_id):
     conn = get_db()
     conn.execute('DELETE FROM device_config_backups WHERE device_id=?', (device_id,))

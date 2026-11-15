@@ -451,6 +451,20 @@
   }
   .iface-modal.show{opacity:1;pointer-events:auto;transform:translate(-50%,-50%) scale(1)}
   .iface-modal-body{padding:18px 20px 26px;display:flex;flex-direction:column;gap:16px}
+  /* ---------- config 백업 비교(diff) 팝업 -- 드로어 위에 뜬다 ---------- */
+  #cfgDiffOverlay{z-index:55}
+  #cfgDiffModal{width:min(1100px,95vw);max-height:88vh;z-index:56}
+  .cfgdiff-body{padding:14px 20px 20px;display:flex;flex-direction:column;gap:10px;min-height:0}
+  .cfgdiff-code{background:var(--bg);color:var(--chrome-text);border-radius:10px;font:12px/1.55 var(--font-mono);overflow:auto;max-height:62vh}
+  .cfgdiff-line{display:grid;grid-template-columns:44px 44px 18px 1fr;white-space:pre}
+  .cfgdiff-line>span{padding:0 6px}
+  .cfgdiff-line .ln{color:var(--chrome-text-faint);text-align:right;user-select:none}
+  .cfgdiff-line .mk{user-select:none;text-align:center}
+  .cfgdiff-line.add{background:rgba(0,176,135,.20)}
+  .cfgdiff-line.add .mk{color:#3ee0b0}
+  .cfgdiff-line.del{background:rgba(239,59,92,.20)}
+  .cfgdiff-line.del .mk{color:#ff6b84}
+  .cfgdiff-hunk{padding:3px 10px;color:var(--chrome-text-faint);background:rgba(255,255,255,.05);border-top:1px solid rgba(255,255,255,.08);border-bottom:1px solid rgba(255,255,255,.08)}
   .drawer-body{padding:18px 20px 40px;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
   .kv-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .kv{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;display:flex;flex-direction:column;align-items:center;text-align:center;gap:3px;min-width:0}
@@ -798,6 +812,15 @@
     <button class="drawer-close" id="ifaceModalClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
   </div>
   <div class="iface-modal-body" id="ifaceModalBody"></div>
+</div>
+
+<div class="overlay" id="cfgDiffOverlay"></div>
+<div class="iface-modal" id="cfgDiffModal">
+  <div class="drawer-head">
+    <div><h2 id="cfgDiffTitle">설정 비교</h2><div class="role" id="cfgDiffSub">-</div></div>
+    <button class="drawer-close" id="cfgDiffClose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="cfgdiff-body" id="cfgDiffBody"></div>
 </div>
 
 <div class="topo-tip" id="topoTip"></div>
@@ -2420,6 +2443,8 @@ function configBackupCardHtml(e){
   if(e.category !== 'net') return '';
   const cached = CONFIG_BACKUP_CACHE[e.id];
   const backups = Array.isArray(cached) ? cached : [];
+  // 내용이 저장된 버전(최초 백업 + 실제 변경분)만 비교 대상 -- "변경없음"/실패 행엔 내용이 없다.
+  const contentBackups = backups.filter(b=>b.success && b.changed);
   const settings = CONFIG_BACKUP_SETTINGS;
   const subText = settings
     ? (settings.enabled ? `전역 설정: ${settings.intervalHours}시간마다 자동 백업, 변경 시 알림` : '전역 설정에서 꺼져 있습니다 -- 등록 화면에서 켤 수 있습니다')
@@ -2438,12 +2463,113 @@ function configBackupCardHtml(e){
             <span style="display:flex;align-items:center;gap:8px;min-width:0">
               ${configBackupStatusPill(b)}
               ${(b.success && b.changed) ? `<a href="/api/devices/${encodeURIComponent(e.id)}/config-backups/${b.id}/raw" target="_blank" rel="noopener" style="color:var(--info);text-decoration:none">보기</a>` : ''}
+              ${(b.success && b.changed && contentBackups.some(x=>x.captured_at<b.captured_at)) ? `<a href="#" data-cfgdiff-dev="${escapeHtml(e.id)}" data-cfgdiff-to="${b.id}" style="color:var(--accent-2);text-decoration:none;font-weight:600">이전과 비교</a>` : ''}
               ${(!b.success && b.error) ? `<span style="color:var(--crit);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(b.error)}">${escapeHtml(b.error)}</span>` : ''}
             </span>
           </div>`).join('') : '<span style="font-size:12px;color:var(--text-faint)">아직 백업 기록이 없습니다 ("지금 백업"을 눌러보세요)</span>'}
       </div>
     </div>`;
 }
+// config 백업 버전 비교 팝업 -- 사용자 요청("백업 파일도 서로 비교해서 변경된
+// 부분도 확인하고 싶어"). 비교 계산은 서버(collector/config_backup.diff_configs,
+// /config-backups/diff)가 하고 여기선 그리기만. 드로어가 1초마다 다시 그려져도
+// 영향 없도록 드로어 밖의 별도 모달에 그리고, 상태는 CFG_DIFF 전역에 둔다.
+let CFG_DIFF = null;
+function cfgDiffVersions(deviceId){
+  const c = CONFIG_BACKUP_CACHE[deviceId];
+  return Array.isArray(c) ? c.filter(b=>b.success && b.changed) : [];
+}
+function openCfgDiff(deviceId, toId){
+  CFG_DIFF = {deviceId, toId: Number(toId), fromId: null, full: false, data: null, error: null, loading: false, seq: 0};
+  $('#cfgDiffOverlay').classList.add('show');
+  $('#cfgDiffModal').classList.add('show');
+  loadCfgDiff();
+}
+function closeCfgDiff(){
+  CFG_DIFF = null;
+  $('#cfgDiffOverlay').classList.remove('show');
+  $('#cfgDiffModal').classList.remove('show');
+}
+async function loadCfgDiff(){
+  const st = CFG_DIFF;
+  if(!st) return;
+  const seq = ++st.seq;  // 버전을 빠르게 바꿔 고를 때 늦게 도착한 옛 응답이 덮어쓰지 않게
+  st.loading = true; st.error = null;
+  renderCfgDiff();
+  try{
+    const q = new URLSearchParams({to: String(st.toId)});
+    if(st.fromId) q.set('from', String(st.fromId));
+    if(st.full) q.set('full', '1');
+    const r = await apiFetch(`/api/devices/${encodeURIComponent(st.deviceId)}/config-backups/diff?${q}`);
+    const j = await r.json();
+    if(CFG_DIFF !== st || st.seq !== seq) return;
+    if(!r.ok) throw new Error(j.error || '비교에 실패했습니다');
+    st.data = j;
+    st.fromId = j.from.id;
+  }catch(err){
+    if(CFG_DIFF === st && st.seq === seq){ st.error = err.message; st.data = null; }
+  }finally{
+    if(CFG_DIFF === st && st.seq === seq){ st.loading = false; renderCfgDiff(); }
+  }
+}
+function renderCfgDiff(){
+  const st = CFG_DIFF;
+  if(!st) return;
+  const ent = findEntity(st.deviceId);
+  $('#cfgDiffTitle').textContent = `${ent ? ent.name+' ' : ''}설정 비교`;
+  $('#cfgDiffSub').textContent = '빨간 줄 = 이전 버전에만 있음(삭제) · 초록 줄 = 새 버전에만 있음(추가)';
+  const versions = cfgDiffVersions(st.deviceId);
+  const opt = (b, sel) => `<option value="${b.id}" ${b.id===sel?'selected':''}>${escapeHtml(fmtWhen(b.captured_at))}</option>`;
+  const d = st.data;
+  const summary = st.loading ? '<span style="color:var(--text-faint)">비교 중...</span>'
+    : st.error ? `<span style="color:var(--crit)">${escapeHtml(st.error)}</span>`
+    : !d ? ''
+    : (d.added || d.removed)
+      ? `<b style="color:var(--good)">+${fmt0(d.added)}줄 추가</b> <span style="color:var(--text-faint)">·</span> <b style="color:var(--crit)">-${fmt0(d.removed)}줄 삭제</b>`
+      : '<b style="color:var(--text-dim)">두 버전의 설정이 같습니다</b>';
+  const lineHtml = l => `<div class="cfgdiff-line ${l.t==='+'?'add':l.t==='-'?'del':''}"><span class="ln">${l.o??''}</span><span class="ln">${l.n??''}</span><span class="mk">${l.t===' '?'':l.t}</span><span>${escapeHtml(l.s) || ' '}</span></div>`;
+  const hunkHead = h => {
+    const o = h.find(l=>l.o!=null), n = h.find(l=>l.n!=null);
+    return `<div class="cfgdiff-hunk">이전 ${o ? o.o : '-'}번째 줄 / 새 ${n ? n.n : '-'}번째 줄 부근</div>`;
+  };
+  const code = d && d.hunks && d.hunks.length
+    ? `<div class="cfgdiff-code" data-scroll-key="cfgdiff-code">${d.hunks.map(h => (st.full ? '' : hunkHead(h)) + h.map(lineHtml).join('')).join('')}</div>` : '';
+  $('#cfgDiffBody').innerHTML = `
+    <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;font-size:12px">
+      <div class="field" style="margin:0"><label>이전 버전 (기준)</label>
+        <select id="cfgdiff-from" ${st.loading?'disabled':''}>${versions.filter(b=>b.id!==st.toId).map(b=>opt(b, st.fromId)).join('')}</select></div>
+      <span style="padding-bottom:8px;color:var(--text-faint)">→</span>
+      <div class="field" style="margin:0"><label>새 버전 (비교 대상)</label>
+        <select id="cfgdiff-to" ${st.loading?'disabled':''}>${versions.map(b=>opt(b, st.toId)).join('')}</select></div>
+      <label style="display:flex;align-items:center;gap:5px;padding-bottom:8px;cursor:pointer;color:var(--text-dim)">
+        <input type="checkbox" id="cfgdiff-full" ${st.full?'checked':''} ${st.loading?'disabled':''}>변경 없는 줄도 모두 보기</label>
+      <span style="flex:1"></span>
+      <span style="padding-bottom:8px">${summary}</span>
+    </div>
+    ${code}`;
+  const fromSel = $('#cfgdiff-from'), toSel = $('#cfgdiff-to'), fullCb = $('#cfgdiff-full');
+  if(fromSel) fromSel.addEventListener('change', ()=>{ st.fromId = Number(fromSel.value); loadCfgDiff(); });
+  if(toSel) toSel.addEventListener('change', ()=>{
+    st.toId = Number(toSel.value);
+    if(st.fromId === st.toId) st.fromId = null;  // 같은 버전끼리는 비교 의미 없음 -> 그 직전 버전으로
+    loadCfgDiff();
+  });
+  if(fullCb) fullCb.addEventListener('change', ()=>{ st.full = fullCb.checked; loadCfgDiff(); });
+}
+document.addEventListener('click', ev=>{
+  const a = ev.target.closest && ev.target.closest('[data-cfgdiff-to]');
+  if(!a) return;
+  ev.preventDefault();
+  openCfgDiff(a.dataset.cfgdiffDev, a.dataset.cfgdiffTo);
+});
+(function bindCfgDiffClose(){
+  const bind = ()=>{
+    const ov = document.getElementById('cfgDiffOverlay'), cl = document.getElementById('cfgDiffClose');
+    if(ov) ov.addEventListener('click', closeCfgDiff);
+    if(cl) cl.addEventListener('click', closeCfgDiff);
+  };
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind); else bind();
+})();
 function osLabel(os){ return os==='linux'?'Linux':os==='windows'?'Windows':(os||'-'); }
 
 function refreshTopology(){

@@ -11,6 +11,7 @@ get_config_backup_settings)으로 활성화하면, 지정한 주기(시간 단�
 """
 import time
 import hashlib
+import difflib
 
 import storage
 from collector import device_control, snmp_profiles, state
@@ -18,6 +19,42 @@ from collector import device_control, snmp_profiles, state
 
 def _content_hash(text):
     return hashlib.sha256(text.encode('utf-8', errors='replace')).hexdigest()
+
+
+def diff_configs(old_text, new_text, context=3):
+    """두 설정 텍스트의 줄 단위 비교 -- 사용자 요청("백업 파일도 서로 비교해서
+    변경된 부분도 확인하고 싶어").
+
+    반환: {'added': 추가된 줄 수, 'removed': 삭제된 줄 수,
+           'hunks': [[{'t': ' '|'+'|'-', 'o': 이전 줄번호|None, 'n': 새 줄번호|None, 's': 내용}, ...], ...]}
+    context=None이면 변경 없는 줄까지 전체를 한 덩어리로(전체 보기).
+
+    autojunk=False: 설정 파일은 "!", "#", "exit" 같은 같은 줄이 수백 번
+    반복되는데, difflib 기본값(autojunk)은 200줄 넘는 입력에서 자주 나오는
+    줄을 "무시할 줄"로 취급해 엉뚱한 위치끼리 짝지은 비교 결과를 낸다."""
+    old = (old_text or '').splitlines()
+    new = (new_text or '').splitlines()
+    sm = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    groups = [sm.get_opcodes()] if context is None else list(sm.get_grouped_opcodes(context))
+    added = removed = 0
+    hunks = []
+    for group in groups:
+        lines = []
+        for tag, i1, i2, j1, j2 in group:
+            if tag == 'equal':
+                for k in range(i2 - i1):
+                    lines.append({'t': ' ', 'o': i1 + k + 1, 'n': j1 + k + 1, 's': old[i1 + k]})
+                continue
+            for i in range(i1, i2):
+                lines.append({'t': '-', 'o': i + 1, 'n': None, 's': old[i]})
+                removed += 1
+            for j in range(j1, j2):
+                lines.append({'t': '+', 'o': None, 'n': j + 1, 's': new[j]})
+                added += 1
+        hunks.append(lines)
+    if not added and not removed and context is not None:
+        hunks = []
+    return {'added': added, 'removed': removed, 'hunks': hunks}
 
 
 def _resolve_vendor_profile(device_row):
@@ -48,8 +85,17 @@ def backup_one_device(device_row):
         content_hash=new_hash, error=None)
     if changed:
         is_first = prev is None
-        message = (f"{device_row['name']} 설정이 최초로 백업되었습니다" if is_first
-                   else f"{device_row['name']} 설정이 변경되었습니다 (이전 백업과 다름)")
+        if is_first:
+            message = f"{device_row['name']} 설정이 최초로 백업되었습니다"
+        else:
+            # 알림만 보고도 변경 규모를 알 수 있게 추가/삭제 줄 수를 붙인다
+            # (실제 내용은 장비 상세의 config 백업 "이전과 비교"로 확인).
+            try:
+                d = diff_configs(prev.get('content'), content)
+                size = f", +{d['added']}줄 / -{d['removed']}줄"
+            except Exception:
+                size = ''
+            message = f"{device_row['name']} 설정이 변경되었습니다 (이전 백업과 다름{size})"
         storage.add_incident(
             'info' if is_first else 'warn', device_row['name'], storage.category_label(device_row['category']),
             message, device_id=device_id, event_type='CONFIG_CHANGED', maintenance=storage.in_maintenance(device_row))

@@ -2896,6 +2896,33 @@ def api_get_config_backup(device_id, backup_id):
     return jsonify(row)
 
 
+@app.get('/api/devices/<device_id>/config-backups/diff')
+@require_role('VIEWER')
+def api_diff_config_backups(device_id):
+    """두 백업 버전 비교(?to=<id>[&from=<id>][&full=1]). from을 안 주면 to
+    바로 이전 버전과 비교. 같은 장비의 백업끼리만 비교할 수 있다(다른
+    장비 id를 섞어 남의 설정을 읽어가는 것 방지 -- 단건 조회와 같은 검사)."""
+    to_id = validation.clamp_int(request.args.get('to'), 1, 2**62)
+    if to_id is None:
+        return jsonify({'error': 'to is required'}), 400
+    to_row = storage.get_config_backup(to_id)
+    if not to_row or to_row['device_id'] != device_id or not to_row.get('content'):
+        return jsonify({'error': 'not found'}), 404
+    from_id = validation.clamp_int(request.args.get('from'), 1, 2**62)
+    if from_id is not None:
+        from_row = storage.get_config_backup(from_id)
+        if not from_row or from_row['device_id'] != device_id or not from_row.get('content'):
+            return jsonify({'error': 'not found'}), 404
+    else:
+        from_row = storage.get_previous_config_backup_content(device_id, to_row['captured_at'])
+        if not from_row:
+            return jsonify({'error': '이 백업이 최초 백업이라 비교할 이전 버전이 없습니다'}), 404
+    context = None if request.args.get('full') == '1' else 3
+    result = config_backup.diff_configs(from_row['content'], to_row['content'], context=context)
+    meta = lambda r: {'id': r['id'], 'captured_at': r['captured_at']}
+    return jsonify({'from': meta(from_row), 'to': meta(to_row), **result})
+
+
 @app.get('/api/devices/<device_id>/config-backups/<int:backup_id>/raw')
 @require_role('VIEWER')
 def api_get_config_backup_raw(device_id, backup_id):
