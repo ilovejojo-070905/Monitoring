@@ -1155,16 +1155,26 @@ let SERVER_INFO = { lanIp: location.hostname || 'localhost', port: location.port
 // 드로어가 열려있는 동안 매초 도는 refreshOpenDrawer() 폴링을 그대로 타고
 // 자연스럽게 반영되므로 별도 재렌더 호출 없이 fire-and-forget으로 둔다.
 let MAC_TABLE_CACHE = {};
+// 처음엔 한 번 받으면 페이지를 새로고침할 때까지 다시 안 받았는데, 포트맵
+// 상세 패널에 학습된 MAC을 상시 보여주게 되면서(2026-11-15) 오래된 목록이
+// 그대로 남는 게 문제가 돼 60초마다 다시 받는다. 다시 받는 동안에도 기존
+// 목록은 그대로 보여준다(빈 화면/깜빡임 없음).
+const MAC_TABLE_FETCHED_AT = {};
+const MAC_TABLE_REFRESH_MS = 60000;
 async function loadMacTableFor(deviceId){
-  if(MAC_TABLE_CACHE[deviceId]) return;
-  MAC_TABLE_CACHE[deviceId] = 'loading';
+  const cur = MAC_TABLE_CACHE[deviceId];
+  if(cur === 'loading') return;
+  if(Array.isArray(cur) && Date.now() - (MAC_TABLE_FETCHED_AT[deviceId]||0) < MAC_TABLE_REFRESH_MS) return;
+  if(!Array.isArray(cur)) MAC_TABLE_CACHE[deviceId] = 'loading';
+  MAC_TABLE_FETCHED_AT[deviceId] = Date.now();
   try{
     const r = await apiFetch(`/api/devices/${encodeURIComponent(deviceId)}/mac-table`);
     if(!r.ok) throw new Error('load failed');
     const j = await r.json();
     MAC_TABLE_CACHE[deviceId] = j.entries || [];
+    MAC_TABLE_FETCHED_AT[deviceId] = Date.now();
   }catch(e){
-    delete MAC_TABLE_CACHE[deviceId];
+    if(!Array.isArray(MAC_TABLE_CACHE[deviceId])) delete MAC_TABLE_CACHE[deviceId];
   }
 }
 function macEntriesForIface(deviceId, ifIdx){
@@ -6731,6 +6741,12 @@ function refreshOpenDrawer(){
 
 /* ================= interface traffic popup ================= */
 let ifaceModalState = null;
+// 포트맵에서 선택한 포트({deviceId, idx}) -- 사용자 요청("포트맵에 사용량
+// 수치, 학습된 맥주소, 활성화/비활성화")으로 포트를 누르면 모달 대신 포트맵
+// 바로 아래에 상세 패널이 열린다. 드로어가 1초마다 통째로 다시 그려지므로
+// 선택 상태와 "명령 전송 중" 상태는 렌더 밖(전역)에 둔다.
+let portMapSel = null;
+const PORTMAP_INFLIGHT = new Set();
 // 인터페이스 여러 개를 한 번에 shutdown/no-shutdown하기 위한 선택 상태.
 // 드로어가 열려있는 장비 id별로 유지할 필요는 없다 -- 장비를 바꿔 열면
 // (openDrawerFor에서 비교) 그냥 비운다.
@@ -7119,16 +7135,23 @@ function drawPingDevice(e, catLabel){
       if(f.status==='up') return 'background:var(--good);border-color:var(--good);box-shadow:0 0 8px rgba(0,176,135,.6)';
       return 'background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.12)';
     };
+    // 칸 안에 넣을 짧은 사용량 표기(In+Out 합계): 1.2G / 35M / 4.5M / 80K
+    const usageShort = v => v>=1000 ? (v/1000).toFixed(v>=10000?0:1)+'G' : v>=10 ? Math.round(v)+'M' : v>=0.1 ? v.toFixed(1)+'M' : v>0 ? Math.max(1,Math.round(v*1000))+'K' : '0';
     const cell = (f, bottomRow) => {
-      const selected = ifaceModalState && ifaceModalState.deviceId===e.id && ifaceModalState.idx===f.idx;
+      const selected = portMapSel && portMapSel.deviceId===e.id && portMapSel.idx===f.idx;
       const statusText = f.adminStatus==='down' ? '비활성화' : (f.status==='up' ? 'Up' : 'Down');
       const speedText = f.speedMbps ? ` · ${fmt0(f.speedMbps)}Mbps` : '';
-      const trafficText = f.status==='up' ? ` · ${fmtMbps((f.inMbps||0)+(f.outMbps||0))}Mbps 사용중` : '';
+      const usage = (f.inMbps||0)+(f.outMbps||0);
+      const trafficText = f.status==='up' ? ` · ${fmtMbps(usage)}Mbps 사용중` : '';
       const poeText = f.poe ? ` · ${poeLabel(f.poe)}` : '';
-      const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${poeText}${hasErr(f) ? ' · 에러/드랍 발생' : ''}`;
+      const macN = macEntriesForIface(e.id, f.idx).length;
+      const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${poeText}${macN ? ` · MAC ${macN}개` : ''}${hasErr(f) ? ' · 에러/드랍 발생' : ''}`;
       const boltColor = !f.poe ? '' : f.poe.status==='delivering' ? 'var(--poe)' : f.poe.status==='fault' ? 'var(--crit)' : '';
-      const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="width:100%;height:26px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer">
-        ${boltColor ? `<svg width="9" height="12" viewBox="0 0 8 10"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor}" stroke="rgba(0,0,0,.55)" stroke-width=".7"/></svg>` : ''}
+      // 48포트급(dense)은 칸이 14~20px라 숫자가 안 들어가서 생략 -- 툴팁/아래 패널로 확인.
+      const showUsage = !dense && f.status==='up' && f.adminStatus!=='down';
+      const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="position:relative;width:100%;height:26px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer;overflow:hidden">
+        ${boltColor ? `<svg width="7" height="9" viewBox="0 0 8 10" style="position:absolute;top:2px;left:2px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor}" stroke="rgba(0,0,0,.55)" stroke-width=".7"/></svg>` : ''}
+        ${showUsage ? `<span style="font:700 9px/1 var(--font-mono);color:rgba(0,0,0,.72);white-space:nowrap;letter-spacing:-.02em">${usageShort(usage)}</span>` : ''}
       </div>`;
       // 실제 스위치 전면처럼 윗줄 번호는 포트 위에, 아랫줄 번호는 포트 아래에.
       const label = `<span style="font:600 9px/1 var(--font-mono);color:var(--chrome-text-dim);height:9px">${escapeHtml(portLabel(f))}</span>`;
@@ -7176,8 +7199,52 @@ function drawPingDevice(e, catLabel){
     };
     const poe = e.poe;
     const poeSub = poe ? ` · PoE ${poe.portsDelivering}포트 공급중${poe.consumptionW!=null ? ` (${fmt0(poe.consumptionW)}${poe.powerW ? '/'+fmt0(poe.powerW) : ''}W)` : ''}` : '';
+    // 선택한 포트 상세 패널: 사용량 / 학습된 MAC / 활성화·비활성화(ADMIN).
+    // 활성화·비활성화는 인터페이스 목록의 일괄 제어와 같은 API
+    // (/interfaces-bulk/shutdown|no-shutdown)와 같은 확인 방식(장비 이름
+    // 직접 입력)을 포트 하나에 대해 그대로 쓴다.
+    const selF = portMapSel && portMapSel.deviceId===e.id ? ifaces.find(x=>x.idx===portMapSel.idx) : null;
+    const portPanel = selF ? (()=>{
+      const f = selF;
+      const macs = macEntriesForIface(e.id, f.idx);
+      const macState = MAC_TABLE_CACHE[e.id];
+      const inflight = PORTMAP_INFLIGHT.has(e.id+'|'+f.idx);
+      const canControl = CURRENT_ROLE==='ADMIN' && e.category==='net';
+      const isAdminDown = f.adminStatus==='down';
+      const pill = isAdminDown ? '<span class="pill neutral"><span class="dot"></span>비활성화</span>'
+        : f.status==='up' ? '<span class="pill good"><span class="dot"></span>Up</span>' : '<span class="pill neutral"><span class="dot"></span>Down</span>';
+      const util = p => p!=null ? ` <span style="color:var(--text-faint);font-weight:500">(${fmt1(p)}%)</span>` : '';
+      return `<div style="margin-top:12px;border:1px solid var(--border-strong);border-radius:10px;padding:12px 14px;background:var(--surface-2)">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <b class="mono" style="font-size:13px">${escapeHtml(f.name)}</b>
+          ${f.description ? `<span style="font-size:11.5px;color:var(--text-dim)">${escapeHtml(f.description)}</span>` : ''}
+          ${pill}
+          ${f.poe ? `<span style="font-size:11px;color:var(--text-dim)">${escapeHtml(poeLabel(f.poe))}</span>` : ''}
+          <span style="flex:1"></span>
+          ${canControl ? `<button type="button" class="btn" id="portmap-toggle-btn" ${inflight?'disabled':''} style="font-size:11px;padding:4px 10px;white-space:nowrap;${isAdminDown?'':'color:var(--crit);border-color:var(--crit-soft)'}">${inflight ? '전송 중...' : (isAdminDown ? '활성화 (no shutdown)' : '비활성화 (shutdown)')}</button>` : ''}
+          <button type="button" class="btn" id="portmap-chart-btn" style="font-size:11px;padding:4px 10px;white-space:nowrap">트래픽 차트</button>
+          <button type="button" class="btn" id="portmap-close-btn" title="닫기" style="font-size:11px;padding:4px 8px">✕</button>
+        </div>
+        <div class="kv-grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-top:10px">
+          <div class="kv"><span>사용량 합계</span><b>${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps</b></div>
+          <div class="kv"><span>In</span><b style="color:var(--info)">${fmtMbps(f.inMbps||0)} Mbps${util(f.utilInPct)}</b></div>
+          <div class="kv"><span>Out</span><b style="color:var(--accent-3)">${fmtMbps(f.outMbps||0)} Mbps${util(f.utilOutPct)}</b></div>
+          <div class="kv"><span>링크 속도</span><b>${f.speedMbps ? fmt0(f.speedMbps)+' Mbps' : '-'}</b></div>
+          <div class="kv"><span>에러 / 드랍</span><b style="color:${hasErr(f)?'var(--warn)':'inherit'}">${fmt0((f.inErrors||0)+(f.outErrors||0))} / ${fmt0((f.inDiscards||0)+(f.outDiscards||0))}</b></div>
+        </div>
+        <div style="margin-top:10px;font-size:11.5px">
+          <div style="color:var(--text-dim);font-weight:600;margin-bottom:4px">학습된 MAC 주소 ${Array.isArray(macState) ? `· ${macs.length}개` : ''}</div>
+          ${!Array.isArray(macState) ? `<span style="color:var(--text-faint)">${macState==='loading' ? 'MAC 테이블 불러오는 중...' : '이 장비에서 MAC 테이블을 가져오지 못했습니다'}</span>`
+            : !macs.length ? '<span style="color:var(--text-faint)">이 포트에서 학습된 MAC 주소가 없습니다</span>'
+            : `<div data-scroll-key="portmap-mac-${escapeHtml(e.id)}-${escapeHtml(f.idx)}" style="max-height:132px;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:2px 14px">
+                ${macs.map(m=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 2px;border-bottom:1px solid var(--border)"><span class="mono">${escapeHtml(m.mac)}</span><span style="color:var(--text-faint)">${m.vlan_id!=null ? `VLAN ${escapeHtml(m.vlan_id)}` : ''}</span></div>`).join('')}
+              </div>`}
+        </div>
+        ${!canControl && e.category==='net' ? '<div style="margin-top:8px;font-size:10.5px;color:var(--text-faint)">포트 활성화/비활성화는 관리자(ADMIN) 계정에서만 할 수 있습니다.</div>' : ''}
+      </div>`;
+    })() : '';
     return `<div class="card" style="min-width:0">
-      <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 상세 정보가 열립니다 · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}</span></div>
+      <div class="card-head"><h3>포트맵</h3><span class="sub">포트를 누르면 사용량·학습된 MAC·활성화/비활성화가 아래에 열립니다 · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}</span></div>
       <div style="background:var(--bg);border-radius:10px;padding:12px 14px;overflow-x:auto">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px 22px;min-width:min-content">${blocks.map(blockHtml).join('')}</div>
       </div>
@@ -7188,7 +7255,9 @@ function drawPingDevice(e, catLabel){
         <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--warn);margin-right:5px;vertical-align:-1px"></span>에러 발생</span>
         ${poe ? `<span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--poe)"/></svg>PoE 공급중</span>
         <span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--crit)"/></svg>PoE 오류</span>` : ''}
+        ${!dense ? '<span style="color:var(--text-faint)">칸 안 숫자 = 현재 사용량(In+Out)</span>' : ''}
       </div>
+      ${portPanel}
     </div>`;
   })() : '';
   // 인터페이스를 하나씩 눌러서 비활성화/활성화하기 번거롭다는 사용자
@@ -7381,15 +7450,47 @@ function drawPingDevice(e, catLabel){
       redrawIfaceSection(e, catLabel);
     });
   });
+  // 포트맵 칸 클릭 = 아래 상세 패널 열기/닫기(같은 칸을 다시 누르면 닫힘).
   $$('.portmap-cell', $('#drawerBody')).forEach(cell=>{
     cell.addEventListener('click', ()=>{
-      if(ifaceModalState && ifaceModalState.deviceId===e.id && ifaceModalState.idx===cell.dataset.idx){
-        closeIfaceModal();
-      } else {
-        openIfaceModal(e.id, cell.dataset.idx);
-      }
+      portMapSel = (portMapSel && portMapSel.deviceId===e.id && portMapSel.idx===cell.dataset.idx) ? null : {deviceId:e.id, idx:cell.dataset.idx};
       redrawIfaceSection(e, catLabel);
     });
+  });
+  const portCloseBtn = document.getElementById('portmap-close-btn');
+  if(portCloseBtn) portCloseBtn.addEventListener('click', ()=>{ portMapSel = null; redrawIfaceSection(e, catLabel); });
+  const portChartBtn = document.getElementById('portmap-chart-btn');
+  if(portChartBtn) portChartBtn.addEventListener('click', ()=>{ if(portMapSel) openIfaceModal(e.id, portMapSel.idx); });
+  const portToggleBtn = document.getElementById('portmap-toggle-btn');
+  if(portToggleBtn) portToggleBtn.addEventListener('click', async ()=>{
+    const f = portMapSel && ifaces.find(x=>x.idx===portMapSel.idx);
+    if(!f) return;
+    const key = e.id+'|'+f.idx;
+    if(PORTMAP_INFLIGHT.has(key)) return;
+    const goingDown = f.adminStatus!=='down';
+    const macN = macEntriesForIface(e.id, f.idx).length;
+    const label = `${f.name}${f.description ? ` (${f.description})` : ''}`;
+    const msg = goingDown
+      ? `"${e.name}"의 ${label} 포트를 비활성화(shutdown)할까요?\n지금 이 포트로 흐르는 트래픽이 즉시 끊깁니다.${f.status==='up' ? `\n현재 사용량 ${fmtMbps((f.inMbps||0)+(f.outMbps||0))} Mbps` : ''}${macN ? `, 학습된 MAC ${macN}개` : ''}\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`
+      : `"${e.name}"의 ${label} 포트를 다시 활성화(no shutdown)할까요?\n확인을 위해 장비 이름을 정확히 입력해주세요: ${e.name}`;
+    const ok = await showTypedConfirm(msg, e.name, {title: goingDown ? '포트 비활성화' : '포트 활성화', okText: goingDown ? '비활성화' : '활성화'});
+    if(!ok) return;
+    PORTMAP_INFLIGHT.add(key);
+    redrawIfaceSection(findEntity(e.id) || e, catLabel);
+    try{
+      const r = await apiFetch(`/api/devices/${encodeURIComponent(e.id)}/interfaces-bulk/${goingDown ? 'shutdown' : 'no-shutdown'}`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ifNames: [f.name]}),
+      });
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error||'명령 전송 실패');
+    }catch(err){
+      await showConfirm(err.message, {title: goingDown ? '포트 비활성화 실패' : '포트 활성화 실패', okText:'확인'});
+    }finally{
+      PORTMAP_INFLIGHT.delete(key);
+      // 백엔드가 성공 즉시 adminStatus를 갱신해두므로 다음 폴링 스냅샷부터
+      // 바로 반영된다 -- 여기선 현재 엔티티로 한 번 다시 그리기만.
+      if(openDrawerId===e.id) redrawIfaceSection(findEntity(e.id) || e, catLabel);
+    }
   });
   // 체크박스 자체는 작아서 살짝만 비껴 눌러도 .iface-row의 클릭(상세창
   // 열기)으로 새나가던 문제(사용자 보고: "마우스가 조금만 어긋나도
