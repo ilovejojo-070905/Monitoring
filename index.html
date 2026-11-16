@@ -7365,14 +7365,15 @@ function drawPingDevice(e, catLabel){
       const boltColor = !f.poe ? '' : f.poe.status==='delivering' ? 'var(--poe)' : f.poe.status==='fault' ? 'var(--crit)' : '';
       // 48포트급(dense)은 칸이 좁아 예전엔 숫자를 생략했는데, 사용자 요청("Aruba2
       // 포트에 사용량 수치가 보이질 않아", 2930F-48G-4SFP)으로 dense에서도
-      // 짧은 숫자만 한 줄로 표시("Mbps" 단위 글자는 생략, 범례에 표기).
+      // 짧은 숫자 + 작은 "Mbps" 단위(사용자 "포트맵 포트에 Mbps도 보이질 않아"로
+      // 단위도 칸 안에 표시 -- 7px, 칸 폭 약 28px / 높이 26px에 들어감).
       const showUsage = f.status==='up' && f.adminStatus!=='down';
       const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="position:relative;width:100%;height:${dense?26:36}px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer;overflow:hidden">
         ${boltColor ? `<svg width="7" height="9" viewBox="0 0 8 10" style="position:absolute;top:2px;left:2px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor}" stroke="rgba(0,0,0,.55)" stroke-width=".7"/></svg>` : ''}
         ${errNow(f) ? `<svg width="10" height="9" viewBox="0 0 10 9" style="position:absolute;bottom:1px;right:1px"><path d="M5 .6 9.5 8.4H.5z" fill="var(--warn)" stroke="rgba(0,0,0,.6)" stroke-width=".8" stroke-linejoin="round"/><path d="M5 3.3v2.4" stroke="#1a1a1a" stroke-width="1.2" stroke-linecap="round"/><circle cx="5" cy="7.1" r=".65" fill="#1a1a1a"/></svg>` : ''}
         ${multi && selected ? `<svg width="11" height="11" viewBox="0 0 12 12" style="position:absolute;top:1px;right:1px"><circle cx="6" cy="6" r="5.5" fill="var(--accent-2)" stroke="rgba(0,0,0,.45)" stroke-width=".8"/><path d="M3.3 6.2 5.2 8l3.5-4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>` : ''}
         ${showUsage ? (dense
-          ? `<b style="font:800 10px/1 var(--font-mono);letter-spacing:-.05em;color:rgba(0,0,0,.8);white-space:nowrap">${usageMbpsShort(usage)}</b>`
+          ? `<span style="display:flex;flex-direction:column;align-items:center;gap:1px;color:rgba(0,0,0,.8);white-space:nowrap"><b style="font:800 10px/1 var(--font-mono);letter-spacing:-.05em">${usageMbpsShort(usage)}</b><span style="font:700 7px/1 var(--font-mono);letter-spacing:-.04em;opacity:.75">Mbps</span></span>`
           : `<span style="display:flex;flex-direction:column;align-items:center;gap:1px;color:rgba(0,0,0,.78);white-space:nowrap"><b style="font:800 12px/1 var(--font-mono);letter-spacing:-.03em">${usageMbps(usage)}</b><span style="font:700 8px/1 var(--font-mono);opacity:.75">Mbps</span></span>`) : ''}
       </div>`;
       // 실제 스위치 전면처럼 윗줄 번호는 포트 위에, 아랫줄 번호는 포트 아래에.
@@ -7514,7 +7515,7 @@ function drawPingDevice(e, catLabel){
   const envStateColor = s => s==='normal' ? 'var(--good)' : (s==='warning' ? 'var(--warn)' : (s==='critical'||s==='shutdown' ? 'var(--crit)' : 'var(--text-faint)'));
   const envStateLabel = s => ({normal:'정상', warning:'주의', critical:'위험', shutdown:'차단', notPresent:'미설치', unknown:'알수없음'})[s] || s;
   const envCard = hasEnv ? `
-    <div class="card" style="min-width:0;display:flex;flex-direction:column;height:230px"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP CISCO-ENVMON-MIB 실측</span></div>
+    <div class="card" style="min-width:0;display:flex;flex-direction:column;height:230px"><div class="card-head"><h3>환경 센서</h3><span class="sub">SNMP 장비 센서 실측</span></div>
       <div id="env-sensor-list" data-scroll-key="env-sensor-list" style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0;overflow-y:auto">
         ${(e.envTemps||[]).filter(t=>t.state!=='notPresent').map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${escapeHtml(t.description||'온도 센서')}${t.valueC!=null ? ` · ${fmt0(t.valueC)}°C` : ''}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(t.state)};color:${envStateColor(t.state)}"><span class="dot" style="background:${envStateColor(t.state)}"></span>${envStateLabel(t.state)}</span></div>`).join('')}
         ${(e.envFans||[]).filter(s=>s!=='notPresent').map((s,i)=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px"><span>팬 ${i+1}</span><span class="pill" style="flex:none;background:transparent;border:1px solid ${envStateColor(s)};color:${envStateColor(s)}"><span class="dot" style="background:${envStateColor(s)}"></span>${envStateLabel(s)}</span></div>`).join('')}

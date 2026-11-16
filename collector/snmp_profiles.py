@@ -8,6 +8,7 @@ a second vendor meant editing sample_snmp's control flow directly. This module
 promotes that fallback into a lookup table instead: a new vendor is a new
 dict entry, not a new branch in the poller.
 """
+import re
 
 OID_HR_PROCESSOR_LOAD = '1.3.6.1.2.1.25.3.3.1.2'
 OID_UPS_BATTERY_CAPACITY = '1.3.6.1.2.1.33.1.2.4.0'
@@ -657,7 +658,17 @@ def resolve_profile_name(vendor_profile, sys_descr):
             return 'axgate'
         if 'comware' in descr:
             return 'hp-comware'
-        if 'aruba' in descr and 'procurve' not in descr:
+        # 버그 수정(2026-11-16, 사용자 "Aruba2 cpu/mem이 보이질 않아, 환경센서도
+        # 이상"): 2930F(JL260A, 펌웨어 WC.16.10)는 클래식 ArubaOS-Switch인데
+        # sysDescr에 "(Formerly ProCurve)"가 없어서 aruba-cx로 잘못 잡혔다 --
+        # CPU/메모리 OID가 없어 빈 값, 환경 센서는 ENTITY-SENSOR의 의미 없는
+        # 행(이름 없음, 0°C)이 표시됨. 클래식 펌웨어는 sysDescr에 항상
+        # "revision WC.16.10.0002"처럼 "revision <영문 1~2자>.<숫자>" 형식이
+        # 있고(2530 YA.16, 2930F WC.16 실측), ArubaOS-CX는 "revision" 없이
+        # 끝에 "PL.10.10.1090"만 붙는다(6100 실측) -- 그래서 'procurve'가 없어도
+        # 이 형식이 있으면 클래식(hp)으로 본다.
+        classic_fw = 'procurve' in descr or re.search(r'\brevision [a-z]{1,2}\.\d', descr)
+        if 'aruba' in descr and not classic_fw:
             return 'aruba-cx'
         if 'procurve' in descr or 'aruba' in descr or 'hewlett-packard' in descr or 'hpe' in descr:
             return 'hp'

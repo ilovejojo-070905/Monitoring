@@ -458,6 +458,10 @@ def test_vendor_profile_resolution():
     check('D1 ArubaOS-CX sysDescr resolves to aruba-cx', cx['name'] == 'aruba-cx', cx['name'])
     classic = sp.resolve_profile(None, 'HP J9776A 2530-24G Switch, revision YA.16.06.0006 (Formerly ProCurve)')
     check('D2 classic ProCurve sysDescr resolves to hp (not aruba-cx)', classic['name'] == 'hp', classic['name'])
+    # 운영 중인 Aruba2(2930F) 실측 sysDescr -- "(Formerly ProCurve)"가 없어도
+    # "revision WC.16..." 형식이면 클래식 ArubaOS-Switch(hp).
+    a2930 = sp.resolve_profile(None, 'Aruba JL260A 2930F-48G-4SFP Switch, revision WC.16.10.0002, ROM WC.16.01.0008 (/ws/swbuildm/rel_ajanta_qaoff/code/build/lvm(swbuildm_rel_ajanta_qaoff_rel_ajanta))')
+    check('D2b Aruba 2930F (classic firmware, no ProCurve text) resolves to hp', a2930['name'] == 'hp', a2930['name'])
     comware = sp.resolve_profile(None, 'HP Comware Platform Software ... Hewlett-Packard Development Company, L.P.')
     check('D3 Comware sysDescr resolves to hp-comware (not hp)', comware['name'] == 'hp-comware', comware['name'])
     # 실제 운영 중인 Nexus 9504에서 받은 sysDescr 그대로(2026-10-22 실측,
