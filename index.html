@@ -7348,6 +7348,8 @@ function drawPingDevice(e, catLabel){
     // 크게")으로 G/M/K 단위 혼용 대신 전부 Mbps 숫자로 통일(숫자 아래 "Mbps").
     // 칸 폭(약 40px)에 4자 안팎으로 들어가도록 크기별 자릿수만 조절.
     const usageMbps = v => v>=100 ? String(Math.round(v)) : v>=1 ? v.toFixed(1) : v>=0.01 ? v.toFixed(2) : v>0 ? '<.01' : '0';
+    // 48포트급(dense) 칸은 폭이 25px 안팎이라 3자 이내로 줄인다(1000 이상만 4자).
+    const usageMbpsShort = v => v>=10 ? String(Math.round(v)) : v>=0.1 ? v.toFixed(1) : v>0 ? '<.1' : '0';
     const canBulk = CURRENT_ROLE==='ADMIN' && e.category==='net';
     const multi = canBulk && portMapMulti;
     const cell = (f, bottomRow) => {
@@ -7361,13 +7363,17 @@ function drawPingDevice(e, catLabel){
       const errText = errNow(f) ? ` · ⚠ 최근 5분 에러/드랍 ${fmt0(f.errRecent)}개 증가` : '';
       const title = `${f.name}${f.description ? ' · '+f.description : ''} · ${statusText}${speedText}${trafficText}${poeText}${macN ? ` · MAC ${macN}개` : ''}${errText}`;
       const boltColor = !f.poe ? '' : f.poe.status==='delivering' ? 'var(--poe)' : f.poe.status==='fault' ? 'var(--crit)' : '';
-      // 48포트급(dense)은 칸이 14~20px라 숫자가 안 들어가서 생략 -- 툴팁/아래 패널로 확인.
-      const showUsage = !dense && f.status==='up' && f.adminStatus!=='down';
+      // 48포트급(dense)은 칸이 좁아 예전엔 숫자를 생략했는데, 사용자 요청("Aruba2
+      // 포트에 사용량 수치가 보이질 않아", 2930F-48G-4SFP)으로 dense에서도
+      // 짧은 숫자만 한 줄로 표시("Mbps" 단위 글자는 생략, 범례에 표기).
+      const showUsage = f.status==='up' && f.adminStatus!=='down';
       const box = `<div class="portmap-cell" data-idx="${escapeHtml(f.idx)}" title="${escapeHtml(title)}" style="position:relative;width:100%;height:${dense?26:36}px;border-radius:4px;border:1.5px solid transparent;${cellLook(f)};${selected?'outline:2px solid var(--accent-2);outline-offset:2px;':''}display:flex;align-items:center;justify-content:center;box-sizing:border-box;cursor:pointer;overflow:hidden">
         ${boltColor ? `<svg width="7" height="9" viewBox="0 0 8 10" style="position:absolute;top:2px;left:2px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="${boltColor}" stroke="rgba(0,0,0,.55)" stroke-width=".7"/></svg>` : ''}
         ${errNow(f) ? `<svg width="10" height="9" viewBox="0 0 10 9" style="position:absolute;bottom:1px;right:1px"><path d="M5 .6 9.5 8.4H.5z" fill="var(--warn)" stroke="rgba(0,0,0,.6)" stroke-width=".8" stroke-linejoin="round"/><path d="M5 3.3v2.4" stroke="#1a1a1a" stroke-width="1.2" stroke-linecap="round"/><circle cx="5" cy="7.1" r=".65" fill="#1a1a1a"/></svg>` : ''}
         ${multi && selected ? `<svg width="11" height="11" viewBox="0 0 12 12" style="position:absolute;top:1px;right:1px"><circle cx="6" cy="6" r="5.5" fill="var(--accent-2)" stroke="rgba(0,0,0,.45)" stroke-width=".8"/><path d="M3.3 6.2 5.2 8l3.5-4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>` : ''}
-        ${showUsage ? `<span style="display:flex;flex-direction:column;align-items:center;gap:1px;color:rgba(0,0,0,.78);white-space:nowrap"><b style="font:800 12px/1 var(--font-mono);letter-spacing:-.03em">${usageMbps(usage)}</b><span style="font:700 8px/1 var(--font-mono);opacity:.75">Mbps</span></span>` : ''}
+        ${showUsage ? (dense
+          ? `<b style="font:800 10px/1 var(--font-mono);letter-spacing:-.05em;color:rgba(0,0,0,.8);white-space:nowrap">${usageMbpsShort(usage)}</b>`
+          : `<span style="display:flex;flex-direction:column;align-items:center;gap:1px;color:rgba(0,0,0,.78);white-space:nowrap"><b style="font:800 12px/1 var(--font-mono);letter-spacing:-.03em">${usageMbps(usage)}</b><span style="font:700 8px/1 var(--font-mono);opacity:.75">Mbps</span></span>`) : ''}
       </div>`;
       // 실제 스위치 전면처럼 윗줄 번호는 포트 위에, 아랫줄 번호는 포트 아래에.
       const label = `<span style="font:600 9px/1 var(--font-mono);color:var(--chrome-text-dim);height:9px">${escapeHtml(portLabel(f))}</span>`;
@@ -7496,7 +7502,7 @@ function drawPingDevice(e, catLabel){
         <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;border:2px solid var(--warn);box-sizing:border-box;margin-right:5px;vertical-align:-1px"></span>⚠ 최근 5분 에러/드랍 증가 (칸 색은 연결 상태 그대로)</span>
         ${poe ? `<span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--poe)"/></svg>PoE 공급중</span>
         <span><svg width="8" height="10" viewBox="0 0 8 10" style="margin-right:5px;vertical-align:-1px"><path d="M5 0 0 6h3l-1 4 6-6H5l1-4z" fill="var(--crit)"/></svg>PoE 오류</span>` : ''}
-        ${!dense ? '<span style="color:var(--text-faint)">칸 안 숫자 = 현재 사용량 Mbps (In+Out 합계)</span>' : ''}
+        <span style="color:var(--text-faint)">칸 안 숫자 = 현재 사용량 Mbps (In+Out 합계)</span>
       </div>
       ${portPanel}
     </div>`;
