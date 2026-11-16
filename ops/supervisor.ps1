@@ -364,10 +364,42 @@ function Write-Status {
             lastRestartAt = $script:restartHistory.caddy.lastAt
         }
     }
-    $status | ConvertTo-Json -Depth 5 | Set-Content -Path $StatusFile -Encoding utf8
+    # 실패해도(다른 프로세스가 status.json을 읽는/쓰는 중 -- 공유 위반) 감시
+    # 루프를 죽이지 않는다. 예전엔 $ErrorActionPreference='Stop'이라 이 한 줄의
+    # 예외가 루프 밖으로 빠져 supervisor가 Backend/Caddy를 남긴 채 종료됐다
+    # (2026-11-16 실측: 그렇게 남은 고아 Backend/Caddy가 포트를 계속 잡고 옛
+    # 코드로 응답).
+    try {
+        $status | ConvertTo-Json -Depth 5 | Set-Content -Path $StatusFile -Encoding utf8
+    } catch {}
+}
+
+# lock을 가진 지금, 5057(Backend)/8443(Caddy)을 이미 잡고 있는 python/caddy는
+# 이전 supervisor가 남긴 고아다(위 Write-Status 주석의 사고). 그대로 두면 새
+# Backend/Caddy가 바인드에 실패해 재시작만 반복하고 옛 코드가 계속 응답한다.
+# 같은 로그온 세션이면 여기서 정리되고, 다른 세션(예: 로그인 없이 실행된 쪽)
+# 이라 권한이 없으면 원인을 로그에 분명히 남긴다(재부팅 또는 관리자 권한으로
+# 종료해야 함). 이름이 python/caddy인 것만 -- 다른 프로그램은 건드리지 않는다.
+function Clear-OrphanListeners {
+    foreach ($port in 5057, 8443) {
+        $owners = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique)
+        foreach ($o in $owners) {
+            $name = (Get-Process -Id $o -ErrorAction SilentlyContinue).ProcessName
+            if ($name -notin 'python', 'caddy') { continue }
+            try {
+                Stop-Process -Id $o -Force -ErrorAction Stop
+                Write-Log 'WARN' "포트 $port 을(를) 잡고 있던 이전 $name 프로세스(PID $o, 관리하는 supervisor 없음)를 정리했습니다."
+            } catch {
+                Write-Log 'ERROR' "포트 $port 을(를) 이전 $name 프로세스(PID $o)가 잡고 있는데 종료 권한이 없습니다(다른 로그온 세션). PC를 재부팅하거나 관리자 권한으로 종료해야 새 코드가 적용됩니다."
+            }
+        }
+    }
+    Start-Sleep -Milliseconds 500
 }
 
 try {
+    Clear-OrphanListeners
     $backend = Start-Backend
     # Caddy를 띄우기 전에 한 번 맞춰 둔다(부팅 사이 IP가 바뀐 경우 바로 반영).
     try { [void](Sync-Certificate) } catch { Write-Log 'WARN' "인증서 확인 중 오류: $_" }
@@ -458,7 +490,16 @@ try {
 
         Write-Status
     }
+} catch {
+    Write-Log 'ERROR' "supervisor 감시 루프가 예기치 않은 오류로 중단됩니다: $_"
 } finally {
+    # 어떤 이유로 끝나든 내가 띄운 Backend/Caddy는 정리하고 나간다 -- 남겨 두면
+    # 아무도 관리하지 않는 고아가 포트(5057/8443)를 잡은 채 남고, 다음
+    # supervisor의 Backend/Caddy가 바인드에 실패한다. 정상 종료 경로에서는
+    # 이미 꺼져 있어 아무 일도 안 한다.
+    foreach ($p in @($backend, $caddy)) {
+        if (Test-Alive $p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+    }
     # lock/status가 이미 다른 supervisor 것이면 지우지 않는다 -- 지우면 그쪽의
     # 중복 실행 방지가 깨지고(위 사고), 그쪽이 쓰는 status.json도 사라진다.
     if ((Get-LockOwner) -eq "$PID") {
