@@ -718,6 +718,28 @@ def test_config_backup_diff():
         storage.delete_config_backups_for_device(dev)
 
 
+def test_config_backup_check_history():
+    """H1~H3: "변경 없음/실패" 확인 기록을 기기당 CONFIG_BACKUP_CHECK_HISTORY개까지
+    남기고(예전엔 1개만 남아 매시간 돈 게 안 보였음), 변경(내용) 행은 안 지운다."""
+    print('\n[test_config_backup_check_history]')
+    dev = 'unittest_cfg_check_hist'
+    storage.delete_config_backups_for_device(dev)
+    n = storage.CONFIG_BACKUP_CHECK_HISTORY
+    try:
+        storage.save_config_backup(dev, True, True, 'hostname A\n', 'h1', None)
+        for i in range(n + 5):
+            storage.save_config_backup(dev, i % 7 != 3, False, None, 'h1' if i % 7 != 3 else None,
+                                       None if i % 7 != 3 else 'timeout')
+        rows = storage.load_config_backups(dev, limit=500)
+        unchanged = [r for r in rows if not r['changed']]
+        check('H1 keeps exactly CONFIG_BACKUP_CHECK_HISTORY unchanged/failed rows', len(unchanged) == n, len(unchanged))
+        check('H2 the changed (content) row is never pruned', sum(1 for r in rows if r['changed'] and r['content']) == 1)
+        ids = [r['id'] for r in unchanged]
+        check('H3 the newest unchanged rows are the ones kept', min(ids) > max(ids) - n - 1, (min(ids), max(ids)))
+    finally:
+        storage.delete_config_backups_for_device(dev)
+
+
 def test_prevent_idle_sleep():
     """P1: server.prevent_idle_sleep()이 Windows에서 실제로 절전 방지 요청을
     걸고(True), 이 테스트 스레드에 건 요청은 ES_CONTINUOUS만 다시 걸어 해제."""
@@ -2434,7 +2456,7 @@ def main():
         test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env, test_cisco_fru_env,
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
-        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase, test_config_backup_diff, test_config_backup_files, test_prevent_idle_sleep,
+        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase, test_config_backup_diff, test_config_backup_files, test_prevent_idle_sleep, test_config_backup_check_history,
         test_related_network_failure_correlation,
         test_ack_then_recovery, test_ack_then_escalate_reopens, test_agent_mode_escalation,
         test_maintenance_suppresses_and_renotifies, test_escalation_tier_order_stable_across_enable_disable,

@@ -20,7 +20,9 @@ from datetime import datetime
 import storage
 from collector import device_control, snmp_profiles, state
 
-log = logging.getLogger(__name__)
+# app.log/error.log에 실제로 남도록 applog의 app_logger를 쓴다(그냥
+# logging.getLogger(__name__)는 핸들러가 없어 아무 데도 기록되지 않았음).
+from applog import app_logger as log
 
 # 사용자 요청("config 파일로 남기고 싶어"): DB 저장과 별개로, 내용이 저장되는
 # 백업(최초 + 실제 변경분)마다 설치 폴더 아래 장비별 폴더에 .cfg 파일로도
@@ -172,9 +174,11 @@ def backup_one_device(device_row):
         content = device_control.fetch_running_config(device_row, vendor_profile)
     except device_control.DeviceControlError as e:
         storage.save_config_backup(device_id, success=False, changed=False, content=None, content_hash=None, error=str(e))
+        log.warning('config backup FAILED: %s (%s): %s', device_row['name'], device_id, e)
         return
     except Exception as e:
         storage.save_config_backup(device_id, success=False, changed=False, content=None, content_hash=None, error=str(e)[:300])
+        log.warning('config backup FAILED: %s (%s): %s', device_row['name'], device_id, str(e)[:300])
         return
 
     new_hash = _content_hash(content)
@@ -183,6 +187,9 @@ def backup_one_device(device_row):
     captured_at = storage.save_config_backup(
         device_id, success=True, changed=changed, content=content if changed else None,
         content_hash=new_hash, error=None)
+    # 매 시도를 app.log에 남긴다 -- "자동 백업이 실제로 돌았는지"를 나중에
+    # 기록으로 확인할 수 있게(예전엔 수동 실행만 감사 로그에 남았음).
+    log.info('config backup ok: %s (%s) %s', device_row['name'], device_id, 'CHANGED' if changed else 'unchanged')
     if changed:
         try:
             write_backup_file(device_row['name'], captured_at, content)

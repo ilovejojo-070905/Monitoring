@@ -2458,6 +2458,23 @@ function configBackupCardHtml(e){
   const subText = settings
     ? (settings.enabled ? `전역 설정: ${settings.intervalHours}시간마다 자동 백업, 변경 시 알림` : '전역 설정에서 꺼져 있습니다 -- 등록 화면에서 켤 수 있습니다')
     : '등록된 SSH/Telnet 계정으로 설정을 가져옵니다';
+  // 사용자 요청("1시간마다 자동 백업인데 백업이 되질 않았어"): 실제로는 매시간
+  // 확인하는데, 설정이 그대로면 새 버전/파일이 안 생겨서 안 돈 것처럼 보였다 --
+  // 마지막 확인 결과와 다음 확인 예정 시각을 맨 위에 한 줄로 보여준다.
+  // 다음 확인은 "마지막 시도 + 주기" 뒤 첫 10분 스케줄러 틱이라 "약"으로 표기.
+  const lastTry = backups[0];
+  const latestVer = contentBackups[0];
+  let checkLine = '';
+  if(lastTry){
+    const result = !lastTry.success ? '<b style="color:var(--crit)">실패</b>'
+      : lastTry.changed ? '<b style="color:var(--warn)">변경됨 → 새 버전 저장</b>'
+      : `<b style="color:var(--good)">변경 없음</b>${latestVer ? ` (최신 버전 ${fmtWhen(latestVer.captured_at)}과 동일 -- 새 파일은 설정이 바뀔 때만 생성)` : ''}`;
+    const nextAt = (settings && settings.enabled) ? lastTry.captured_at + settings.intervalHours*3600*1000 : null;
+    checkLine = `<div style="font-size:11.5px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:2px">
+      <span>마지막 확인 <span class="mono" style="color:var(--text)">${fmtWhen(lastTry.captured_at)}</span> · ${result}</span>
+      ${nextAt ? `<span>다음 확인 약 <span class="mono" style="color:var(--text)">${fmtWhen(nextAt)}</span></span>` : ''}
+    </div>`;
+  }
   return `
     <div class="card" style="min-width:0">
       <div class="card-head" style="align-items:center;flex-wrap:wrap;gap:10px">
@@ -2468,6 +2485,7 @@ function configBackupCardHtml(e){
         </span>
       </div>
       ${CONFIG_BACKUP_FILEDIR[e.id] ? `<div style="font-size:11px;color:var(--text-dim);display:flex;gap:6px;align-items:baseline;min-width:0" title="설정이 바뀔 때마다 이 폴더에 장비명_날짜-시각.cfg 파일로도 저장됩니다 (InfraSight 서버 PC 기준 경로)"><span style="flex:none">파일 저장 위치</span><span class="mono" style="overflow-x:auto;white-space:nowrap;color:var(--text)">${escapeHtml(CONFIG_BACKUP_FILEDIR[e.id])}</span></div>` : ''}
+      ${checkLine}
       <span id="cfgbk-run-error-${e.id}" style="color:var(--crit);font-size:11px"></span>
       <div data-scroll-key="cfgbk-list-${e.id}" style="max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:5px;margin-top:8px">
         ${backups.length ? backups.map(b=>`

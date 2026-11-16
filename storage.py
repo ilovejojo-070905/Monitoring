@@ -510,6 +510,10 @@ def init_db():
     # 이 테이블에는 실제 "변경"이 일어난 모든 행(changed=1, content 포함)과
     # 기기당 최대 1개의 최신 "변경 없음/확인 실패" 행만 쌓인다. content는
     # changed=0일 때 굳이 중복 저장하지 않고 NULL로 둔다.
+    # 변경(2026-11-16, 사용자 "1시간마다 자동 백업인데 백업이 되질 않았어"):
+    # 실제로는 매시간 돌고 있었는데 "변경 없음" 행이 하나만 남아 화면상 백업이
+    # 안 된 것처럼 보였다 -- 이제 기기당 최근 CONFIG_BACKUP_CHECK_HISTORY개
+    # (content 없는 가벼운 행)를 남겨 매 확인 기록이 목록에 보이게 한다.
     conn.execute('''CREATE TABLE IF NOT EXISTS device_config_backups(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         device_id TEXT NOT NULL,
@@ -1554,13 +1558,22 @@ def set_config_backup_settings(enabled, interval_hours):
     set_setting(CONFIG_BACKUP_SETTING_KEY, json.dumps({'enabled': bool(enabled), 'intervalHours': int(interval_hours)}))
 
 
+# 기기당 남기는 "변경 없음/확인 실패" 기록 수 -- 1시간 주기면 약 2일치.
+CONFIG_BACKUP_CHECK_HISTORY = 48
+
+
 def save_config_backup(device_id, success, changed, content, content_hash, error):
     conn = get_db()
     now = int(time.time() * 1000)
     if not changed:
-        # 변경 없음/실패 행은 기기당 가장 최근 것 하나만 남긴다(테이블
-        # 스키마 주석 참고) -- 실제 변경(changed=1) 행은 여기서 절대 안 지움.
-        conn.execute('DELETE FROM device_config_backups WHERE device_id=? AND changed=0', (device_id,))
+        # 변경 없음/실패 행은 기기당 최근 CONFIG_BACKUP_CHECK_HISTORY개만 남긴다
+        # (새로 넣을 자리 1개를 빼고 정리, 테이블 스키마 주석 참고) -- 실제
+        # 변경(changed=1) 행은 여기서 절대 안 지움.
+        conn.execute(
+            'DELETE FROM device_config_backups WHERE device_id=? AND changed=0 AND id NOT IN ('
+            'SELECT id FROM device_config_backups WHERE device_id=? AND changed=0 '
+            'ORDER BY captured_at DESC, id DESC LIMIT ?)',
+            (device_id, device_id, CONFIG_BACKUP_CHECK_HISTORY - 1))
     conn.execute(
         'INSERT INTO device_config_backups(device_id,captured_at,success,changed,content,content_hash,error) '
         'VALUES (?,?,?,?,?,?,?)',
