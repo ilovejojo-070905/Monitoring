@@ -38,6 +38,93 @@ $ErrorActionPreference = 'Continue'
 function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green }
 function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow }
 
+# ---------------------------------------------------- 진행 로그 + 진단 수집 --
+# 사용자 요청("새로운 환경에 셋업 및 패치 시 문제 발생하면 파일이나 로그 같은 거
+# 만들어서 그걸로 확인해서 문제를 해결하는 방법은 없어?"): 이 실행의 화면 출력을
+# 전부 %TEMP%\InfraSight-setup-*.log에 남기고, 실패하면 ops\collect-diagnostics.ps1
+# 로 환경 정보 + 이 로그 + InfraSight 로그를 바탕화면 zip 하나로 묶는다 -- 그 zip만
+# 가져오면 현장 PC에 원격 접속하지 않고 원인을 볼 수 있다. 빌드된 exe에는
+# collect-diagnostics.ps1이 base64로 들어 있어서(아래 $EMBEDDED_DIAG_B64, build-
+# release.ps1이 치환) 설치 폴더가 아직 없거나 망가져 있어도 동작한다.
+# Start-Transcript가 안 되는 호스트(ps2exe 등)면 Write-Step/Ok/Warn2와 오류만이라도
+# 같은 파일에 직접 적는다.
+$EMBEDDED_DIAG_B64 = '__EMBEDDED_DIAG_B64__'
+$script:SetupLog = Join-Path $env:TEMP "InfraSight-setup-patch-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$script:SetupLogManual = $false
+try { Start-Transcript -Path $script:SetupLog -Force | Out-Null } catch { $script:SetupLogManual = $true }
+function Write-SetupLog([string]$line) {
+    if ($script:SetupLogManual) { try { Add-Content -Path $script:SetupLog -Value "$(Get-Date -Format 'HH:mm:ss') $line" -Encoding utf8 } catch {} }
+}
+function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan; Write-SetupLog "==> $msg" }
+function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green; Write-SetupLog "    $msg" }
+function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow; Write-SetupLog "    [경고] $msg" }
+
+# 성공/실패 어느 쪽이든 끝날 때 로그를 설치 폴더 logs\로도 복사(다음 진단 때 지난 기록으로 들어감).
+function Save-SetupLog([string]$dir) {
+    try { Stop-Transcript | Out-Null } catch {}
+    try {
+        if ($dir -and (Test-Path $dir)) {
+            $logs = Join-Path $dir 'logs'
+            New-Item -ItemType Directory -Force -Path $logs | Out-Null
+            Copy-Item $script:SetupLog (Join-Path $logs (Split-Path $script:SetupLog -Leaf)) -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
+function Invoke-Diagnostics([string]$Reason, [string]$Dir) {
+    # powershell.exe에 인자로 넘길 때 큰따옴표/줄바꿈이 있으면 PowerShell 5.1이
+    # 인자를 쪼개 버려 진단 스크립트가 아예 시작되지 않는다(실측: 실패 위치 코드에
+    # 들어 있던 "..." 때문에 zip이 안 만들어졌음). 끝의 \도 닫는 따옴표를 먹는다.
+    $Reason = ($Reason -replace '"', "'") -replace '[\r\n]+', ' '
+    if ($Dir) { $Dir = $Dir.TrimEnd('\') }
+    Write-SetupLog "실패: $Reason"
+    Save-SetupLog $Dir
+    $diag = $null
+    if ($EMBEDDED_DIAG_B64 -and $EMBEDDED_DIAG_B64 -notlike '__*') {
+        try {
+            $diag = Join-Path $env:TEMP "InfraSight-collect-diagnostics-$([guid]::NewGuid().ToString('N')).ps1"
+            [System.IO.File]::WriteAllBytes($diag, [Convert]::FromBase64String($EMBEDDED_DIAG_B64))
+        } catch { $diag = $null }
+    }
+    if (-not $diag) {
+        $here = $PSScriptRoot
+        foreach ($cand in @((Join-Path "$Dir" 'ops\collect-diagnostics.ps1'), (Join-Path "$here" 'ops\collect-diagnostics.ps1'), (Join-Path "$here" 'collect-diagnostics.ps1'))) {
+            if ($cand -and (Test-Path $cand)) { $diag = $cand; break }
+        }
+    }
+    if (-not $diag) {
+        Write-Host "진단 수집 스크립트를 찾지 못했습니다. 진행 로그만 남았습니다: $($script:SetupLog)" -ForegroundColor Yellow
+        return
+    }
+    Write-Host "`n문제 확인용 진단 파일을 만드는 중입니다..." -ForegroundColor Cyan
+    try {
+        # 빈 문자열 인자는 PowerShell 5.1이 네이티브 실행 시 통째로 빼 버려 인자가
+        # 밀리므로, 설치 폴더를 아직 모르면 -InstallDir 자체를 안 넘긴다(자동 탐색).
+        $diagArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $diag, '-Reason', $Reason, '-TranscriptPath', $script:SetupLog, '-NoPause')
+        if ($Dir) { $diagArgs += @('-InstallDir', $Dir) }
+        & powershell @diagArgs
+    } catch {
+        Write-Host "진단 파일 생성에 실패했습니다: $_ -- 진행 로그: $($script:SetupLog)" -ForegroundColor Yellow
+    }
+}
+
+
+# 어디서든 throw로 멈추면(이 스크립트엔 전체를 감싼 try가 없음) 여기로 와서 오류를
+# 보여주고 진단 zip을 만든 뒤 종료 코드 1로 끝낸다 -- 예전엔 창이 바로 닫히거나
+# GUI 마법사가 그대로 "완료"로 보이는 경우가 있었다.
+trap {
+    Write-Host "`n============================================================" -ForegroundColor Red
+    Write-Host ' 패치 중 오류가 발생했습니다' -ForegroundColor Red
+    Write-Host " $_" -ForegroundColor Red
+    Write-Host '============================================================' -ForegroundColor Red
+    $failReason = "패치 실패: $_"
+    if ($_.InvocationInfo) { $failReason += " | 위치: $($_.InvocationInfo.ScriptLineNumber)번째 줄 $($_.InvocationInfo.Line.Trim())" }
+    Invoke-Diagnostics $failReason $InstallDir
+    Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
+    try { [void][System.Console]::ReadKey($true) } catch { Start-Sleep -Seconds 3 }
+    exit 1
+}
+
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host ' InfraSight 패치 적용' -ForegroundColor Cyan
 Write-Host '============================================================' -ForegroundColor Cyan
@@ -250,10 +337,38 @@ try {
     Write-Warn2 "자동 시작 방식 변경을 건너뜁니다 (관리자 권한 승인 취소 등): $_"
 }
 
-Write-Host "`n============================================================" -ForegroundColor Green
-Write-Host ' 완료되었습니다!' -ForegroundColor Green
-Write-Host ' 백엔드까지 재시작했습니다. 브라우저에서 강력 새로고침(Ctrl+F5)만 해주세요.' -ForegroundColor Yellow
-Write-Host '============================================================' -ForegroundColor Green
+# ------------------------------------------------ [8] 재시작 후 정상 동작 확인 --
+# 예전엔 재시작만 하고 실제로 서버가 다시 떴는지는 확인하지 않아서, 새 환경에서
+# 패치 후 접속이 안 돼도 "완료되었습니다"로 끝났다. 백엔드(5057)에 직접 최대 90초
+# 물어보고, 안 뜨면 진단 zip을 만든다(패치 자체는 이미 적용된 상태라 종료 코드는 0).
+Write-Host "`n[확인] InfraSight가 정상적으로 다시 떴는지 확인하는 중..." -ForegroundColor Cyan
+$healthy = $false
+$deadline = (Get-Date).AddSeconds(90)
+while ((Get-Date) -lt $deadline) {
+    try {
+        $h = Invoke-RestMethod 'http://127.0.0.1:5057/api/system/health-public' -TimeoutSec 5 -ErrorAction Stop
+        if ($h.web -eq 'up' -and $h.database -eq 'up' -and $h.collector -eq 'up') { $healthy = $true; break }
+    } catch {}
+    Start-Sleep -Seconds 3
+}
+if ($healthy) {
+    Write-Ok 'InfraSight가 정상 동작 중입니다.'
+    Save-SetupLog $InstallDir
+} else {
+    Write-Host "`n============================================================" -ForegroundColor Red
+    Write-Host ' 패치는 적용됐지만 InfraSight가 90초 안에 정상 응답하지 않습니다.' -ForegroundColor Red
+    Write-Host '============================================================' -ForegroundColor Red
+    Invoke-Diagnostics '패치 적용 후 90초 안에 InfraSight가 정상 응답하지 않음' $InstallDir
+}
+
+if ($healthy) {
+    Write-Host "`n============================================================" -ForegroundColor Green
+    Write-Host ' 완료되었습니다!' -ForegroundColor Green
+    Write-Host ' 백엔드까지 재시작했습니다. 브라우저에서 강력 새로고침(Ctrl+F5)만 해주세요.' -ForegroundColor Yellow
+    Write-Host '============================================================' -ForegroundColor Green
+} else {
+    Write-Host "`n바탕화면에 만들어진 InfraSight-진단-*.zip 파일을 개발 담당 PC로 가져가 주세요." -ForegroundColor Yellow
+}
 
 Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
 try { [void][System.Console]::ReadKey($true) } catch { Start-Sleep -Seconds 3 }

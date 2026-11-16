@@ -153,6 +153,77 @@ if (-not (Test-Admin)) {
     exit
 }
 
+# ---------------------------------------------------- 진행 로그 + 진단 수집 --
+# 사용자 요청("새로운 환경에 셋업 및 패치 시 문제 발생하면 파일이나 로그 같은 거
+# 만들어서 그걸로 확인해서 문제를 해결하는 방법은 없어?"): 이 실행의 화면 출력을
+# 전부 %TEMP%\InfraSight-setup-*.log에 남기고, 실패하면 ops\collect-diagnostics.ps1
+# 로 환경 정보 + 이 로그 + InfraSight 로그를 바탕화면 zip 하나로 묶는다 -- 그 zip만
+# 가져오면 현장 PC에 원격 접속하지 않고 원인을 볼 수 있다. 빌드된 exe에는
+# collect-diagnostics.ps1이 base64로 들어 있어서(아래 $EMBEDDED_DIAG_B64, build-
+# release.ps1이 치환) 설치 폴더가 아직 없거나 망가져 있어도 동작한다.
+# Start-Transcript가 안 되는 호스트(ps2exe 등)면 Write-Step/Ok/Warn2와 오류만이라도
+# 같은 파일에 직접 적는다.
+$EMBEDDED_DIAG_B64 = '__EMBEDDED_DIAG_B64__'
+$script:SetupLog = Join-Path $env:TEMP "InfraSight-setup-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$script:SetupLogManual = $false
+try { Start-Transcript -Path $script:SetupLog -Force | Out-Null } catch { $script:SetupLogManual = $true }
+function Write-SetupLog([string]$line) {
+    if ($script:SetupLogManual) { try { Add-Content -Path $script:SetupLog -Value "$(Get-Date -Format 'HH:mm:ss') $line" -Encoding utf8 } catch {} }
+}
+function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan; Write-SetupLog "==> $msg" }
+function Write-Ok($msg)   { Write-Host "    $msg" -ForegroundColor Green; Write-SetupLog "    $msg" }
+function Write-Warn2($msg){ Write-Host "    $msg" -ForegroundColor Yellow; Write-SetupLog "    [경고] $msg" }
+
+# 성공/실패 어느 쪽이든 끝날 때 로그를 설치 폴더 logs\로도 복사(다음 진단 때 지난 기록으로 들어감).
+function Save-SetupLog([string]$dir) {
+    try { Stop-Transcript | Out-Null } catch {}
+    try {
+        if ($dir -and (Test-Path $dir)) {
+            $logs = Join-Path $dir 'logs'
+            New-Item -ItemType Directory -Force -Path $logs | Out-Null
+            Copy-Item $script:SetupLog (Join-Path $logs (Split-Path $script:SetupLog -Leaf)) -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
+function Invoke-Diagnostics([string]$Reason, [string]$Dir) {
+    # powershell.exe에 인자로 넘길 때 큰따옴표/줄바꿈이 있으면 PowerShell 5.1이
+    # 인자를 쪼개 버려 진단 스크립트가 아예 시작되지 않는다(실측: 실패 위치 코드에
+    # 들어 있던 "..." 때문에 zip이 안 만들어졌음). 끝의 \도 닫는 따옴표를 먹는다.
+    $Reason = ($Reason -replace '"', "'") -replace '[\r\n]+', ' '
+    if ($Dir) { $Dir = $Dir.TrimEnd('\') }
+    Write-SetupLog "실패: $Reason"
+    Save-SetupLog $Dir
+    $diag = $null
+    if ($EMBEDDED_DIAG_B64 -and $EMBEDDED_DIAG_B64 -notlike '__*') {
+        try {
+            $diag = Join-Path $env:TEMP "InfraSight-collect-diagnostics-$([guid]::NewGuid().ToString('N')).ps1"
+            [System.IO.File]::WriteAllBytes($diag, [Convert]::FromBase64String($EMBEDDED_DIAG_B64))
+        } catch { $diag = $null }
+    }
+    if (-not $diag) {
+        $here = $PSScriptRoot
+        foreach ($cand in @((Join-Path "$Dir" 'ops\collect-diagnostics.ps1'), (Join-Path "$here" 'ops\collect-diagnostics.ps1'), (Join-Path "$here" 'collect-diagnostics.ps1'))) {
+            if ($cand -and (Test-Path $cand)) { $diag = $cand; break }
+        }
+    }
+    if (-not $diag) {
+        Write-Host "진단 수집 스크립트를 찾지 못했습니다. 진행 로그만 남았습니다: $($script:SetupLog)" -ForegroundColor Yellow
+        return
+    }
+    Write-Host "`n문제 확인용 진단 파일을 만드는 중입니다..." -ForegroundColor Cyan
+    try {
+        # 빈 문자열 인자는 PowerShell 5.1이 네이티브 실행 시 통째로 빼 버려 인자가
+        # 밀리므로, 설치 폴더를 아직 모르면 -InstallDir 자체를 안 넘긴다(자동 탐색).
+        $diagArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $diag, '-Reason', $Reason, '-TranscriptPath', $script:SetupLog, '-NoPause')
+        if ($Dir) { $diagArgs += @('-InstallDir', $Dir) }
+        & powershell @diagArgs
+    } catch {
+        Write-Host "진단 파일 생성에 실패했습니다: $_ -- 진행 로그: $($script:SetupLog)" -ForegroundColor Yellow
+    }
+}
+
+
 # 아래 설치 단계 전체를 try/finally로 감싸는 이유: 어디서든 오류(throw)가
 # 나면 $ErrorActionPreference='Stop' 때문에 스크립트가 그 즉시 종료되는데,
 # 끝에 있는 "아무 키나 누르면 창이 닫힙니다" 일시정지는 성공 경로에만
@@ -592,6 +663,7 @@ Write-Host "(이 PC에서 발급한 '로컬 CA' 방식 인증서라서 그렇습
 Write-Host "%LOCALAPPDATA%\mkcert\rootCA.pem 을 그 기기에 설치하면 경고 없이 접속할 수 있습니다)."
 
 if (-not $SkipBrowserLaunch) { Start-Process "https://localhost:8443" }
+Save-SetupLog $InstallDir
 
 } catch {
     # This window is the elevated one (Start-Process -Verb RunAs) where every
@@ -608,6 +680,9 @@ if (-not $SkipBrowserLaunch) { Start-Process "https://localhost:8443" }
     # 못 짚는 경우가 실제로 있었다 -- 줄 번호/코드까지 같이 찍는다.
     if ($_.InvocationInfo) { Write-Host " 위치: $($_.InvocationInfo.PositionMessage)" -ForegroundColor Red }
     Write-Host '============================================================' -ForegroundColor Red
+    $failReason = "설치 실패: $_"
+    if ($_.InvocationInfo) { $failReason += " | 위치: $($_.InvocationInfo.ScriptLineNumber)번째 줄 $($_.InvocationInfo.Line.Trim())" }
+    Invoke-Diagnostics $failReason $InstallDir
     Write-Host "`n아무 키나 누르면 창이 닫힙니다..." -ForegroundColor DarkGray
     # ReadKey는 실제 콘솔에서 더블클릭으로 직접 실행했을 때나 통하는 방식이다
     # -- GUI 설치 프로그램(ops\installer.nsi)이 nsExec::ExecToLog로 이 스크립트를

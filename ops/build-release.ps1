@@ -32,6 +32,10 @@ InfraSight 릴리스 빌드 (Setup.exe + Setup-GUI.exe + 자체 내장형 Patch.
   - InfraSight-Uninstall-GUI-*.exe : 같은 uninstall.ps1을 NSIS 마법사로 감싼
                                     그래픽 제거 프로그램. ops\uninstall-gui.nsi
                                     참고.
+  - InfraSight-Diagnostics-*.exe : ops\collect-diagnostics.ps1을 ps2exe로 감싼
+                                    진단 수집 도구 -- 현장 PC에서 더블클릭하면
+                                    바탕화면에 InfraSight-진단-*.zip을 만든다
+                                    (Setup/Patch는 실패 시 같은 걸 자동으로 함).
   - InfraSightAgent-Uninstall-*.exe / InfraSightAgent-Uninstall-GUI-*.exe :
                                     모니터링 대상 PC(InfraSight 서버가 아닌
                                     다른 PC)에 설치된 에이전트만 따로 깔끔하게
@@ -100,13 +104,19 @@ try {
         Write-Warning 'dist\InfraSightAgent.exe가 없어 에이전트 다운로드 기능 없이 빌드합니다.'
     }
 
+    # 진단 수집 스크립트(ops\collect-diagnostics.ps1)도 Setup/Patch에 내장 -- 설치
+    # 초기에 실패해 설치 폴더(=그 스크립트)가 아직 없어도 진단 zip을 만들 수 있게.
+    $diagB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $repoRoot 'ops\collect-diagnostics.ps1')))
+
     $patchSrc = Get-Content (Join-Path $repoRoot '패치적용.ps1') -Raw -Encoding UTF8
     $patchSrc = $patchSrc.Replace('__EMBEDDED_PATCH_B64__', $diffB64)
     if ($agentExeB64) { $patchSrc = $patchSrc.Replace('__EMBEDDED_AGENT_EXE_B64__', $agentExeB64) }
+    $patchSrc = $patchSrc.Replace('__EMBEDDED_DIAG_B64__', $diagB64)
     $tempPatchPs1 = Join-Path $env:TEMP "infrasight-patch-embedded-$([guid]::NewGuid().ToString('N')).ps1"
 
     $installSrc = Get-Content (Join-Path $repoRoot 'install.ps1') -Raw -Encoding UTF8
     if ($agentExeB64) { $installSrc = $installSrc.Replace('__EMBEDDED_AGENT_EXE_B64__', $agentExeB64) }
+    $installSrc = $installSrc.Replace('__EMBEDDED_DIAG_B64__', $diagB64)
     $tempInstallPs1 = Join-Path $env:TEMP "infrasight-install-embedded-$([guid]::NewGuid().ToString('N')).ps1"
 
     # ps2exe가 소스를 한글 주석까지 포함해 정확히 읽으려면 BOM이 있어야 한다
@@ -122,6 +132,8 @@ try {
     Invoke-ps2exe -inputFile $tempPatchPs1 -outputFile (Join-Path $outDir "InfraSight-Patch-$date-$sha.exe") -title 'InfraSight Patch' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall.ps1') -outputFile (Join-Path $outDir "InfraSight-Uninstall-$date-$sha.exe") -title 'InfraSight Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall-agent.ps1') -outputFile (Join-Path $outDir "InfraSightAgent-Uninstall-$date-$sha.exe") -title 'InfraSight Agent Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
+    # 설치는 됐는데 나중에 문제가 생긴 현장에서 더블클릭만 하면 바탕화면에 진단 zip을 만든다.
+    Invoke-ps2exe -inputFile (Join-Path $repoRoot 'ops\collect-diagnostics.ps1') -outputFile (Join-Path $outDir "InfraSight-Diagnostics-$date-$sha.exe") -title 'InfraSight Diagnostics' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
 
     $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
     if (-not (Test-Path $makensis)) { $makensis = "$env:ProgramFiles\NSIS\makensis.exe" }
