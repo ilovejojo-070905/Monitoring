@@ -171,6 +171,16 @@ function Update-StartupTaskToS4U {
 # 재사용 헬퍼: 패치 적용 후와 실패 시 롤백 후 둘 다 똑같이 "기존 프로세스
 # 종료 -> supervisor 재시작"을 해야 해서 분리.
 function Restart-InfraSightProcesses {
+    # 1) stop.ps1로 먼저 정상 종료 요청(run\stop.marker 파일)을 보내고 supervisor가
+    #    스스로 Backend/Caddy를 정리할 때까지 기다린다 -- 로그인 없이 실행(S4U,
+    #    세션 0)되는 supervisor는 이 일반 세션에서 PID로는 종료 권한이 없어서
+    #    (2026-11-16 실측: 안 죽은 채로 새 supervisor가 하나 더 떠 8443을 두고
+    #    충돌), 세션과 무관하게 통하는 파일 신호가 먼저여야 한다.
+    $stopScript = Join-Path $InstallDir 'ops\stop.ps1'
+    if (Test-Path $stopScript) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $stopScript | Out-Null
+    }
+    # 2) 그래도 남은 같은 세션 프로세스는 예전처럼 status.json PID로 정리.
     $statusFile = Join-Path $InstallDir 'run\status.json'
     if (Test-Path $statusFile) {
         try {
@@ -194,8 +204,24 @@ function Restart-InfraSightProcesses {
     # register-task.ps1 uses via a .vbs file; done here directly through the
     # COM object instead, since there's no reason to drop a .vbs file to disk
     # just for this one relaunch.
-    $supervisorCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'ops\supervisor.ps1')`""
-    (New-Object -ComObject WScript.Shell).Run($supervisorCmd, 0, $false) | Out-Null
+    #
+    # 자동 시작 작업이 있으면 그 작업으로 띄운다 -- S4U로 등록돼 있으면 로그아웃해도
+    # 안 꺼지는 세션 0에서 돈다(여기서 직접 띄우면 이 사용자 세션에 묶여 로그아웃
+    # 때 같이 꺼짐). 작업 실행 권한이 없거나 작업이 없으면 예전처럼 직접 띄운다.
+    $lockFile = Join-Path $InstallDir 'run\supervisor.lock'
+    $startedViaTask = $false
+    if (Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue) {
+        try {
+            Start-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction Stop
+            $deadline = (Get-Date).AddSeconds(15)
+            while (-not (Test-Path $lockFile) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            $startedViaTask = Test-Path $lockFile
+        } catch {}
+    }
+    if (-not $startedViaTask) {
+        $supervisorCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'ops\supervisor.ps1')`""
+        (New-Object -ComObject WScript.Shell).Run($supervisorCmd, 0, $false) | Out-Null
+    }
     Start-Sleep -Seconds 4
 }
 

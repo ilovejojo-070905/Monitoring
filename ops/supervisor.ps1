@@ -152,6 +152,19 @@ function Try-AcquireLock {
     }
 }
 
+# lock 파일 첫 줄(PID). 파일이 없으면 'missing', 다른 프로세스가 쓰는 중이라
+# 못 읽으면 $null(판단 보류).
+function Get-LockOwner {
+    try {
+        if (-not (Test-Path $LockFile)) { return 'missing' }
+        $txt = [System.IO.File]::ReadAllText($LockFile)
+        $first = ($txt -split "`n")[0].Trim()
+        if ($first) { return $first } else { return $null }
+    } catch {
+        return $null
+    }
+}
+
 if (-not (Try-AcquireLock)) {
     Write-Log 'INFO' "이미 실행 중인 supervisor를 발견해 이번 실행은 종료합니다 (중복 실행 방지)."
     exit 0
@@ -377,6 +390,26 @@ try {
             break
         }
 
+        # 중복 실행 정리(2026-11-16 실측 사고): 로그인 없이 실행(S4U, 세션 0)되는
+        # supervisor가 떠 있는 상태에서 패치가 일반 세션에서 status.json의 PID로
+        # 종료를 시도했지만, 다른 로그온 세션의 프로세스라 권한이 없어 안 죽었고,
+        # 패치는 lock 파일을 지운 뒤 새 supervisor를 또 띄웠다 -- 두 벌의
+        # Backend/Caddy가 8443/5057을 두고 서로 죽이고 살리기를 반복(Caddy 70회
+        # 재시작), 브라우저는 옛 코드 백엔드에 붙어 있었음. lock 파일의 주인이
+        # 더 이상 내가 아니면(다른 supervisor가 가져갔거나 지워짐) 내 Backend/
+        # Caddy를 직접 정리하고 물러난다 -- 내 자식 프로세스는 나만 확실히 죽일
+        # 수 있으니(같은 세션) 이 방향이 세션과 무관하게 항상 통한다. 다른
+        # 프로세스가 lock을 쓰는 중이라 못 읽은 경우(null)는 판단을 미룬다.
+        $lockOwner = Get-LockOwner
+        if ($lockOwner -and $lockOwner -ne "$PID") {
+            $why = if ($lockOwner -eq 'missing') { 'lock 파일이 지워짐' } else { "다른 supervisor(PID $lockOwner)가 lock을 가져감" }
+            Write-Log 'WARN' "$why -- 이 supervisor(PID $PID)는 Backend/Caddy를 정리하고 종료합니다 (중복 실행 방지)."
+            foreach ($p in @($backend, $caddy)) {
+                if (Test-Alive $p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+            }
+            break
+        }
+
         if (-not (Test-Alive $backend)) {
             Write-Log 'WARN' "Backend가 비정상 종료된 것을 감지했습니다 (이전 PID $($backend.Id))."
             Register-Crash 'backend'
@@ -426,6 +459,10 @@ try {
         Write-Status
     }
 } finally {
-    Remove-Item $LockFile -ErrorAction SilentlyContinue
-    Remove-Item $StatusFile -ErrorAction SilentlyContinue
+    # lock/status가 이미 다른 supervisor 것이면 지우지 않는다 -- 지우면 그쪽의
+    # 중복 실행 방지가 깨지고(위 사고), 그쪽이 쓰는 status.json도 사라진다.
+    if ((Get-LockOwner) -eq "$PID") {
+        Remove-Item $LockFile -ErrorAction SilentlyContinue
+        Remove-Item $StatusFile -ErrorAction SilentlyContinue
+    }
 }

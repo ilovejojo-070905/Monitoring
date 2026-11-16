@@ -540,6 +540,13 @@ Write-Step '지금 바로 시작'
 # processes (read from its own run\status.json, so this never touches any
 # unrelated python/caddy process elsewhere on the machine) before starting
 # fresh, so the just-pulled code actually takes effect either way.
+# 먼저 stop.ps1의 정상 종료 요청(stop.marker 파일) -- 로그인 없이 실행(S4U,
+# 세션 0)되던 supervisor는 PID 종료가 안 먹을 수 있어서(ops\patch.ps1의
+# Restart-InfraSightProcesses 주석 참고) 세션과 무관한 파일 신호가 먼저.
+$stopScript = Join-Path $InstallDir 'ops\stop.ps1'
+if ((Test-Path $stopScript) -and (Test-Path (Join-Path $InstallDir 'run\supervisor.lock'))) {
+    try { & powershell -NoProfile -ExecutionPolicy Bypass -File $stopScript | Out-Null } catch {}
+}
 $statusFile = Join-Path $InstallDir 'run\status.json'
 if (Test-Path $statusFile) {
     try {
