@@ -11,6 +11,13 @@ Run this once, then either log off/on, reboot, or just run supervisor.ps1
 directly to begin without waiting for either trigger.
 #>
 
+param(
+    # 관리자 권한 승격(UAC)으로 다시 실행될 때, 다른 관리자 계정으로 승격하면
+    # $env:USERNAME이 그 관리자 계정으로 바뀌어 엉뚱한 사용자로 작업이 등록된다
+    # -- 패치 스크립트가 원래 사용자 이름을 그대로 넘겨준다.
+    [string]$UserName = $env:USERNAME
+)
+
 $ErrorActionPreference = 'Stop'
 
 function Test-Admin {
@@ -92,32 +99,56 @@ $recurringTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Days 3650)
 
 $bothTriggers = @(
-    New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    New-ScheduledTaskTrigger -AtLogOn -User $UserName
     New-ScheduledTaskTrigger -AtStartup
     $recurringTrigger
 )
 $logonOnlyTriggers = @(
-    New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    New-ScheduledTaskTrigger -AtLogOn -User $UserName
     $recurringTrigger
 )
 
+# 신규(사용자 요청 "다른 장소에 설치 후 오랜만에 접속하니 안 됨"): 위 AtStartup
+# 트리거가 있어도 작업 자체가 Interactive(= "사용자가 로그온할 때만 실행")로
+# 등록돼 있어서, 윈도우 업데이트/정전으로 재부팅된 뒤 아무도 로그인하지 않으면
+# 부팅 트리거가 발생해도 실제로는 실행되지 않았다(실측: 운영 PC의 작업이
+# LogonType=Interactive). S4U("사용자의 로그온 여부에 관계없이 실행", 암호 저장
+# 안 함)로 등록하면 로그인 없이도 부팅 직후부터 돈다. S4U는 화면 없는 세션에서
+# 도는데 InfraSight는 창이 없는 백그라운드 프로세스뿐이라 문제없고, 네트워크
+# 공유폴더 인증만 못 하는데 InfraSight는 그걸 쓰지 않는다. S4U 등록은 관리자
+# 권한이 필요해서, 안 되면 예전 Interactive 방식으로 내려간다.
+$s4uPrincipal = New-ScheduledTaskPrincipal -UserId $UserName -LogonType S4U -RunLevel Limited
+
 $registeredWithStartup = $false
-try {
+$registeredS4U = $false
+if (Test-Admin) {
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $bothTriggers -Settings $settings `
+            -Principal $s4uPrincipal -Force | Out-Null
+        $registeredWithStartup = $true
+        $registeredS4U = $true
+    } catch {
+        Write-Host "(로그인 없이 실행(S4U) 등록에 실패해 로그인 시 실행 방식으로 등록합니다: $_)" -ForegroundColor DarkYellow
+    }
+}
+if (-not $registeredS4U) { try {
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $bothTriggers -Settings $settings `
-        -RunLevel Limited -Force | Out-Null
+        -User $UserName -RunLevel Limited -Force | Out-Null
     $registeredWithStartup = $true
 } catch {
     Write-Host "(시스템 시작 트리거는 관리자 권한이 필요해 건너뜁니다 -- 로그인 시 시작 + 1분마다 재확인만 등록합니다)" -ForegroundColor DarkYellow
     try {
         Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $logonOnlyTriggers -Settings $settings `
-            -RunLevel Limited -Force | Out-Null
+            -User $UserName -RunLevel Limited -Force | Out-Null
     } catch {
         Write-Host "작업 등록에 실패했습니다: $_" -ForegroundColor Red
         exit 1
     }
-}
+} }
 
-if ($registeredWithStartup) {
+if ($registeredS4U) {
+    Write-Host "'$TaskName' 작업을 등록했습니다 -- PC가 켜지면 로그인하지 않아도 자동으로 시작되고, 1분마다 살아있는지 재확인해 죽어있으면 다시 띄웁니다." -ForegroundColor Green
+} elseif ($registeredWithStartup) {
     Write-Host "'$TaskName' 작업을 등록했습니다 -- 다음 로그인 또는 시스템 시작 시 자동으로 시작되고, 실행 중에도 1분마다 살아있는지 재확인해 죽어있으면 다시 띄웁니다." -ForegroundColor Green
 } else {
     Write-Host "'$TaskName' 작업을 등록했습니다 (로그인 시 시작 + 1분마다 재확인) -- 다음 로그인부터 자동으로 시작됩니다." -ForegroundColor Green

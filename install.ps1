@@ -411,7 +411,10 @@ if ($LASTEXITCODE -ne 0) { throw "mkcert -install 실패 (종료 코드 $LASTEXI
 $lanIp = (& $pythonExe -c "import storage; print(storage.get_lan_ip())").Trim()
 if ($LASTEXITCODE -ne 0) { throw "LAN IP 조회 실패 (종료 코드 $LASTEXITCODE)" }
 New-Item -ItemType Directory -Force -Path (Join-Path $InstallDir 'certs') | Out-Null
-Invoke-Native { & $mkcertExe -cert-file 'certs\infrasight.crt' -key-file 'certs\infrasight.key' $lanIp localhost infrasight.local }
+# PC 이름도 넣는다: IP가 바뀌어도(DHCP) https://<PC이름>:8443 으로 들어갈 수
+# 있게(같은 네트워크에서 PC 이름 조회가 되는 일반적인 사무실 환경). IP가
+# 바뀐 경우 supervisor.ps1이 1분 안에 새 IP로 다시 발급한다.
+Invoke-Native { & $mkcertExe -cert-file 'certs\infrasight.crt' -key-file 'certs\infrasight.key' $lanIp localhost infrasight.local $env:COMPUTERNAME }
 # 버그 수정(2026-10-16): 인증서 발급이 조용히 실패하면(예: LAN IP를 못
 # 구함, mkcert 루트 CA가 깨짐) Caddy가 시작할 때 쓸 인증서 파일이
 # 없는데도 "발급 완료"가 그대로 찍혔음 -- 실제 증상은 몇 단계 뒤
@@ -570,7 +573,12 @@ Write-Host "`n============================================================" -For
 Write-Host ' 설치가 완료되었습니다!' -ForegroundColor Green
 Write-Host "   이 PC:        https://localhost:8443"
 Write-Host "   같은 네트워크의 다른 기기: https://${lanIp}:8443"
+Write-Host "   (IP가 바뀌어도 되는 주소: https://$($env:COMPUTERNAME):8443)"
 Write-Host '============================================================' -ForegroundColor Green
+Write-Host "`n참고: 이 PC는 모니터링 서버로 계속 켜져 있어야 합니다."
+Write-Host " - InfraSight가 실행 중이면 윈도우가 자동 절전에 들어가지 않습니다(화면 끄기는 그대로)."
+Write-Host " - 재부팅 후 로그인하지 않아도 자동으로 시작됩니다."
+Write-Host " - 가능하면 공유기에서 이 PC에 고정 IP(DHCP 예약)를 주는 것을 권장합니다 (에이전트 PC들이 이 IP로 접속)."
 Write-Host "`n로그인 계정: admin / admin (처음 로그인하면 비밀번호 변경 화면이 바로 뜹니다)" -ForegroundColor Yellow
 Write-Host "`n참고: 접속하는 다른 기기의 브라우저에는 인증서 경고가 뜰 수 있습니다"
 Write-Host "(이 PC에서 발급한 '로컬 CA' 방식 인증서라서 그렇습니다 -- 무시하고 진행하거나,"

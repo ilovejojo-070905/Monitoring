@@ -714,6 +714,20 @@ def test_config_backup_diff():
         storage.delete_config_backups_for_device(dev)
 
 
+def test_prevent_idle_sleep():
+    """P1: server.prevent_idle_sleep()이 Windows에서 실제로 절전 방지 요청을
+    걸고(True), 이 테스트 스레드에 건 요청은 ES_CONTINUOUS만 다시 걸어 해제."""
+    print('\n[test_prevent_idle_sleep]')
+    if os.name != 'nt':
+        check('P1 non-Windows returns False', server.prevent_idle_sleep() is False)
+        return
+    import ctypes
+    try:
+        check('P1 SetThreadExecutionState accepted (returns True)', server.prevent_idle_sleep() is True)
+    finally:
+        ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint32(0x80000000))
+
+
 def test_config_backup_files():
     from collector import config_backup as cb
     check('G1 Windows-forbidden characters replaced in folder/file name',
@@ -2416,7 +2430,7 @@ def main():
         test_hp_icfsensor_env, test_h3c_entity_env, test_entity_sensor_env, test_cisco_fru_env,
         test_vendor_profile_resolution, test_mib_standard_vs_vendor_separation, test_server_category_module_filter,
         test_compute_counter_delta, test_hc_counter_fallback_full_coverage, test_hc_counter_fallback_partial_coverage,
-        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase, test_config_backup_diff, test_config_backup_files,
+        test_sample_snmp_flags_low_confidence_traffic, test_poe_port_mapping, test_error_recent_increase, test_config_backup_diff, test_config_backup_files, test_prevent_idle_sleep,
         test_related_network_failure_correlation,
         test_ack_then_recovery, test_ack_then_escalate_reopens, test_agent_mode_escalation,
         test_maintenance_suppresses_and_renotifies, test_escalation_tier_order_stable_across_enable_disable,

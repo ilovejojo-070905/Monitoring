@@ -141,6 +141,33 @@ function Resolve-ExeAndAddToPath([string]$cmd, [string[]]$searchGlobs) {
 $gitExe    = Resolve-ExeAndAddToPath 'git'    @("$env:ProgramFiles\Git\cmd\git.exe")
 $pythonExe = Resolve-ExeAndAddToPath 'python' @("$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe")
 
+# 기존 설치의 자동 시작 작업이 "로그인했을 때만 실행"(Interactive)이면
+# "로그인하지 않아도 실행"(S4U)으로 바꾼다 -- 재부팅 후 아무도 로그인하지
+# 않으면 InfraSight가 안 켜지던 문제(register-task.ps1 주석 참고). 작업 등록
+# 변경은 관리자 권한이 필요해서 이 단계만 UAC로 한 번 승격한다(패치 자체는
+# 계속 관리자 권한 없이 돈다). 아니오를 눌러도 패치는 그대로 성공 처리.
+# 이미 S4U면 아무것도 묻지 않는다.
+function Update-StartupTaskToS4U {
+    try {
+        $task = Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue
+        if (-not $task -or "$($task.Principal.LogonType)" -eq 'S4U') { return }
+        $regScript = Join-Path $InstallDir 'ops\register-task.ps1'
+        # 작업에 원래 등록된 사용자 그대로(다른 관리자 계정으로 승격돼도 바뀌지 않게).
+        $taskUser = if ($task.Principal.UserId) { $task.Principal.UserId } else { $env:USERNAME }
+        Write-Warn2 '자동 시작을 "로그인하지 않아도 실행"으로 바꾸기 위해 관리자 권한을 한 번 요청합니다 (UAC 창에서 "예"; "아니오"여도 패치는 완료됩니다).'
+        Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$regScript`"", '-UserName', "`"$taskUser`"")
+        $after = Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue
+        if ($after -and "$($after.Principal.LogonType)" -eq 'S4U') {
+            Write-Ok '자동 시작 변경 완료: 재부팅 후 로그인하지 않아도 InfraSight가 시작됩니다'
+        } else {
+            Write-Warn2 '자동 시작 방식은 그대로입니다 (재부팅 후 로그인해야 시작). 다음 패치 때 다시 시도합니다.'
+        }
+    } catch {
+        Write-Warn2 "자동 시작 방식 변경을 건너뜁니다 (관리자 권한 승인 취소 등): $_"
+    }
+}
+
 # 재사용 헬퍼: 패치 적용 후와 실패 시 롤백 후 둘 다 똑같이 "기존 프로세스
 # 종료 -> supervisor 재시작"을 해야 해서 분리.
 function Restart-InfraSightProcesses {
@@ -249,6 +276,7 @@ Write-Ok 'InfraSight를 새 코드로 다시 시작했습니다'
 Write-Step '[5/5] 패치 후 헬스체크'
 if (Test-PatchedHealthy) {
     Write-Ok '헬스체크 통과 (web/database/collector/scheduler/alerts 전부 정상)'
+    Update-StartupTaskToS4U
     Write-Host "`n============================================================" -ForegroundColor Green
     Write-Host " 패치 완료 (커밋 $headNow)" -ForegroundColor Green
     Write-Host '============================================================' -ForegroundColor Green

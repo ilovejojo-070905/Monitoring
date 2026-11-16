@@ -72,7 +72,8 @@ def check_certificate():
             storage.add_incident('warn', 'InfraSight', 'SYSTEM',
                                   f"이 PC의 현재 LAN IP({current_ip})가 HTTPS 인증서에 등록된 주소 목록에 없습니다 "
                                   f"(IP가 바뀌었을 수 있음, 예: DHCP) -- 다른 PC에서 새 IP로 접속하면 인증서 오류가 날 수 있습니다. "
-                                  f"install.ps1의 [5/10] 단계를 다시 실행해 재발급해주세요.")
+                                  f"보통 1분 안에 자동으로 재발급되므로, 이 경고가 계속 나오면 logs\\supervisor.log의 "
+                                  f"'인증서 재발급' 기록을 확인해주세요.")
     except Exception:
         pass  # SAN 파싱 실패는 부가 체크라 날짜 체크 결과에 영향 주지 않음
 

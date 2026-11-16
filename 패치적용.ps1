@@ -225,6 +225,31 @@ try {
     Write-Warn2 "백엔드 자동 재시작에 실패했습니다 -- ops\stop.ps1 실행 후 잠시(최대 1분) 기다리거나 PC를 재부팅해주세요: $_"
 }
 
+# --------------------------------------- [7] 자동 시작 방식 갱신 (S4U) --
+# ops\patch.ps1의 Update-StartupTaskToS4U와 같음(그쪽 주석 참고): 예전 설치는
+# 자동 시작 작업이 "로그인했을 때만 실행"이라 재부팅 후 아무도 로그인하지
+# 않으면 InfraSight가 안 켜졌다. 이 단계만 UAC로 한 번 승격해 "로그인하지
+# 않아도 실행"으로 다시 등록한다. 이미 바뀌어 있으면 아무것도 묻지 않는다.
+try {
+    $task = Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue
+    if ($task -and "$($task.Principal.LogonType)" -ne 'S4U') {
+        $regScript = Join-Path $InstallDir 'ops\register-task.ps1'
+        $taskUser = if ($task.Principal.UserId) { $task.Principal.UserId } else { $env:USERNAME }
+        Write-Host "`n[자동 시작] 재부팅 후 로그인하지 않아도 InfraSight가 시작되도록 바꿉니다." -ForegroundColor Cyan
+        Write-Warn2 '관리자 권한 확인 창(UAC)이 뜨면 "예"를 눌러주세요 ("아니오"여도 패치는 완료됩니다).'
+        Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$regScript`"", '-UserName', "`"$taskUser`"")
+        $after = Get-ScheduledTask -TaskName 'InfraSight Supervisor' -ErrorAction SilentlyContinue
+        if ($after -and "$($after.Principal.LogonType)" -eq 'S4U') {
+            Write-Ok '자동 시작 변경 완료: 재부팅 후 로그인하지 않아도 시작됩니다.'
+        } else {
+            Write-Warn2 '자동 시작 방식은 그대로입니다 (재부팅 후 로그인해야 시작). 다음 패치 때 다시 시도합니다.'
+        }
+    }
+} catch {
+    Write-Warn2 "자동 시작 방식 변경을 건너뜁니다 (관리자 권한 승인 취소 등): $_"
+}
+
 Write-Host "`n============================================================" -ForegroundColor Green
 Write-Host ' 완료되었습니다!' -ForegroundColor Green
 Write-Host ' 백엔드까지 재시작했습니다. 브라우저에서 강력 새로고침(Ctrl+F5)만 해주세요.' -ForegroundColor Yellow

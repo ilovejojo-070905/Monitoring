@@ -3753,10 +3753,37 @@ def _handle_unexpected_error(e):
     return jsonify({'error': '서버 오류가 발생했습니다'}), 500
 
 
+def prevent_idle_sleep():
+    """이 프로세스가 떠 있는 동안 Windows가 '유휴 절전/최대 절전'으로 들어가지
+    않게 한다 (사용자 요청: 다른 장소에 설치 후 오랜만에 접속하니 안 됨 --
+    모니터링 서버 PC가 기본 전원 설정대로 절전에 들어가면 수집도 접속도 멈춤).
+
+    전원 설정(powercfg)을 바꾸는 게 아니라 SetThreadExecutionState로 "지금
+    시스템이 필요함"만 알리는 방식이라, 관리자 권한이 필요 없고 InfraSight가
+    꺼지면 원래 설정으로 저절로 돌아간다. 화면 끄기(ES_DISPLAY_REQUIRED)는
+    막지 않고, 사용자가 직접 누르는 절전/노트북 덮개 닫기도 막지 않는다.
+    ES_CONTINUOUS라 호출한 스레드가 살아 있는 동안 유지되므로 serve()로
+    프로세스 끝까지 살아 있는 메인 스레드에서 부른다."""
+    if os.name != 'nt':
+        return False
+    try:
+        import ctypes
+        fn = ctypes.windll.kernel32.SetThreadExecutionState
+        fn.argtypes = [ctypes.c_uint32]
+        fn.restype = ctypes.c_uint32
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        return fn(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) != 0
+    except Exception:
+        app_logger.warning('prevent_idle_sleep: SetThreadExecutionState 호출 실패', exc_info=True)
+        return False
+
+
 def main():
     # Pulled out of the `if __name__ == '__main__':` block (one-click
     # installer pass) so installer.py's --serve mode can call this directly
     # after its own setup wizard, instead of duplicating backend startup.
+    if prevent_idle_sleep():
+        app_logger.info('절전 방지 설정됨 (InfraSight 실행 중에는 유휴 절전으로 들어가지 않음)')
     storage.init_db()
     scheduler.start()
     flow_listener.start()

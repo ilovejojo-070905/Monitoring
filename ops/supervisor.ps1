@@ -24,8 +24,22 @@ $ProjectRoot = Split-Path $PSScriptRoot -Parent
 # or a Python installed to a different path. `Get-Command` finds whatever
 # `python`/`caddy` already resolve to in a normal shell on THIS machine too
 # (verified identical), so this is a no-op here and just portable elsewhere.
-$PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
-$CaddyExe  = (Get-Command caddy  -ErrorAction SilentlyContinue).Source
+# 로그인 없이(S4U, register-task.ps1) 부팅 직후 실행되면 사용자 PATH가 평소와
+# 다르게 잡힐 수 있어서, PATH에서 못 찾으면 install.ps1이 설치하는 기본 위치
+# (winget/python.org 사용자 설치)도 찾아본다. WindowsApps의 python 스텁은
+# 진짜 python이 아니라 제외.
+function Resolve-ToolExe([string]$cmd, [string[]]$globs) {
+    $found = Get-Command $cmd -ErrorAction SilentlyContinue | Where-Object { $_.Source -notmatch '\\WindowsApps\\' } | Select-Object -First 1
+    if ($found) { return $found.Source }
+    foreach ($g in $globs) {
+        $f = Get-ChildItem $g -File -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($f) { return $f.FullName }
+    }
+    return $null
+}
+$PythonExe = Resolve-ToolExe 'python' @("$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe", "$env:ProgramFiles\Python3*\python.exe")
+$CaddyExe  = Resolve-ToolExe 'caddy'  @("$env:LOCALAPPDATA\Microsoft\WinGet\Links\caddy.exe", "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\CaddyServer.Caddy_*\caddy.exe", "$env:ProgramFiles\Caddy\caddy.exe")
+$MkcertExe = Resolve-ToolExe 'mkcert' @("$env:LOCALAPPDATA\Microsoft\WinGet\Links\mkcert.exe", "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\FiloSottile.mkcert_*\mkcert*.exe")
 if (-not $PythonExe) { throw "python.exe를 PATH에서 찾을 수 없습니다. Python 설치 후 PATH에 추가되어 있는지 확인하세요." }
 if (-not $CaddyExe)  { throw "caddy.exe를 PATH에서 찾을 수 없습니다. Caddy 설치 후 PATH에 추가되어 있는지 확인하세요 (예: winget install CaddyServer.Caddy)." }
 
@@ -171,7 +185,12 @@ $healthFailCount = 0
 
 function Test-BackendHealthy {
     try {
-        $resp = Invoke-RestMethod -Uri 'https://localhost:8443/api/system/health-public' -TimeoutSec 5 -ErrorAction Stop
+        # Caddy(8443)를 거치지 않고 백엔드(5057)에 직접 묻는다 -- 로그인 없이
+        # 실행(S4U)될 때는 mkcert 로컬 CA 신뢰가 이 세션에 안 잡혀 HTTPS 호출이
+        # 인증서 오류로 실패할 수 있고, 그러면 멀쩡한 백엔드를 "먹통"으로 오인해
+        # 계속 재시작하게 된다. 확인 대상도 원래 백엔드 자체라 이 편이 정확하다
+        # (Caddy는 아래 Test-Alive로 따로 본다).
+        $resp = Invoke-RestMethod -Uri 'http://127.0.0.1:5057/api/system/health-public' -TimeoutSec 5 -ErrorAction Stop
         # 신규(2026-10-17, "Flask, 스케줄러, 수집기, 알림 엔진... 상태를
         # 구분한다"): scheduler/alerts도 같이 확인 -- 이전엔 collector만
         # 봐서, 장비 polling은 멀쩡한데 알림 엔진(에스컬레이션/재시도 큐)
@@ -199,6 +218,93 @@ function Start-Caddy {
         -WindowStyle Hidden -PassThru
     Write-Log 'INFO' "Caddy 시작됨 (PID $($p.Id))"
     return $p
+}
+
+# ---------- LAN IP 변경 시 HTTPS 인증서 자동 재발급 ----------
+# 사용자 요청("다른 장소에 설치 후 오랜만에 접속하니 안 됨"): 인증서는 설치
+# 당시 LAN IP로만 발급되는데, DHCP로 IP가 바뀌면 새 IP로 들어가도 인증서
+# 오류가 났다(collector/cert_check.py는 하루 한 번 경고만 했음). 1분마다
+# 현재 LAN IP가 인증서 주소 목록에 있는지 보고, 없으면 같은 로컬 CA(mkcert)로
+# 다시 발급해 Caddy만 재시작한다. PC 이름(COMPUTERNAME)도 같이 넣어서
+# https://<PC이름>:8443 으로도 접속할 수 있게 한다 -- IP가 또 바뀌어도
+# 같은 주소로 들어갈 수 있는 방법.
+$CertFile = Join-Path $ProjectRoot 'certs\infrasight.crt'
+$KeyFile  = Join-Path $ProjectRoot 'certs\infrasight.key'
+$CertCheckIntervalSec = 60
+$CertRetryAfterFailSec = 600
+$lastCertCheckAt = $null
+$certRetryAt = $null
+
+# storage.get_lan_ip()와 같은 방식(UDP connect -- 실제 패킷은 안 나감).
+function Get-LanIp {
+    $s = $null
+    try {
+        $s = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork,
+            [System.Net.Sockets.SocketType]::Dgram, [System.Net.Sockets.ProtocolType]::Udp)
+        $s.Connect('8.8.8.8', 80)
+        $ip = $s.LocalEndPoint.Address.ToString()
+        # 네트워크가 아직 안 잡힌 상태(부팅 직후, 케이블 빠짐)면 재발급하지 않는다.
+        if ($ip -match '^(127\.|169\.254\.|0\.)') { return $null }
+        return $ip
+    } catch {
+        return $null
+    } finally {
+        if ($s) { $s.Close() }
+    }
+}
+
+# 인증서 SAN 목록. Format() 결과의 "DNS Name=" / "IP Address=" 라벨은 Windows
+# 언어에 따라 바뀔 수 있어서 라벨 대신 '=' 뒤 값만 뽑는다.
+function Get-CertNames {
+    try {
+        $c = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CertFile)
+        $ext = $c.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' }
+        if (-not $ext) { return @() }
+        return @([regex]::Matches($ext.Format($false), '=\s*([^,\r\n]+)') | ForEach-Object { $_.Groups[1].Value.Trim() })
+    } catch {
+        return @()
+    }
+}
+
+# 재발급이 필요하면 하고 $true, 아니면(또는 할 수 없으면) $false.
+function Sync-Certificate {
+    $ip = Get-LanIp
+    if (-not $ip) { return $false }
+    $names = Get-CertNames
+    $hostName = $env:COMPUTERNAME
+    if ((Test-Path $CertFile) -and ($names -contains $ip) -and (-not $hostName -or ($names -contains $hostName))) { return $false }
+    if (-not $MkcertExe) {
+        Write-Log 'WARN' "인증서에 현재 IP($ip)가 없지만 mkcert를 찾지 못해 재발급하지 못했습니다."
+        return $false
+    }
+    # 설치 때 만든 로컬 CA가 없으면 mkcert가 새 CA를 만들어버려(다른 PC에서
+    # 신뢰하지 않는 인증서) 오히려 나빠지므로 그 경우는 재발급하지 않는다.
+    $caRoot = if ($env:CAROOT) { $env:CAROOT } else { Join-Path $env:LOCALAPPDATA 'mkcert' }
+    if (-not (Test-Path (Join-Path $caRoot 'rootCA-key.pem'))) {
+        Write-Log 'WARN' "인증서에 현재 IP($ip)가 없지만 로컬 CA($caRoot)를 찾지 못해 재발급하지 못했습니다."
+        return $false
+    }
+    $newCrt = "$CertFile.new"; $newKey = "$KeyFile.new"
+    $sans = @($ip, 'localhost', 'infrasight.local')
+    if ($hostName) { $sans += $hostName }
+    try {
+        $p = Start-Process -FilePath $MkcertExe -ArgumentList (@('-cert-file', "`"$newCrt`"", '-key-file', "`"$newKey`"") + $sans) `
+            -WorkingDirectory $ProjectRoot -WindowStyle Hidden -Wait -PassThru `
+            -RedirectStandardOutput (Join-Path $RunDir 'mkcert.out.log') -RedirectStandardError (Join-Path $RunDir 'mkcert.err.log')
+        if ($p.ExitCode -ne 0 -or -not (Test-Path $newCrt) -or -not (Test-Path $newKey)) {
+            throw "mkcert 종료 코드 $($p.ExitCode) (자세한 내용: run\mkcert.err.log)"
+        }
+        Move-Item -Force $newKey $KeyFile
+        Move-Item -Force $newCrt $CertFile
+        $old = if ($names.Count) { $names -join ', ' } else { '(없음)' }
+        Write-Log 'INFO' "HTTPS 인증서 재발급 완료: $($sans -join ', ') (이전: $old)"
+        return $true
+    } catch {
+        Remove-Item $newCrt, $newKey -ErrorAction SilentlyContinue
+        Write-Log 'ERROR' "HTTPS 인증서 재발급 실패: $_"
+        $script:certRetryAt = (Get-Date).AddSeconds($CertRetryAfterFailSec)
+        return $false
+    }
 }
 
 function Test-Alive($proc) {
@@ -250,6 +356,9 @@ function Write-Status {
 
 try {
     $backend = Start-Backend
+    # Caddy를 띄우기 전에 한 번 맞춰 둔다(부팅 사이 IP가 바뀐 경우 바로 반영).
+    try { [void](Sync-Certificate) } catch { Write-Log 'WARN' "인증서 확인 중 오류: $_" }
+    $lastCertCheckAt = Get-Date
     $caddy = Start-Caddy
     Write-Status
 
@@ -290,6 +399,20 @@ try {
                         $healthFailCount = 0
                     }
                 }
+            }
+        }
+
+        if (((Get-Date) - $lastCertCheckAt).TotalSeconds -ge $CertCheckIntervalSec -and
+            (-not $certRetryAt -or (Get-Date) -ge $certRetryAt)) {
+            $lastCertCheckAt = Get-Date
+            $reissued = $false
+            try { $reissued = Sync-Certificate } catch { Write-Log 'WARN' "인증서 확인 중 오류: $_" }
+            if ($reissued) {
+                $certRetryAt = $null
+                # Caddy는 인증서 파일을 시작할 때만 읽으므로 재시작해야 반영된다.
+                if (Test-Alive $caddy) { Stop-Process -Id $caddy.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 1 }
+                Register-Restart 'caddy' 'LAN IP 변경으로 HTTPS 인증서 재발급'
+                $caddy = Start-Caddy
             }
         }
 
