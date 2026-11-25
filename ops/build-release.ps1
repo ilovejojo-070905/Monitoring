@@ -106,7 +106,12 @@ try {
 
     # 진단 수집 스크립트(ops\collect-diagnostics.ps1)도 Setup/Patch에 내장 -- 설치
     # 초기에 실패해 설치 폴더(=그 스크립트)가 아직 없어도 진단 zip을 만들 수 있게.
-    $diagB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $repoRoot 'ops\collect-diagnostics.ps1')))
+    # 그 안에 다시 ops\snmp_probe.py(장비별 SNMP 수집 진단)를 base64로 넣은 뒤 내장한다.
+    $probeB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $repoRoot 'ops\snmp_probe.py')))
+    $diagSrc = (Get-Content (Join-Path $repoRoot 'ops\collect-diagnostics.ps1') -Raw -Encoding UTF8).Replace('__EMBEDDED_SNMP_PROBE_B64__', $probeB64)
+    $tempDiagPs1 = Join-Path $env:TEMP "infrasight-diag-embedded-$([guid]::NewGuid().ToString('N')).ps1"
+    [System.IO.File]::WriteAllText($tempDiagPs1, $diagSrc, (New-Object System.Text.UTF8Encoding $true))
+    $diagB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($tempDiagPs1))
 
     $patchSrc = Get-Content (Join-Path $repoRoot '패치적용.ps1') -Raw -Encoding UTF8
     $patchSrc = $patchSrc.Replace('__EMBEDDED_PATCH_B64__', $diffB64)
@@ -133,7 +138,7 @@ try {
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall.ps1') -outputFile (Join-Path $outDir "InfraSight-Uninstall-$date-$sha.exe") -title 'InfraSight Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     Invoke-ps2exe -inputFile (Join-Path $repoRoot 'uninstall-agent.ps1') -outputFile (Join-Path $outDir "InfraSightAgent-Uninstall-$date-$sha.exe") -title 'InfraSight Agent Uninstall' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
     # 설치는 됐는데 나중에 문제가 생긴 현장에서 더블클릭만 하면 바탕화면에 진단 zip을 만든다.
-    Invoke-ps2exe -inputFile (Join-Path $repoRoot 'ops\collect-diagnostics.ps1') -outputFile (Join-Path $outDir "InfraSight-Diagnostics-$date-$sha.exe") -title 'InfraSight Diagnostics' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
+    Invoke-ps2exe -inputFile $tempDiagPs1 -outputFile (Join-Path $outDir "InfraSight-Diagnostics-$date-$sha.exe") -title 'InfraSight Diagnostics' -iconFile $iconFile -noConsole:$false -requireAdmin:$false
 
     $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
     if (-not (Test-Path $makensis)) { $makensis = "$env:ProgramFiles\NSIS\makensis.exe" }
@@ -171,7 +176,7 @@ try {
         Write-Warning 'NSIS(makensis.exe)를 찾을 수 없어 GUI 설치/패치/제거 프로그램 빌드를 건너뜁니다 (winget install NSIS.NSIS로 설치해주세요).'
     }
 
-    Remove-Item $tempPatchPs1, $tempInstallPs1 -Force -ErrorAction SilentlyContinue
+    Remove-Item $tempPatchPs1, $tempInstallPs1, $tempDiagPs1 -Force -ErrorAction SilentlyContinue
     # 버그 수정(2026-10-16): makensis 실패는 이미 위에서 Write-Warning으로
     # 찍혔지만, 그 바로 뒤에 "빌드 완료" 녹색 배너가 무조건 또 떠서 스크롤된
     # 터미널에서는 경고를 놓치고 "완료"만 보기 쉬웠음 -- 실패가 하나라도

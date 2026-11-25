@@ -26,6 +26,9 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+# ops\snmp_probe.py 사본(build-release.ps1이 base64로 치환) -- 설치 폴더에 아직 그
+# 파일이 없는 예전 설치에서도 장비별 진단이 되게.
+$EMBEDDED_SNMP_PROBE_B64 = '__EMBEDDED_SNMP_PROBE_B64__'
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
 $stage = Join-Path $env:TEMP "InfraSight-diag-$ts-$([guid]::NewGuid().ToString('N').Substring(0,6))"
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
@@ -221,6 +224,33 @@ if ($InstallDir -and (Test-Path $InstallDir)) {
     Add-Section '파이썬 패키지' {
         $py = Find-Tool 'python' @("$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe")
         if ($py) { & (($py -split '  \(')[0]) -m pip list --disable-pip-version-check 2>&1 }
+    }
+    # 등록된 SNMP 장비별 수집 진단(ops\snmp_probe.py) -- "장비를 등록했는데 CPU/메모리/
+    # 환경센서가 안 보임" 같은 장비 지원 문제를 원격 접속 없이 볼 수 있게. 설치 폴더에
+    # 있으면 그걸(설치된 코드와 짝이 맞음), 없으면 이 파일에 내장된 사본을 쓴다.
+    # 장비가 많거나 느리면 오래 걸릴 수 있어 10분에서 끊는다.
+    $py = Find-Tool 'python' @("$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe")
+    if ($py) {
+        $probe = Join-Path $InstallDir 'ops\snmp_probe.py'
+        if (-not (Test-Path $probe) -and $EMBEDDED_SNMP_PROBE_B64 -notlike '__*') {
+            $probe = Join-Path $env:TEMP "InfraSight-snmp_probe-$ts.py"
+            [System.IO.File]::WriteAllBytes($probe, [Convert]::FromBase64String($EMBEDDED_SNMP_PROBE_B64))
+        }
+        if (Test-Path $probe) {
+            Write-Host '[InfraSight] 등록된 SNMP 장비를 하나씩 확인하는 중입니다 (장비당 수 초~1분)...' -ForegroundColor Cyan
+            $probeOut = Join-Path $stage 'snmp-devices.txt'
+            try {
+                $pp = Start-Process -FilePath (($py -split '  \(')[0]) -ArgumentList @('-I', "`"$probe`"", "`"$InstallDir`"") `
+                    -WorkingDirectory $InstallDir -NoNewWindow -PassThru `
+                    -RedirectStandardOutput $probeOut -RedirectStandardError (Join-Path $stage 'snmp-devices.err.txt')
+                if (-not $pp.WaitForExit(600000)) {
+                    Stop-Process -Id $pp.Id -Force -ErrorAction SilentlyContinue
+                    Add-Content $probeOut -Value "`n(10분 안에 끝나지 않아 중단)" -Encoding utf8
+                }
+            } catch {
+                Add-Content -Path $summary -Encoding utf8 -Value "`r`n(SNMP 장비 진단 실행 실패: $_)"
+            }
+        }
     }
     foreach ($f in 'supervisor.log', 'app.log', 'error.log') { Copy-Tail (Join-Path $InstallDir "logs\$f") "logs-$f" }
     foreach ($f in 'status.json', 'restart-history.json', 'mkcert.err.log') {
