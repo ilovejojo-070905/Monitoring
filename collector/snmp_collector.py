@@ -779,7 +779,12 @@ def _h3c_entity_env(ent_class, temp_raw, temp_threshold, oper_status, phys_descr
             temp_state[idx] = '9'
         else:
             try:
-                temp_state[idx] = '3' if int(str(raw)) >= int(thresh) else '1'
+                # 버그 수정(2026-11-25, 현장 HPE 10512 진단 zip): 온도 39개
+                # (21~40°C)가 전부 state 3(위험)으로 나왔다 -- 이 장비는 임계값을
+                # 0(=설정 없음)으로 돌려주는 것으로 보임. 0 이하 임계값은 비교할
+                # 근거가 없으니 "알 수 없음"(9)으로, 위험 오탐을 내지 않는다.
+                t = int(thresh)
+                temp_state[idx] = '9' if t <= 0 else ('3' if int(str(raw)) >= t else '1')
             except Exception:
                 temp_state[idx] = '9'
 

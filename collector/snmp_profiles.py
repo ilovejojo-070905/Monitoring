@@ -670,6 +670,15 @@ def resolve_profile_name(vendor_profile, sys_descr):
         classic_fw = 'procurve' in descr or re.search(r'\brevision [a-z]{1,2}\.\d', descr)
         if 'aruba' in descr and not classic_fw:
             return 'aruba-cx'
+        # 버그 수정(2026-11-25, 사용자 "Aruba 5412 등록했는데 cpu/메모리/환경센서가
+        # 안 보여"): 현장 진단 zip 실측 sysDescr가 "HP J9851A Switch 5412Rzl2,
+        # revision KB.16.09.0003, ..." -- 'aruba'/'procurve'/'hewlett-packard'/'hpe'
+        # 어느 것도 없어 generic으로 떨어졌다(hp 프로필 OID로는 CPU 14%, 메모리
+        # used/free 정상 응답 확인). HP/Aruba 제품번호(J9851A, JL260A 같은
+        # J/JL+숫자+A) 또는 "hp "로 시작 + 클래식 펌웨어 revision 형식이면 hp.
+        hp_product = re.search(r'\bjl?\d{3,4}a\b', descr) or descr.startswith('hp ')
+        if classic_fw and hp_product:
+            return 'hp'
         if 'procurve' in descr or 'aruba' in descr or 'hewlett-packard' in descr or 'hpe' in descr:
             return 'hp'
         if 'dell' in descr or 'powerconnect' in descr:

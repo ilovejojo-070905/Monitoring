@@ -420,6 +420,11 @@ def test_h3c_entity_env():
     check('C6 h3c: fan/supply from oper status', fan == {'77': '1'} and supply == {'75': '1'}, str((fan, supply)))
     _, _, _, fan2, _ = sc._h3c_entity_env(ent_class, temp_raw, temp_threshold, dict(oper_status, **{'77': 4}), phys_descr)
     check('C7 h3c: dangerous(4) oper status -> critical, not normal', fan2 == {'77': '3'}, str(fan2))
+    # 현장 HPE 10512: 임계값 0 -> 21~40°C가 전부 위험으로 오탐되던 것.
+    _, _, t_state3, _, _ = sc._h3c_entity_env(ent_class, temp_raw, dict(temp_threshold, **{'78': 0}), oper_status, phys_descr)
+    check('C8 h3c: threshold 0 (not configured) -> unknown, not critical', t_state3['78'] == '9', t_state3['78'])
+    _, _, t_state4, _, _ = sc._h3c_entity_env(ent_class, dict(temp_raw, **{'79': 80}), temp_threshold, oper_status, phys_descr)
+    check('C9 h3c: temp over a real threshold still critical', t_state4['79'] == '3', t_state4['79'])
 
 
 def test_entity_sensor_env():
@@ -462,6 +467,11 @@ def test_vendor_profile_resolution():
     # "revision WC.16..." 형식이면 클래식 ArubaOS-Switch(hp).
     a2930 = sp.resolve_profile(None, 'Aruba JL260A 2930F-48G-4SFP Switch, revision WC.16.10.0002, ROM WC.16.01.0008 (/ws/swbuildm/rel_ajanta_qaoff/code/build/lvm(swbuildm_rel_ajanta_qaoff_rel_ajanta))')
     check('D2b Aruba 2930F (classic firmware, no ProCurve text) resolves to hp', a2930['name'] == 'hp', a2930['name'])
+    # 현장 진단 zip 실측(5412R zl2) -- aruba/procurve/hewlett-packard 어느 단어도 없음.
+    a5412 = sp.resolve_profile(None, 'HP J9851A Switch 5412Rzl2, revision KB.16.09.0003, ROM KB.16.01.0009 (/ws/swbuildm/rel_zootopia_qaoff/code/build/bom(swbuildm_rel_zootopia_qaoff_rel_zootopia))')
+    check('D2c HP 5412R zl2 (product no. + classic revision, no vendor words) resolves to hp', a5412['name'] == 'hp', a5412['name'])
+    check('D2d a non-HP sysDescr with a "revision" word does not become hp',
+          sp.resolve_profile(None, 'Some Vendor Switch, revision AB.1.2')['name'] == 'generic')
     comware = sp.resolve_profile(None, 'HP Comware Platform Software ... Hewlett-Packard Development Company, L.P.')
     check('D3 Comware sysDescr resolves to hp-comware (not hp)', comware['name'] == 'hp-comware', comware['name'])
     # 실제 운영 중인 Nexus 9504에서 받은 sysDescr 그대로(2026-10-22 실측,

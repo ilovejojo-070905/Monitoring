@@ -7439,16 +7439,47 @@ function drawPingDevice(e, catLabel){
     // 실제로 그려지는 칸 "열 수"로 판단 -- HPE 5500-24G는 24+SFP4+10G 2개+관리
     // 포트로 31개라 개수 기준(>30)에 걸려 칸 안 사용량이 사라졌었는데, 열 수로는
     // 16열이라 숫자가 충분히 들어간다(48포트급은 26열 이상).
-    const totalCols = blocks.reduce((s,b)=>s+Math.ceil(b.ports.length/(b.ports.length>1?2:1)), 0);
-    const dense = totalCols > 18;
-    const blockHtml = b => {
+    const colsOf = b => Math.ceil(b.ports.length/(b.ports.length>1?2:1));
+    const totalCols = blocks.reduce((s,b)=>s+colsOf(b), 0);
+    // 섀시형(슬롯/라인카드 여러 장) -- 사용자 요청("네트워크 장비 샷시형은 슬롯이
+    // 여러 개 장착돼 있는데 포트맵에는 슬롯 하나만 보여"): 예전엔 모든 묶음을 한
+    // 가로줄에 넣어서, 슬롯이 여러 장이면 줄이 카드 폭을 훨씬 넘어 나머지 슬롯이
+    // 오른쪽으로 밀리거나 서로 겹쳐 보였다. 포트 이름에서 슬롯을 읽어(HP/Aruba
+    // 섀시 "A1"/"B1" -> A/B, Comware·Cisco "GigabitEthernet3/0/1" -> 3, Juniper
+    // "ge-1/0/1" -> 1) 서로 다른 슬롯이 2개 이상이면 실제 섀시 앞면처럼 슬롯마다
+    // 한 줄씩 세로로 쌓고 왼쪽에 "슬롯 A" 같은 이름을 붙인다. 단일 장비(2930F,
+    // 2960, 5500 등 -- 슬롯 번호가 하나뿐)는 예전 배치 그대로.
+    const slotOf = b => { const pre = portParts(b.ports[0]).prefix; if(/^[A-Z]{1,2}$/i.test(pre)) return pre.toUpperCase(); const m = pre.match(/(\d+)\//); return m ? m[1] : ''; };
+    const typeOf = b => {
+      const t = portParts(b.ports[0]).prefix.replace(/[\d\/]+$/,'').replace(/[-_]$/,'');
+      if(/^[A-Z]{1,2}$/i.test(t)) return '';
+      return t.replace(/^Ten-?GigabitEthernet$|^TenGigE$/i,'10GE').replace(/^TwentyFiveGig.*$/i,'25GE').replace(/^FortyGig.*$/i,'40GE')
+              .replace(/^HundredGig.*$/i,'100GE').replace(/^GigabitEthernet$/i,'GE').replace(/^FastEthernet$/i,'FE');
+    };
+    const stacked = new Set(blocks.filter(b=>b.caption!=='MGMT').map(slotOf)).size >= 2;
+    if(stacked){
+      const key = s => /^\d+$/.test(s) ? s.padStart(4,'0') : s;
+      blocks.sort((a,b)=> (a.caption==='MGMT') - (b.caption==='MGMT') || key(slotOf(a)).localeCompare(key(slotOf(b))) || (a.caption==='SFP') - (b.caption==='SFP'));
+    }
+    // 쌓아서 그릴 때는 한 줄 = 한 슬롯이라 그 슬롯의 열 수로만 칸 폭이 정해진다.
+    const dense = stacked ? Math.max(...blocks.map(colsOf)) > 18 : totalCols > 18;
+    const gridHtml = b => {
       const rows = b.ports.length>1 ? 2 : 1;
       const cols = Math.ceil(b.ports.length/rows);
-      return `<div style="flex:0 1 auto;display:flex;flex-direction:column;gap:4px;min-width:0">
-        <span style="font:700 9px/1 var(--font-mono);letter-spacing:.08em;color:var(--chrome-text-faint);height:9px">${b.caption}</span>
-        <div style="display:grid;grid-auto-flow:column;grid-template-rows:repeat(${rows},auto);grid-template-columns:repeat(${cols},minmax(14px,52px));gap:4px ${dense?3:5}px">${b.ports.map((f,i)=>cell(f, rows>1 && i%2===1)).join('')}</div>
-      </div>`;
+      return `<div style="display:grid;grid-auto-flow:column;grid-template-rows:repeat(${rows},auto);grid-template-columns:repeat(${cols},minmax(14px,52px));gap:4px ${dense?3:5}px">${b.ports.map((f,i)=>cell(f, rows>1 && i%2===1)).join('')}</div>`;
     };
+    const blockHtml = b => stacked
+      ? `<div style="display:flex;align-items:center;gap:12px;min-width:min-content">
+          <div style="flex:0 0 66px;display:flex;flex-direction:column;gap:3px">
+            <b style="font:700 11px/1.1 var(--font-mono);color:var(--chrome-text)">${b.caption==='MGMT' ? 'MGMT' : (slotOf(b) ? '슬롯 '+escapeHtml(slotOf(b)) : escapeHtml(b.caption||'포트'))}</b>
+            <span style="font:600 9px/1.1 var(--font-mono);color:var(--chrome-text-faint)">${escapeHtml([typeOf(b), b.caption==='SFP' ? 'SFP' : ''].filter(Boolean).join(' · '))}${b.caption!=='MGMT' ? ` · ${b.ports.length}포트` : ''}</span>
+          </div>
+          ${gridHtml(b)}
+        </div>`
+      : `<div style="flex:0 1 auto;display:flex;flex-direction:column;gap:4px;min-width:0">
+        <span style="font:700 9px/1 var(--font-mono);letter-spacing:.08em;color:var(--chrome-text-faint);height:9px">${b.caption}</span>
+        ${gridHtml(b)}
+      </div>`;
     const poe = e.poe;
     const poeSub = poe ? ` · PoE ${poe.portsDelivering}포트 공급중${poe.consumptionW!=null ? ` (${fmt0(poe.consumptionW)}${poe.powerW ? '/'+fmt0(poe.powerW) : ''}W)` : ''}` : '';
     // 선택한 포트 상세 패널: 사용량 / 학습된 MAC / 활성화·비활성화(ADMIN).
@@ -7514,7 +7545,7 @@ function drawPingDevice(e, catLabel){
       <div class="card-head"><h3>포트맵</h3><span class="sub">${multi ? '다중 선택 중 · 포트를 눌러 여러 개 고른 뒤 위 버튼으로 한 번에 처리' : '포트를 누르면 사용량·학습된 MAC·활성화/비활성화가 아래에 열립니다'} · ${physIfaces.filter(f=>f.status==='up').length}/${physIfaces.length} Up${poeSub}${(()=>{ const n = physIfaces.filter(errNow).length; return n ? ` · <b style="color:var(--warn)">⚠ 에러 증가 ${n}포트</b>` : ''; })()}</span></div>
       ${multiToolbar}
       <div style="background:var(--bg);border-radius:10px;padding:12px 14px;overflow-x:auto">
-        <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px 22px;min-width:min-content">${blocks.map(blockHtml).join('')}</div>
+        <div style="display:flex;${stacked ? 'flex-direction:column;gap:12px' : 'justify-content:space-between;align-items:flex-end;gap:12px 22px'};min-width:min-content">${blocks.map(blockHtml).join('')}</div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:10px;font-size:11px;color:var(--text-dim)">
         <span><span style="display:inline-block;width:12px;height:9px;border-radius:2px;background:var(--good);margin-right:5px;vertical-align:-1px"></span>연결됨(사용중)</span>

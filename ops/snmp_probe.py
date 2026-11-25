@@ -99,13 +99,37 @@ async def probe(dev):
         out.append('    (어느 프로필의 CPU/메모리 OID에도 응답 없음 -- SNMP view 제한이거나 미지원 MIB)')
 
     out.append('  [환경센서 후보 테이블]')
+    ent_sensor = None
     for label, oid in (('HP hpicfSensor 종류', sp.OID_HP_ICF_SENSOR_TYPE_REF),
                        ('HP hpicfSensor 상태', sp.OID_HP_ICF_SENSOR_STATUS),
                        ('HP hpicfSensor 이름', sp.OID_HP_ICF_SENSOR_DESCR),
+                       # HP/Aruba 섀시(5400R 등)는 팬/전원을 아래 전용 테이블로 줄 수 있다
+                       # (HP-ICF-POWER-SUPPLY-MIB hpicfPsTable, HP-ICF-FAN-MIB hpicfFanTable)
+                       # -- 열 의미를 실측으로 확인하려고 테이블 전체를 남긴다.
+                       ('HP 전원 hpicfPsTable', '1.3.6.1.4.1.11.2.14.11.5.1.55.1.1.1'),
+                       ('HP 팬 hpicfFanTable', '1.3.6.1.4.1.11.2.14.11.5.1.54.2.1.1'),
                        ('ENTITY-SENSOR 종류', sp.OID_ENT_PHY_SENSOR_TYPE),
+                       ('ENTITY-SENSOR 배율', sp.OID_ENT_PHY_SENSOR_SCALE),
+                       ('ENTITY-SENSOR 값', sp.OID_ENT_PHY_SENSOR_VALUE),
+                       ('ENTITY-SENSOR 상태', sp.OID_ENT_PHY_SENSOR_OPER_STATUS),
+                       ('Comware 온도 임계값', sp.OID_H3C_TEMPERATURE_THRESHOLD),
                        ('Cisco ENVMON 온도', sp.OID_CISCO_ENVMON_TEMP_DESCR)):
         res = await walk_count(eng, dev['ip'], auth, port, oid)
-        out.append(f'    {label}: {short(res, 10)}')
+        if label == 'ENTITY-SENSOR 종류' and isinstance(res, dict):
+            ent_sensor = res
+        n = 40 if label.startswith(('HP 전원', 'HP 팬')) else 12
+        out.append(f'    {label}: {short(res, n)}')
+    if ent_sensor:
+        names = await walk_count(eng, dev['ip'], auth, port, '1.3.6.1.2.1.47.1.1.1.1.7')  # entPhysicalName
+        if isinstance(names, dict):
+            out.append('    ENTITY-SENSOR 행 이름: ' + ', '.join(f'{k}={names.get(k)}' for k in list(ent_sensor)[:15]))
+
+    # 포트맵(슬롯/모듈 배치) 확인용 -- 물리 포트로 판정된 인터페이스 이름.
+    descr_map = r.get('ifDescr') or {}
+    if_type = await walk_count(eng, dev['ip'], auth, port, sc.OID_IF_TYPE)
+    if isinstance(if_type, dict):
+        phys = [str(descr_map.get(k)) for k, t in if_type.items() if str(t) in ('6', '62', '117', '69')]
+        out.append(f'  [물리 포트 이름 {len(phys)}개] ' + ', '.join(phys[:12]) + (' ... ' + ', '.join(phys[-6:]) if len(phys) > 18 else ''))
     return out
 
 
